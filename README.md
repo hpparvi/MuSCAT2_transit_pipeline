@@ -1,6 +1,6 @@
 # MuSCAT2 transit analysis pipeline
 
-A Python-based transit analysis pipeline for MuSCAT2-observed multicolour photometry.
+A Python-based transit analysis pipeline for MuSCAT2-observed multicolour photometry developed in collaboration with the IAC, XXX, YYY, and ZZZ. **(please fill in all the relevant institutes)**
 
 ## Overview
 
