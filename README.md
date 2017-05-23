@@ -4,8 +4,11 @@ A Python-based transit analysis pipeline for MuSCAT2-observed multicolour photom
 
 ## Overview
 
+MuSCAT2 photometry pipeline calculates aperture photometry for a set of aperture sizes. The transit analysis pipeline
+
 1. Selects the optimal aperture sizes based on noise characteristics
 2. Carries out multicolour transit modelling using Gaussian processes (GPs) for systematics
+3. Creates plots for the light curves, systematics, and parameter posteriors (parameter-parameter joint plots and marginal posteriors)
 
 ## Requirements
 
