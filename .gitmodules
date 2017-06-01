@@ -1,0 +1,3 @@
+[submodule "ext/oec"]
+	path = ext/oec
+	url = https://github.com/OpenExoplanetCatalogue/open_exoplanet_catalogue.git
