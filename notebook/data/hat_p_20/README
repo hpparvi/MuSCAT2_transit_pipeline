@@ -1,0 +1,83 @@
+README for the light curves and tools for MuSCAT/MuSCAT2
+Written by Akihiko Fukui, July 3, 2017
+
+
+(1) File name of the light curves 
+
+  Each file is named by the following format:
+
+  lc[type(f or m)]_[instrument]_[band]_[target name]_[date]_t[target star ID]_c[comparison star IDs]_r[range of aperture radii].bjd.dat
+
+  e.g., 
+    lcf_msct_g_hatp12_170124_t1_c23_r28-36.bjd.dat
+
+    meanings:
+      type: f 
+            (f: flux scale, m: magnitude scale)
+      instrument: msct
+      band: g
+      target name: hatp12
+      date: 170124
+      target star ID: 1
+      comparison star IDs: 2 & 3
+      range of aperture radii: 28--36 (pix)
+
+  * ".bjd." means that all time stamps were converted into BJD(TDB).
+
+
+(2) Format of type "f" (flux scale) light curves 
+
+  column1: Time (BJD_TDB-2450000)
+  column2: Airmass
+  column3: Mean sky background for all stars (ADU/pix)
+  column4: Relative stellar displacement in X direction (pixel)
+  column5: Relative stellar displacement in Y direction (pixel)
+  column6: Mean FWHM of stellar PSFs (pixel)
+  column7: Peak count of the brightest star (ADU)
+  column8: Frame name
+  column(9+i*2): Relative, normalized (so that the median is equal to unity), and un-detrended flux for the given aperture radius 
+  column(9+i*2+1): Theoretical 1-sigma uncertainty of the relative flux for the given aperture radius (including photon noises of the stars, sky background noises, scintillation noises, readout noises, and dark noises) 
+
+
+(3) Format of type "m" (magnitude scale) light curves
+  
+  column1: Time (BJD_TDB-2450000)
+  column2: Airmass
+  column3: Mean sky background for all stars ( mag = -2.5*log(sky(ADU)) )
+  column4: Relative stellar displacement in X direction (pixel)
+  column5: Relative stellar displacement in Y direction (pixel)
+  column6: Mean FWHM of stellar PSFs (pixel)
+  column7: Peak count of the brightest star ( mag = -2.5*log(peak(ADU)) )
+  column8: Frame name
+  column(9+i*3): raw magnitude of the target star for the given aperture radius, calculated by mag_t = -2.5*log(raw flux(ADU)) 
+  column(9+i*3+1): raw magnitude of the ensemble of comparison stars for the given aperture radius, calculated by mag_c = -2.5*log(raw flux(ADU)) 
+  column(9+i*3+2): Theoretical 1-sigma uncertainty of the magnitude difference between the target and compariosn stars for the given aperture radius, calculated by mag_t-c_err = sqrt(mag_t_err^2 + mag_c_err^2)
+ 
+  The "raw magnitude" light curve can be used to partly correct the second-order extinction effect by fiting the coefficient of mag_c (without using approximated airmass values), which gives at least as well as, and in most cases better than, the conventional airmass correction to a relative, already-devided light curve. See Equation (8) of Fukui et al. 2016b:
+    http://adsabs.harvard.edu/abs/2016AJ....152..171F
+
+  This method is encouraged to be used as it is more physically motivated than the conventional airmass correction.
+
+
+(4) Useful tools to remove outliers
+
+  - list_outliers.pl
+    A tool to calculate outliers by searching for deviations from smoothing data (moving average) of any given input data, and list their frame names.
+    Type "perl list_outliers.pl" to see the usage.
+
+  - remove_outliers.pl
+    A tool to remove outliers from an input light curve.
+    Type "perl remove_outliers.pl" to see the usage.
+
+
+(5) A tool to make raw light curves for the "multi-band approach"
+
+  - mklc_multiband.pl
+
+    This tool will create raw mag-scale light curves of target star along with multi-band, raw mag-scale light curves of comparison stars. These light curves can be used to apply the "multi-band approach" to correcting the second-order extinction, described in Section 4.3.2 in Fukui et al. 2016, AJ, 152, 171: http://adsabs.harvard.edu/abs/2016AJ....152..171F
+    Type "perl mklc_multiband.pl" to see the usage.
+
+
+
+Please contact Akihiko Fukui (afukui@oao.nao.ac.jp) for any questions.
+
