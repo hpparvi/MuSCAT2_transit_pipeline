@@ -2,7 +2,8 @@ import warnings
 import math as mt
 
 from numpy import inf, sqrt, ones, hstack, zeros_like, median, floor, concatenate
-from scipy.stats import norm as N, uniform as U
+from numpy.random import uniform, normal
+from scipy.stats import norm as N, uniform as U, scoreatpercentile as sap
 
 from astropy.stats import sigma_clip
 
@@ -59,6 +60,8 @@ class LPFunction:
         self.time_offset = floor(self.times[0].min())
         self.t0 = t0     = self.t0_bjd - self.time_offset
         self.times       = [t - self.time_offset for t in self.times]
+        self.tno = tno = int(round((median(self.times[0]) - self.t0)/self.period))
+        self.t0 = t0     = self.t0 + self.period * tno
 
         self.compute_ot_masks()
 
@@ -67,8 +70,8 @@ class LPFunction:
         k2lims = array([0.8,1.2])*self.k**2
 
         psystem = [
-            GParameter('tc',  'zero_epoch',       'd',      N( t0, 0.020), (-inf, inf)),
-            GParameter('pr',  'period',           'd',      N( pr, 0.001), (   0, inf)),
+            GParameter('tc',  'zero_epoch',       'd',      N( t0,  2e-3), (-inf, inf)),
+            GParameter('pr',  'period',           'd',      N( pr,  1e-5), (   0, inf)),
             GParameter('k2',  'area_ratio',       'A_s',    U(   *k2lims), (   0, inf)),
             GParameter('rho', 'stellar_density',  'g/cm^3', U(1.0,   3.0), (   0, inf)),
             GParameter('b',   'impact_parameter', 'R_s',    U(0.0,   1.0), (   0,   1))]
@@ -135,9 +138,11 @@ class LPFunction:
         return masks
 
     def create_pv_population(self, npop=50):
-        pvp = self.ps.generate_pv_population(npop)
-        for i, p in enumerate(concatenate(self.compute_baseline_coeffs())):
-            pvp[:, self._sbl + i] = normal(p, 1e-3, pvp.shape[0])
+        pvp = self.ps.sample_from_prior(npop)
+        k2est = (1 - sap(concatenate(self.fluxes), 10))
+        pvp[:,2] = uniform(0.95*k2est, 1.05*k2est, pvp.shape[0])
+        #for i, p in enumerate(concatenate(self.compute_baseline_coeffs())):
+        #    pvp[:, self._sbl + i] = normal(p, 1e-3, pvp.shape[0])
         return pvp
 
     def compute_ot_masks(self):
