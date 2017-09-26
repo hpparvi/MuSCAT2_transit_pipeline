@@ -1,13 +1,69 @@
+import math as m
 from itertools import product
-from numpy import inf, array, zeros, unique
+from numpy import inf, array, zeros, unique, pi
+from numpy.random import normal, uniform
 import pandas as pd
 
-class DefaultPrior:
+from numba import jit, float64 as fd
+
+class Prior:
+    def __init__(self):
+        raise NotImplementedError
+
+    def logpdf(self, v):
+        raise NotImplementedError
+
+    def rvs(self, size):
+        raise NotImplementedError
+
+
+class DefaultPrior(Prior):
     def logpdf(self, v):
         return 0
 
     def rvs(self, size):
         return zeros(size)
+
+
+class NormalPrior(Prior):
+    def __init__(self, mean, std):
+        self.mean = float(mean)
+        self.std = float(std)
+        self._f1 = 1 / m.sqrt(2*pi*std**2)
+        self._lf1 = m.log(self._f1)
+        self._f2 = 1 / (2*std**2)
+
+    def logpdf(self, x):
+        return self._lf1 -self._f2*(x-self.mean)**2
+
+    def rvs(self, size=1):
+        return normal(self.mean, self.std, size)
+
+class UniformPrior(Prior):
+    def __init__(self, a, b):
+        self.a, self.b = a, b
+        self.lnc = m.log(b-a)
+
+    def logpdf(self, v):
+        return self.lnc if (self.a < v < self.b) else -inf
+
+    def rvs(self, size=1):
+        return uniform(self.a, self.b, size)
+
+
+class LogLogisticPrior(Prior):
+    def __init__(self, a, b):
+        self.a, self.b = a, b
+
+    def logpdf(self, v):
+        if not 1e-3 < v < 1.:
+            return -inf
+        else:
+            a,b = self.a, self.b
+            return m.log((b / a) * (v / a) ** (b - 1.) / (1. + (v / a) ** b) ** 2)
+
+    def rvs(self, size=1):
+        return uniform(1e-3, 1.0, size)
 
 class Parameter:
     def __init__(self, name, description='', unit='', prior=None, bounds=(-inf, inf), **kwargs):
