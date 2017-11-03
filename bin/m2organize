@@ -1,0 +1,14 @@
+#!/usr/bin/env python
+
+from argparse import ArgumentParser
+from muscat2ph.organizer import M2NightOrganizer
+
+if __name__ == '__main__':
+    ap = ArgumentParser()
+    ap.add_argument('rawdir', type=str)
+    ap.add_argument('orgdir', type=str)
+    ap.add_argument('-n', '--dry-run', action='store_true', dest='dry_run', default=False)
+    args = ap.parse_args()
+
+    mo = M2NightOrganizer(args.rawdir, args.orgdir)
+    mo.organize(args.dry_run)

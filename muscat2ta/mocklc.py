@@ -46,13 +46,11 @@ class MockLC:
 
         self.p = kwargs.get('p', None) or float(planet.P)
         self.k = kwargs.get('k', None) or float(planet.R.rescale('R_s') / star.R)
-        self.a = float(planet.getParam('semimajoraxis').rescale('R_s') / star.R)
+        self.a = kwargs.get('a', None) or float(planet.getParam('semimajoraxis').rescale('R_s') / star.R)
         self.i = float(planet.getParam('inclination').rescale('rad'))
         self.b = kwargs.get('b', self.a * cos(self.i))
         self.i = arccos(self.b / self.a)
         self.duration_d = Qty(of.duration_eccentric_f(self.p, self.k, self.a, self.i, 0, 0, 1), 'd')
-
-        print(self.b, kwargs.get('b', None), kwargs)
 
         # Contamination
         # -------------
@@ -146,3 +144,4 @@ class MockLC:
         pl.setp(axs[1, :], xlabel='Time [h]')
         pl.setp(axs, xlim=self.time_h[[0, -1]])
         fig.tight_layout()
+        return fig
