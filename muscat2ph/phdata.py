@@ -21,7 +21,7 @@ class PhotometryData:
         self.fstart = max(0, fstart)
         self.fend = min(self.nframes, fend)
         self.iapt = 0
-
+        self.lin_formula = 'mjd + sky + x + y + entropy + airmass'
 
     @property
     def flux(self):
@@ -62,7 +62,7 @@ class PhotometryData:
 
     @property
     def linear_trend(self):
-        dm = patsy.dmatrix('mjd + sky + x + y + entropy + airmass', self._auxr.to_pandas())
+        dm = patsy.dmatrix(self.lin_formula, self._auxr.to_pandas())
         a,_,_,_ = lstsq(dm, self.relative_flux)
         return dot(dm, a)
 
