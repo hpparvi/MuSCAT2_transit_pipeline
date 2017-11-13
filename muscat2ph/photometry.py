@@ -130,6 +130,11 @@ class ScienceFrame(ImageFrame):
         bhigh = (self._aps.positions > boundary).all(1)
         return blow & bhigh
 
+    def set_stars(self, stars):
+        self._stars = stars.copy()
+        self.nstars = self._stars.shape[0]
+        self._aps = CircularAperture(stars[['xcentroid', 'ycentroid']].values, 15)
+
     def find_stars(self, treshold=99.5, maxn=10):
         objects = mf(self.reduced, 6) > sap(self.reduced, treshold)
         labels, nl = label(objects)
@@ -143,10 +148,7 @@ class ScienceFrame(ImageFrame):
 
         centers = flip(array([com(self.reduced - median(self.reduced), sorted_labels, i)
                               for i in range(1, maxn+1)]), 1)
-        self._aps = CircularAperture(centers, 15)
-        self._stars = pd.DataFrame(centers, columns='xcentroid ycentroid'.split())
-        self.nstars = self._stars.shape[0]
-
+        self.set_stars(pd.DataFrame(centers, columns='xcentroid ycentroid'.split()))
 
     def find_stars_dao(self, fwhm=10, treshold=90, maxn=10):
         self._sfinder = DAOStarFinder(sap(self.reduced, treshold), fwhm, exclude_border=True)
