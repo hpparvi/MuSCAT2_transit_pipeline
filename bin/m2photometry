@@ -19,7 +19,7 @@ passbands = 'g r i z_s'.split()
 N = lambda a: a/median(a)
 
 
-def aperture_photometry(root, files, pb, outfile=None, istart=0, iend=inf, nstars=10,
+def aperture_photometry(root, files, pb, outfile=None, istart=0, iend=inf, nstars=10, stars=None,
                         apertures=(10, 14, 18, 22), fwhm=10, save_datacubes=False):
     istart = max(0, istart)
     iend = min(iend, len(files))
@@ -27,12 +27,12 @@ def aperture_photometry(root, files, pb, outfile=None, istart=0, iend=inf, nstar
 
     im = ScienceFrame(root, pb)
     im.load_fits(files[istart])
-    im.find_stars(maxn=nstars)
+    if stars is None:
+        im.find_stars(maxn=nstars)
+        im.remove_stars_near_edges()
+    else:
+        im.set_stars(stars)
     im.centroid_com()
-
-    im.remove_stars_near_edges()
-    im.remove_stars([0, 4])
-
     nstars = im.nstars
 
     x0 = im._stars.xcentroid.copy()
@@ -105,6 +105,8 @@ if __name__ == '__main__':
     ap.add_argument('--end-frame', type=int, default=inf)
     ap.add_argument('--plot-only', action='store_false', dest='do_photometry', default=True)
     ap.add_argument('--save-datacubes', action='store_true', default=False)
+    ap.add_argument('--save-stars', action='store_true', default=False)
+    ap.add_argument('--load-stars', action='store_true', default=False)
     ap.add_argument('-n', '--dry-run', action='store_true', dest='dry_run', default=False)
     args = ap.parse_args()
 
@@ -112,15 +114,24 @@ if __name__ == '__main__':
     rdir = Path(args.result_dir)
 
     files = {pb : list(root.joinpath('obj', args.object, pb).glob('*')) for pb in 'g r i z_s'.split()}
-
     pbs = [args.passband] if args.passband != 'all' else 'g r i z_s'.split()
 
-    for pb in pbs:
+    for ipb, pb in enumerate(pbs):
         im = ScienceFrame(root, pb)
         im.load_fits(files[pb][args.start_frame])
         im.find_stars(maxn=10, treshold=95.)
         im.centroid_com()
         im.remove_stars_near_edges()
+
+        if args.save_stars and ipb==0:
+            im._stars.to_csv('{}_stars.csv'.format(args.object))
+
+        if args.load_stars:
+            stars = pd.read_csv('{}_stars.csv'.format(args.object), index_col=0)
+            im.set_stars(stars)
+            im.centroid_com()
+        else:
+            stars = None
 
         fig1,ax1 = pl.subplots(figsize=(7,7))
         ax1 = im.plot_reduced(minp=90, offset=10, ax=ax1)
@@ -141,5 +152,5 @@ if __name__ == '__main__':
 
         if args.do_photometry:
             aperture_photometry(root, files[pb], pb, '{}-{}'.format(args.object, pb),
-                                args.start_frame, args.end_frame, args.n_stars,
+                                args.start_frame, args.end_frame, args.n_stars, stars=stars,
                                 save_datacubes=args.save_datacubes)
