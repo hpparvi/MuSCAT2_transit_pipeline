@@ -19,19 +19,15 @@ passbands = 'g r i z_s'.split()
 N = lambda a: a/median(a)
 
 
-def aperture_photometry(root, files, pb, outfile=None, istart=0, iend=inf, nstars=10, stars=None,
-                        apertures=(10, 14, 18, 22), fwhm=10, save_datacubes=False):
+def aperture_photometry(root, files, pb, stars, outfile=None, istart=0, iend=inf,
+                        apertures=(10, 14, 18, 22), save_datacubes=False):
     istart = max(0, istart)
     iend = min(iend, len(files))
     nframes = iend - istart
 
     im = ScienceFrame(root, pb)
     im.load_fits(files[istart])
-    if stars is None:
-        im.find_stars(maxn=nstars)
-        im.remove_stars_near_edges()
-    else:
-        im.set_stars(stars)
+    im.set_stars(stars)
     im.centroid_com()
     nstars = im.nstars
 
@@ -98,6 +94,7 @@ if __name__ == '__main__':
     ap.add_argument('datadir', type=str)
     ap.add_argument('object', type=str)
     ap.add_argument('passband', choices='g r i z_s all'.split())
+    ap.add_argument('--reference-passband', choices='g r i z_s'.split(), default='r')
     ap.add_argument('--result-dir', type=str, default='.')
     ap.add_argument('--n-stars', type=int, default=10)
     ap.add_argument('--edge-limit', type=float, default=30)
@@ -119,38 +116,44 @@ if __name__ == '__main__':
     for ipb, pb in enumerate(pbs):
         im = ScienceFrame(root, pb)
         im.load_fits(files[pb][args.start_frame])
-        im.find_stars(maxn=10, treshold=95.)
-        im.centroid_com()
-        im.remove_stars_near_edges()
 
-        if args.save_stars and ipb==0:
-            im._stars.to_csv('{}_stars.csv'.format(args.object))
-
+        # Find, save, and load tn brightest stars
+        # ---------------------------------------
         if args.load_stars:
             stars = pd.read_csv('{}_stars.csv'.format(args.object), index_col=0)
             im.set_stars(stars)
             im.centroid_com()
         else:
-            stars = None
+            im.find_stars(maxn=args.n_stars)
+            im.centroid_com()
+            im.remove_stars_near_edges()
+            stars = im._stars
+            if args.save_stars and ipb==0:
+                im._stars.to_csv('{}_stars.csv'.format(args.object))
 
+        # Masterframe plot with apertures
+        # -------------------------------
         fig1,ax1 = pl.subplots(figsize=(7,7))
         ax1 = im.plot_reduced(minp=90, offset=10, ax=ax1)
         fig1.savefig('{}-{}.png'.format(args.object, pb))
         fig1.tight_layout()
 
-        asky = CircularAnnulus(im._aps.positions, 16, 25)
+        # Individual aperture plots
+        # -------------------------
+        asky = CircularAnnulus(im._aps.positions, 22, 32)
         fig2, axs2 = pl.subplots(1, 7, figsize=(11, 2.5), sharex=True, sharey=True)
         for ax, m, p in zip(axs2, asky.to_mask(), asky.positions):
             d = m.cutout(im.reduced)
             ax.imshow(d, norm=sn(d, 'log'))
             o = array([m.slices[1].start, m.slices[0].start])
-            ask = CircularAnnulus(p - o, 16, 25)
-            [CircularAperture(p - o, r).plot(ax=ax, ls='--') for r in (10, 12, 14, 16)]
+            ask = CircularAnnulus(p - o, 22, 32)
+            [CircularAperture(p - o, r).plot(ax=ax, ls='--') for r in (10, 14, 18, 22)]
             ask.plot(ax=ax)
         fig2.tight_layout()
         fig2.savefig('{}-{}-apertures.png'.format(args.object, pb))
 
+        # Photometry
+        # ----------
         if args.do_photometry:
-            aperture_photometry(root, files[pb], pb, '{}-{}'.format(args.object, pb),
-                                args.start_frame, args.end_frame, args.n_stars, stars=stars,
-                                save_datacubes=args.save_datacubes)
+            aperture_photometry(root, files[pb], pb, stars, '{}-{}'.format(args.object, pb),
+                                args.start_frame, args.end_frame, save_datacubes=args.save_datacubes)
