@@ -266,30 +266,3 @@ class ScienceFrame(ImageFrame):
         super().plot(self.dark._data, axs[1,1], title='Masterdark')
         fig.tight_layout()
         return fig, axs
-
-
-
-
-class PhotometryFrame:
-    def __init__(self, name, xlims, ylims, apertures, sradius):
-        self.name = name
-        self.slice = s_[ylims[0]:ylims[1], xlims[0]:xlims[1]]
-        self.apertures = np.asarray(apertures)
-        self.sradius = sradius
-        self.napt = self.apertures.size
-
-    def __call__(self, data, plot=False):
-        frame = data[self.slice]
-        cnt = self.centroid(frame)
-        flux = zeros(self.napt)
-        for i,aperture in enumerate(self.apertures):
-            aobj = CircularAperture(cnt, aperture)
-            asky = CircularAnnulus(cnt, aperture, self.sradius)
-            flux[i] = aobj.do_photometry(frame)[0] - asky.do_photometry(frame)[0] / asky.area() * aobj.area()
-        return flux
-
-    def centroid(self, d):
-        dm = mf(d, 5) > sap(d, 80)
-        labels, nl = label(dm)
-        l = argmax(labeled_comprehension(d, labels, arange(1, nl + 1), sum, np.float64, -1)) + 1
-        return centroid_com(d, ~(labels == l))
