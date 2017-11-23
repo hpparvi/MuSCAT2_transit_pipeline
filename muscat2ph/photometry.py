@@ -1,6 +1,9 @@
 import numpy as np
+import xarray as xa
+
 from astropy.io import fits as pf
 from astropy.visualization import simple_norm as sn
+from astropy.stats import sigma_clipped_stats
 from matplotlib import cm
 from matplotlib.pyplot import subplots
 from numpy import *
@@ -266,3 +269,62 @@ class ScienceFrame(ImageFrame):
         super().plot(self.dark._data, axs[1,1], title='Masterdark')
         fig.tight_layout()
         return fig, axs
+
+
+def apt_values(apt, im):
+    m = apt.to_mask()[0]
+    return m.cutout(im.reduced)[m.array.astype('bool')]
+
+
+class Star:
+    def __init__(self, x, y, apertures, wsky=10):
+        self._aobj = [CircularAperture([x, y], r) for r in apertures]
+        self._asky = CircularAnnulus([x, y], apertures[-1], apertures[-1] + wsky)
+        self.napt = napt = len(apertures)
+
+        self._flux = xa.DataArray(zeros(napt), name='flux', dims='aperture',
+                                  coords={'aperture': list(apertures)})
+        self._apt_entropy = xa.DataArray(zeros(napt), name='aperture_entropy', dims='aperture',
+                                         coords={'aperture': list(apertures)})
+        self._centroid = xa.DataArray(self._asky.positions[0], name='centroid', dims='axis',
+                                      coords={'axis': ['x', 'y']})
+        self._sky_entropy = None
+        self._sky_median = None
+
+    @property
+    def flux(self):
+        return self._flux.copy()
+
+    @property
+    def apt_entropy(self):
+        return self._apt_entropy.copy()
+
+    def centroid(self, im, r=20, pmin=80, pmax=95, niter=1):
+        apt = CircularAperture(self._aobj[0].positions, r)
+        for iiter in range(niter):
+            mask = apt.to_mask()[0]
+            d = mask.cutout(im.reduced)
+            p = percentile(d, [pmin, pmax])
+            d2 = clip(d, *p) - p[0]
+            c = com(d2)
+            apt.positions[:] = flip(c, 0) + array([mask.slices[1].start, mask.slices[0].start])
+        self._asky.positions[:] = apt.positions
+        for ao in self._aobj:
+            ao.positions[:] = apt.positions
+
+    def estimate_sky(self, im):
+        sky_median = sigma_clipped_stats(apt_values(self._asky, im), sigma=4)[1]
+        return sky_median
+
+    def estimate_entropy(self, im):
+        sky_entropy = entropy(apt_values(self._asky, im))
+        obj_entropy = array([entropy(apt_values(apt, im)) for apt in self._aobj])
+        return obj_entropy, sky_entropy
+
+    def photometry(self, im):
+        self.centroid(im)
+        self._centroid[:] = self._asky.positions[0]
+        self._sky_median = self.estimate_sky(im)
+        self._apt_entropy[:], self._sky_entropy = self.estimate_entropy(im)
+        self._flux[:] = [ap.do_photometry(im.reduced)[0] - self._sky_median * ap.area() for ap in self._aobj]
+        return self.flux, self._sky_median, self.apt_entropy, self._sky_entropy, self._centroid

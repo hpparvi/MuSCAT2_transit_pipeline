@@ -1,29 +1,28 @@
 #!/usr/bin/env python
 
-from pathlib import Path
 from argparse import ArgumentParser
-from numpy import *
-import matplotlib.pyplot as pl
-from muscat2ph.photometry import ScienceFrame
 
+import matplotlib.pyplot as pl
 import pandas as pd
-from astropy.io import fits as pf
+import xarray as xa
+from astropy.visualization import simple_norm as sn
+from numpy import *
+from pathlib import Path
+from photutils import CircularAperture, CircularAnnulus
 from tqdm import tqdm
 
-from photutils import CircularAperture, CircularAnnulus
-from astropy.stats import sigma_clipped_stats
-from astropy.visualization import simple_norm as sn
-import xarray as xa
+from muscat2ph.photometry import ScienceFrame, Star
 
 passbands = 'g r i z_s'.split()
 N = lambda a: a/median(a)
 
 
 def aperture_photometry(root, files, pb, stars, outfile=None, istart=0, iend=inf,
-                        apertures=(10, 14, 18, 22), save_datacubes=False):
+                        apertures=(10, 15, 20), save_datacubes=False, parallel=False):
     istart = max(0, istart)
     iend = min(iend, len(files))
     nframes = iend - istart
+    napt = len(apertures)
 
     im = ScienceFrame(root, pb)
     im.load_fits(files[istart])
@@ -31,62 +30,101 @@ def aperture_photometry(root, files, pb, stars, outfile=None, istart=0, iend=inf
     im.centroid_com()
     nstars = im.nstars
 
-    x0 = im._stars.xcentroid.copy()
-    y0 = im._stars.ycentroid.copy()
-    sk = zeros(nstars)
+    stars = [Star(*s[['xcentroid','ycentroid']].values, apertures=apertures) for _, s in im._stars.iterrows()]
 
-    flux = xa.DataArray(zeros([nframes, nstars, len(apertures)]),
-                        dims='frame star aperture'.split(),
-                        coords={'frame': arange(istart, iend),
-                                'star': arange(nstars),
-                                'aperture': list(apertures)})
+    cframe = arange(istart, iend)
+    cstar = arange(nstars)
+    capt = list(apertures)
+    caxis = ['x','y']
 
-    aux = xa.DataArray(zeros([nframes, 7]),
+    aux = xa.DataArray(zeros([nframes, 3]),
                        dims='frame quantity'.split(),
-                       coords={'frame': arange(istart, iend),
-                               'quantity': 'sky x y entropy airmass exptime mjd'.split()})
+                       coords={'frame': cframe,
+                               'quantity': 'airmass exptime mjd'.split()})
 
-    if save_datacubes:
-        shape = CircularAperture(im._aps.positions, apertures[-1]).to_mask()[0].shape
-        dcubes = [zeros([nframes, shape[0], shape[1]]) for i in range(nstars)]
+    flux = xa.DataArray(zeros([nframes, nstars, napt]), name='flux',
+                        dims='frame star aperture'.split(),
+                        coords={'frame': cframe,
+                                'star': cstar,
+                                'aperture': capt})
 
-    for i, f in enumerate(tqdm(files[istart:iend])):
-        ifr = i + istart
+    eobj = xa.DataArray(zeros([nframes, nstars, napt]),
+                        dims='frame star aperture'.split(),
+                        name='aperture_entropy',
+                        coords={'frame': cframe,
+                                'star': cstar,
+                                'aperture': capt})
+
+    msky = xa.DataArray(zeros([nframes, nstars]), name='sky_median',
+                        dims='frame star'.split(),
+                        coords={'frame': cframe,
+                                'star': cstar})
+
+    esky = xa.DataArray(zeros([nframes, nstars]), name='sky_entropy',
+                        dims='frame star'.split(),
+                        coords={'frame': cframe,
+                                'star': cstar})
+
+    pos = xa.DataArray(zeros([nframes, nstars, 2]), name='centroids',
+                       dims='frame star axis'.split(),
+                       coords={'frame': cframe,
+                               'star': cstar,
+                               'axis':caxis})
+
+    #if save_datacubes:
+    #    shape = CircularAperture(im._aps.positions, apertures[-1]).to_mask()[0].shape
+    #    dcubes = [zeros([nframes, shape[0], shape[1]]) for i in range(nstars)]
+
+    if parallel:
+        from ipyparallel import Client
+        rc = Client()
+        dv = rc[:]
+        dv.execute("from muscat2ph.photometry import ScienceFrame, Star")
+        dv.push(dict(im=im, files=files), block=True)
+        dv.scatter('lstars', stars, block=True)
+
+        @dv.remote(block=True)
+        def phot(iframe):
+            im.load_fits(files[iframe])
+            rs = [s.photometry(im) for s in lstars]
+
+    for iframe, f in enumerate(tqdm(files[istart:iend])):
+        ifr = iframe + istart
         im.load_fits(f)
-        im.centroid_com(niter=3)
-        skyaps = CircularAnnulus(im._aps.positions, apertures[-1], apertures[-1] + 10)
-        skymasks = skyaps.to_mask()
 
-        aux.loc[ifr, 'x'] = 0. if i == 0 else (im._stars.xcentroid - x0).mean()
-        aux.loc[ifr, 'y'] = 0. if i == 0 else (im._stars.ycentroid - y0).mean()
-        aux.loc[ifr, 'entropy'] = im._stars.entropy.mean()
+        if parallel:
+            dv.execute("im.load_fits(files[{}])".format(iframe), block=True)
+            dv.execute('rs = [s.photometry(im) for s in lstars]', block=True)
+            #phot(iframe)
+            rs = dv.gather('rs')
+            #rs = dv.map_sync(lambda s: s.photometry(im), stars)
+        else:
+            rs = list(map(lambda s: s.photometry(im), stars))
+
+        for istar, (fobj, cmsky, ceobj, cesky, ccnt) in enumerate(rs):
+            flux[iframe, istar, :] = fobj
+            eobj[iframe, istar, :] = ceobj
+            msky[iframe, istar] = cmsky
+            esky[iframe, istar] = cesky
+            pos[iframe, istar] = ccnt
+
         aux.loc[ifr, 'airmass'] = im._header['airmass']
         aux.loc[ifr, 'exptime'] = im._header['exptime']
         aux.loc[ifr, 'mjd'] = im._header['mjd-strt'] + 0.5 * im._header['exptime'] / 24 / 60 / 60
 
-        for istar, m in enumerate(skymasks):
-            d = m.cutout(im.reduced)[m.array.astype('bool')]
-            sk[istar] = sigma_clipped_stats(d, sigma=4)[1]
-        aux.loc[ifr, 'sky'] = sk.mean()
-
-        for iapt, r in enumerate(apertures):
-            aps = CircularAperture(im._aps.positions, r)
-            masks = aps.to_mask()
-            flux[i, :, iapt] = aps.do_photometry(im.reduced)[0] - sk * aps.area()
-
-        if save_datacubes:
-            for iapt, m in enumerate(masks):
-                dcubes[iapt][i, :, :] = m.cutout(im.reduced)
-
+    #     if save_datacubes:
+    #         for iapt, m in enumerate(masks):
+    #             dcubes[iapt][i, :, :] = m.cutout(im.reduced)
+    #
     if outfile:
-        ds = xa.Dataset({'flux': flux, 'aux': aux})
+        ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=pos, aux=aux))
         ds.to_netcdf(outfile + '.nc')
+    #
+    # if save_datacubes:
+    #     hdul = pf.HDUList([pf.PrimaryHDU()] + [pf.ImageHDU(d) for d in dcubes])
+    #     hdul.writeto(outfile + '-dc.fits', overwrite=True)
 
-    if save_datacubes:
-        hdul = pf.HDUList([pf.PrimaryHDU()] + [pf.ImageHDU(d) for d in dcubes])
-        hdul.writeto(outfile + '-dc.fits', overwrite=True)
-
-    return flux, aux
+    #return flux, aux
 
 
 if __name__ == '__main__':
@@ -96,11 +134,12 @@ if __name__ == '__main__':
     ap.add_argument('passband', choices='g r i z_s all'.split())
     ap.add_argument('--reference-passband', choices='g r i z_s'.split(), default='r')
     ap.add_argument('--result-dir', type=str, default='.')
-    ap.add_argument('--n-stars', type=int, default=10)
+    ap.add_argument('--n-stars', type=int, default=8)
     ap.add_argument('--edge-limit', type=float, default=30)
     ap.add_argument('--start-frame', type=int, default=0)
     ap.add_argument('--end-frame', type=int, default=inf)
     ap.add_argument('--plot-only', action='store_false', dest='do_photometry', default=True)
+    ap.add_argument('--parallel', action='store_true', default=False)
     ap.add_argument('--save-datacubes', action='store_true', default=False)
     ap.add_argument('--save-stars', action='store_true', default=False)
     ap.add_argument('--load-stars', action='store_true', default=False)
@@ -156,4 +195,5 @@ if __name__ == '__main__':
         # ----------
         if args.do_photometry:
             aperture_photometry(root, files[pb], pb, stars, '{}-{}'.format(args.object, pb),
-                                args.start_frame, args.end_frame, save_datacubes=args.save_datacubes)
+                                args.start_frame, args.end_frame, parallel=args.parallel,
+                                save_datacubes=args.save_datacubes)

@@ -11,6 +11,8 @@ class PhotometryData:
             self._ds = ds.load()
         self._flux = self._ds.flux
         self._aux = self._ds.aux
+        self._cnt = self._ds.centroid
+        self._sky = self._ds.sky_median
 
         self.nframes = self._flux.shape[0]
         self.nobj = self._flux.shape[1]
@@ -41,19 +43,19 @@ class PhotometryData:
 
     @property
     def sky(self):
-        return self._auxr.loc[:, 'sky']
+        return self._sky.mean('star')
 
     @property
     def entropy(self):
-        return self._auxr.loc[:, 'entropy']
+        return self._ds.obj_entropy[self.fstart:self.fend,:,-1].mean('star')
 
     @property
     def xshift(self):
-        return self._auxr.loc[:, 'x']
+        return (self._cnt[self.fstart:self.fend,:,0] - self._cnt[self.fstart,:,0]).mean('star')
 
     @property
     def yshift(self):
-        return self._auxr.loc[:, 'y']
+        return (self._cnt[self.fstart:self.fend,:,1] - self._cnt[self.fstart,:,1]).mean('star')
 
     @property
     def relative_flux(self):
