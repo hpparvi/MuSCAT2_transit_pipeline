@@ -4,6 +4,7 @@ import xarray as xa
 from astropy.io import fits as pf
 from astropy.visualization import simple_norm as sn
 from astropy.stats import sigma_clipped_stats
+from astropy.wcs import WCS
 from matplotlib import cm
 from matplotlib.pyplot import subplots
 from numpy import *
@@ -119,6 +120,7 @@ class ScienceFrame(ImageFrame):
         with pf.open(filename) as f:
             self._data = f[0].data.astype('d')
             self._header = f[0].header
+            self.wcs = WCS(self._header)
 
     @property
     def reduced(self):

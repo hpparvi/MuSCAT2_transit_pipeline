@@ -159,7 +159,8 @@ if __name__ == '__main__':
         # Find, save, and load tn brightest stars
         # ---------------------------------------
         if args.load_stars:
-            stars = pd.read_csv('{}_stars.csv'.format(args.object), index_col=0)
+            stars_sky = pd.read_csv('{}_stars.csv'.format(args.object), index_col=0)
+            stars = im.wcs.all_world2pix(stars_sky, 1)
             im.set_stars(stars)
             im.centroid_com()
         else:
@@ -167,8 +168,9 @@ if __name__ == '__main__':
             im.centroid_com()
             im.remove_stars_near_edges()
             stars = im._stars
+            stars_sky = pd.DataFrame(im.wcs.all_pix2world(stars.values, 1), columns='RA Dec'.split())
             if args.save_stars and ipb==0:
-                im._stars.to_csv('{}_stars.csv'.format(args.object))
+                im._stars_sky.to_csv('{}_stars.csv'.format(args.object))
 
         # Masterframe plot with apertures
         # -------------------------------
