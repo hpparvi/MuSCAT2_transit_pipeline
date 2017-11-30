@@ -1,10 +1,14 @@
+import warnings
+
 import numpy as np
 import xarray as xa
+
 
 from astropy.io import fits as pf
 from astropy.visualization import simple_norm as sn
 from astropy.stats import sigma_clipped_stats
-from astropy.wcs import WCS
+from astropy.coordinates import SkyCoord
+from astropy.wcs import WCS, FITSFixedWarning
 from matplotlib import cm
 from matplotlib.pyplot import subplots
 from numpy import *
@@ -117,9 +121,16 @@ class ScienceFrame(ImageFrame):
         self._psf_fit = None
 
     def load_fits(self, filename):
+        filename = Path(filename)
         with pf.open(filename) as f:
             self._data = f[0].data.astype('d')
             self._header = f[0].header
+        wcsfile = filename.parent.joinpath(filename.stem+'.wcs')
+        if wcsfile.exists():
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', FITSFixedWarning)
+                self.wcs = WCS(pf.getheader(wcsfile))
+        else:
             self.wcs = WCS(self._header)
 
     @property
@@ -279,9 +290,10 @@ def apt_values(apt, im):
 
 
 class Star:
-    def __init__(self, x, y, apertures, wsky=10):
-        self._aobj = [CircularAperture([x, y], r) for r in apertures]
-        self._asky = CircularAnnulus([x, y], apertures[-1], apertures[-1] + wsky)
+    def __init__(self, ra, dec, apertures, wsky=10):
+        self.coords = SkyCoord(ra, dec, unit='deg', frame='fk5')
+        self._aobj = [CircularAperture([0., 0.], r) for r in apertures]
+        self._asky = CircularAnnulus([0., 0.], apertures[-1], apertures[-1] + wsky)
         self.napt = napt = len(apertures)
 
         self._flux = xa.DataArray(zeros(napt), name='flux', dims='aperture',
@@ -302,7 +314,10 @@ class Star:
         return self._apt_entropy.copy()
 
     def centroid(self, im, r=20, pmin=80, pmax=95, niter=1):
-        apt = CircularAperture(self._aobj[0].positions, r)
+        cpix = array(self.coords.to_pixel(im.wcs))
+        if any(cpix < 0.) or any(cpix > im._data.shape[0]):
+            raise ValueError("Star outside the image FOV.")
+        apt = CircularAperture(cpix, r)
         for iiter in range(niter):
             mask = apt.to_mask()[0]
             d = mask.cutout(im.reduced)
@@ -324,9 +339,17 @@ class Star:
         return obj_entropy, sky_entropy
 
     def photometry(self, im):
-        self.centroid(im)
-        self._centroid[:] = self._asky.positions[0]
-        self._sky_median = self.estimate_sky(im)
-        self._apt_entropy[:], self._sky_entropy = self.estimate_entropy(im)
-        self._flux[:] = [ap.do_photometry(im.reduced)[0] - self._sky_median * ap.area() for ap in self._aobj]
+        try:
+            self.centroid(im)
+            self._centroid[:] = self._asky.positions[0]
+            self._sky_median = self.estimate_sky(im)
+            self._apt_entropy[:], self._sky_entropy = self.estimate_entropy(im)
+            self._flux[:] = [ap.do_photometry(im.reduced)[0] - self._sky_median * ap.area() for ap in self._aobj]
+        except ValueError:
+            self._centroid[:] = nan
+            self._sky_median = nan
+            self._sky_entropy = nan
+            self._apt_entropy[:] = nan
+            self._flux[:] = nan
+
         return self.flux, self._sky_median, self.apt_entropy, self._sky_entropy, self._centroid

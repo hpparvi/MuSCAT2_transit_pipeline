@@ -26,11 +26,11 @@ def aperture_photometry(root, files, pb, stars, outfile=None, istart=0, iend=inf
 
     im = ScienceFrame(root, pb)
     im.load_fits(files[istart])
-    im.set_stars(stars)
-    im.centroid_com()
-    nstars = im.nstars
+    #im.set_stars(stars)
+    #im.centroid_com()
+    nstars = stars.shape[0]
 
-    stars = [Star(*s[['xcentroid','ycentroid']].values, apertures=apertures) for _, s in im._stars.iterrows()]
+    stars = [Star(*s[['RA','Dec']].values, apertures=apertures) for _, s in stars.iterrows()]
 
     cframe = arange(istart, iend)
     cstar = arange(nstars)
@@ -149,7 +149,7 @@ if __name__ == '__main__':
     root = Path(args.datadir)
     rdir = Path(args.result_dir)
 
-    files = {pb : list(root.joinpath('obj', args.object, pb).glob('*')) for pb in 'g r i z_s'.split()}
+    files = {pb : list(root.joinpath('obj', args.object, pb).glob('MCT2?_*.fits')) for pb in 'g r i z_s'.split()}
     pbs = [args.passband] if args.passband != 'all' else 'g r i z_s'.split()
 
     for ipb, pb in enumerate(pbs):
@@ -168,9 +168,9 @@ if __name__ == '__main__':
             im.centroid_com()
             im.remove_stars_near_edges()
             stars = im._stars
-            stars_sky = pd.DataFrame(im.wcs.all_pix2world(stars.values, 1), columns='RA Dec'.split())
+            stars_sky = pd.DataFrame(im.wcs.all_pix2world(stars['xcentroid ycentroid'.split()].values, 1), columns='RA Dec'.split())
             if args.save_stars and ipb==0:
-                im._stars_sky.to_csv('{}_stars.csv'.format(args.object))
+                stars_sky.to_csv('{}_stars.csv'.format(args.object))
 
         # Masterframe plot with apertures
         # -------------------------------
@@ -196,6 +196,6 @@ if __name__ == '__main__':
         # Photometry
         # ----------
         if args.do_photometry:
-            aperture_photometry(root, files[pb], pb, stars, '{}-{}'.format(args.object, pb),
+            aperture_photometry(root, files[pb], pb, stars_sky, '{}-{}'.format(args.object, pb),
                                 args.start_frame, args.end_frame, parallel=args.parallel,
                                 save_datacubes=args.save_datacubes)
