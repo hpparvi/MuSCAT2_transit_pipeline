@@ -1,10 +1,15 @@
-# MuSCAT2 transit analysis pipeline
+# MuSCAT2 photometry and transit analysis pipelines
 
-A Python-based transit analysis pipeline for MuSCAT2-observed multicolour photometry developed in collaboration with the [Instituto de Astrofísica de Canarias (IAC)](http://www.iac.es), University of Tokyo (UT), [National Astronomical Observatory of Japan (NAOJ)](http://www.nao.ac.jp), [The Graduate University for Advanced Studies (SOKENDAI)](http://guas-astronomy.jp), and [Astrobiology Center (ABC)](http://abc-nins.jp).
+Python-based photometry and transit analysis pipelines for MuSCAT2 developed in collaboration with the [Instituto de Astrofísica de Canarias (IAC)](http://www.iac.es), University of Tokyo (UT), [National Astronomical Observatory of Japan (NAOJ)](http://www.nao.ac.jp), [The Graduate University for Advanced Studies (SOKENDAI)](http://guas-astronomy.jp), and [Astrobiology Center (ABC)](http://abc-nins.jp).
 
 ## Overview
 
-MuSCAT2 photometry pipeline calculates aperture photometry for a set of aperture sizes. The transit analysis pipeline
+### Photometry
+
+MuSCAT2 photometry pipeline calculates aperture photometry for the $n$ brightests stars in the field.
+
+### Transit Analysis
+ The transit analysis pipeline
 
 1. Selects the optimal aperture sizes based on noise characteristics
 2. Carries out multicolour transit modelling using Gaussian processes (GPs) for systematics
@@ -24,6 +29,16 @@ MuSCAT2 photometry pipeline calculates aperture photometry for a set of aperture
 
 ## Usage
 
+### Data Organizing
+
+    m2organize raw_dir dest_dir
+
+### Photometry
+
+    m2photometry XX XX
+
+### Transit Analysis
+
     m2tm input_file
 
 ## Collaborators
@@ -37,7 +52,5 @@ MuSCAT2 photometry pipeline calculates aperture photometry for a set of aperture
 ## Contributors
 
 - Hannu Parviainen
-- XXX XXX
-- YYY YYY
 
 &copy; 2017 Hannu Parviainen
