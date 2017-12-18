@@ -40,7 +40,10 @@ class M2NightOrganizer:
     def organize(self, dry_run=False):
         if not dry_run:
             for f in tqdm(self.files, desc='Organizing files'):
-                npath = self.create_path(f)
-                npath.mkdir(parents=True, exist_ok=True)
-                copy(str(f), str(npath))
+                try:
+                    npath = self.create_path(f)
+                    npath.mkdir(parents=True, exist_ok=True)
+                    copy(str(f), str(npath))
+                except IOError:
+                    print("Warning: skipping a zero-sized file {}".format(str(f)))
 
