@@ -2,6 +2,8 @@ from os.path import basename
 from shutil import copy
 from pathlib import Path
 
+import logging
+
 import astropy.io.fits as pf
 
 from tqdm import tqdm
@@ -25,6 +27,11 @@ class M2NightOrganizer:
         self.objdir = self.orgdir.joinpath('obj')
         self.caldir = self.orgdir.joinpath('calibs')
 
+        logging.info('Found %i files', len(self.files))
+        logging.info('Original directory: %s', self.orgdir.absolute())
+        logging.info('Object directory: %s', self.objdir.absolute())
+        logging.info('Calibration directory: %s', self.caldir.absolute())
+
         for p in (self.orgdir, self.objdir, self.caldir):
             p.mkdir(exist_ok=True)
 
@@ -37,13 +44,14 @@ class M2NightOrganizer:
         else:
             return self.objdir.joinpath(obj, flt)
 
-    def organize(self, dry_run=False):
+    def organize(self, dry_run=False, overwrite=True):
         if not dry_run:
             for f in tqdm(self.files, desc='Organizing files'):
                 try:
                     npath = self.create_path(f)
-                    npath.mkdir(parents=True, exist_ok=True)
-                    copy(str(f), str(npath))
+                    if overwrite or not npath.exists():
+                        npath.mkdir(parents=True, exist_ok=True)
+                        copy(str(f), str(npath))
                 except IOError:
-                    print("Warning: skipping a zero-sized file {}".format(str(f)))
+                    logging.warning("Warning: skipping a corrupted file %s",str(f))
 

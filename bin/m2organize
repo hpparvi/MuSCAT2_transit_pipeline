@@ -1,14 +1,23 @@
 #!/usr/bin/env python
 
+import warnings
+import logging
+from os.path import basename
 from argparse import ArgumentParser
 from muscat2ph.organizer import M2NightOrganizer
+
+from astropy.utils.exceptions import AstropyWarning
 
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('rawdir', type=str)
     ap.add_argument('orgdir', type=str)
     ap.add_argument('-n', '--dry-run', action='store_true', dest='dry_run', default=False)
+    ap.add_argument('-f', '--dont-overwrite', action='store_false', dest='overwrite', default=True)
     args = ap.parse_args()
 
+    warnings.simplefilter('ignore', category=AstropyWarning)
+    logging.basicConfig(filename='m2organize_{}.log'.format(basename(args.rawdir)), filemode='w', level=logging.DEBUG)
+
     mo = M2NightOrganizer(args.rawdir, args.orgdir)
-    mo.organize(args.dry_run)
+    mo.organize(args.dry_run, args.overwrite)
