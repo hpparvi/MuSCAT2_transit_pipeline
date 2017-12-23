@@ -1,0 +1,61 @@
+#!/usr/bin/env python
+
+import warnings
+import logging
+import re
+import numpy as np
+import pandas as pd
+
+from os import remove
+from numpy import nan, array
+from multiprocessing import Pool
+from subprocess import run, PIPE
+from pathlib import Path
+from argparse import ArgumentParser
+
+from astropy.utils.exceptions import AstropyWarning
+
+from tqdm import tqdm
+
+def f(filename):
+    ra = "23:06:29.36"
+    dec = "-05:02:29.2"
+    r = run(["solve-field", "--overwrite", "--ra=%s" % ra, "--dec=%s" % dec, "--radius=2", "--no-plots",
+             "--scale-low=0.3", "--scale-high=0.7", "--scale-units=app", "--new-fits=none", "--fits-image",
+             str(filename)], stdout=PIPE, stderr=PIPE, timeout=15)
+    rout = r.stdout.decode()
+    try:
+        center = list(map(float, re.findall('Field center: \(RA,Dec\) = \((.*),(.*)\)', rout)[0]))
+        rotation = float(re.findall('Field rotation .* is (.*?) .*', rout)[0])
+        return str(filename), center[0], center[1], rotation
+    except IndexError:
+        return str(filename), nan, nan, nan
+
+if __name__ == '__main__':
+    ap = ArgumentParser()
+    ap.add_argument('objdir', type=Path)
+    ap.add_argument('-n', '--n-processes', type=int, default=6)
+    ap.add_argument('-f', '--dont-overwrite', action='store_false', dest='overwrite', default=True)
+    args = ap.parse_args()
+
+    tmps = ".match .axy .rdls .solved -indx.xyls .corr".split()
+
+    #warnings.simplefilter('ignore', category=AstropyWarning)
+    #logging.basicConfig(filename='m2organize_{}.log'.format(basename(args.rawdir)), filemode='w', level=logging.DEBUG)
+
+    files = sorted(list(args.objdir.rglob("MCT2*.fits")))
+
+    with Pool(args.n_processes) as p:
+        r = list(tqdm(p.imap(f, files), total=len(files), desc='Running astrometry.net'))
+        df = pd.DataFrame(r, columns='filename RA Dec rotation'.split())
+
+    f = files[0].absolute()
+    dfname = 'astrometry_{}_{}.csv'.format(str(f.parts[-3]), str(f.parts[-2]))
+    df.to_csv(dfname, index=False)
+
+    for f in tqdm(files, desc='Removing temporary files'):
+        for tmp in tmps:
+            try:
+                remove(f.parent.joinpath(f.stem+tmp))
+            except FileNotFoundError:
+                pass
