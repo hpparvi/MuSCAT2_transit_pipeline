@@ -7,23 +7,43 @@ import numpy as np
 import pandas as pd
 
 from os import remove
-from numpy import nan, array
+from numpy import nan, inf, array
 from multiprocessing import Pool
 from subprocess import run, PIPE
 from pathlib import Path
 from argparse import ArgumentParser
 
+from astropy.io import fits as pf
 from astropy.utils.exceptions import AstropyWarning
 
 from tqdm import tqdm
 
-def f(filename):
-    ra = "23:06:29.36"
-    dec = "-05:02:29.2"
-    r = run(["solve-field", "--overwrite", "--ra=%s" % ra, "--dec=%s" % dec, "--radius=2", "--no-plots",
-             "--scale-low=0.3", "--scale-high=0.7", "--scale-units=app", "--new-fits=none", "--fits-image",
-             str(filename)], stdout=PIPE, stderr=PIPE, timeout=15)
+tmpexts = ".match .axy .rdls .solved -indx.xyls .corr".split()
+
+
+def run_astrometry(filename, overwrite=True):
+    h = pf.getheader(filename)
+    ra, dec = h['ra'], h['dec']
+
+    astcall = ["solve-field", "--overwrite", "--no-plots", "--scale-low=0.3", "--scale-high=0.7", "--scale-units=app",
+               "--new-fits=none", "--fits-image"]
+
+    if ra and dec:
+        astcall.extend(["--ra=%s"%ra, "--dec=%s"%dec, "--radius=2"])
+        logging.info("%s -- Found RA and Dec from the header (%s, %s)", filename.stem, ra, dec)
+    else:
+        logging.info("%s -- No RA and Dec info in the header", filename.stem)
+    astcall.append(str(filename))
+
+    r = run(astcall, stdout=PIPE, stderr=PIPE, timeout=30)
     rout = r.stdout.decode()
+
+    for ext in tmpexts:
+        try:
+            remove(filename.parent.joinpath(filename.stem + ext))
+        except FileNotFoundError:
+            pass
+
     try:
         center = list(map(float, re.findall('Field center: \(RA,Dec\) = \((.*),(.*)\)', rout)[0]))
         rotation = float(re.findall('Field rotation .* is (.*?) .*', rout)[0])
@@ -35,27 +55,22 @@ if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('objdir', type=Path)
     ap.add_argument('-n', '--n-processes', type=int, default=6)
-    ap.add_argument('-f', '--dont-overwrite', action='store_false', dest='overwrite', default=True)
+    ap.add_argument('-f', '--overwrite', action='store_true', default=False)
+    ap.add_argument('--start-frame', type=int, default=0)
+    ap.add_argument('--end-frame', type=int, default=inf)
     args = ap.parse_args()
 
-    tmps = ".match .axy .rdls .solved -indx.xyls .corr".split()
-
-    #warnings.simplefilter('ignore', category=AstropyWarning)
-    #logging.basicConfig(filename='m2organize_{}.log'.format(basename(args.rawdir)), filemode='w', level=logging.DEBUG)
+    logging.basicConfig(filename='m2astronomize.log', filemode='w', level=logging.DEBUG)
 
     files = sorted(list(args.objdir.rglob("MCT2*.fits")))
+    istart = max(0, args.start_frame)
+    iend = min(args.end_frame, len(files))
+    files = files[istart:iend]
 
     with Pool(args.n_processes) as p:
-        r = list(tqdm(p.imap(f, files), total=len(files), desc='Running astrometry.net'))
+        r = list(tqdm(p.imap(run_astrometry, files), total=len(files), desc='Running astrometry.net'))
         df = pd.DataFrame(r, columns='filename RA Dec rotation'.split())
 
     f = files[0].absolute()
     dfname = 'astrometry_{}_{}.csv'.format(str(f.parts[-3]), str(f.parts[-2]))
     df.to_csv(dfname, index=False)
-
-    for f in tqdm(files, desc='Removing temporary files'):
-        for tmp in tmps:
-            try:
-                remove(f.parent.joinpath(f.stem+tmp))
-            except FileNotFoundError:
-                pass
