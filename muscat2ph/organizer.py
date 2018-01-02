@@ -48,9 +48,11 @@ class M2NightOrganizer:
         if not dry_run:
             for f in tqdm(self.files, desc='Organizing files'):
                 try:
-                    npath = self.create_path(f)
+                    ndir = self.create_path(f)
+                    if not ndir.exists():
+                        ndir.mkdir(parents=True)
+                    npath = ndir.joinpath(f.name)
                     if overwrite or not npath.exists():
-                        npath.mkdir(parents=True, exist_ok=True)
                         copy(str(f), str(npath))
                 except IOError:
                     logging.warning("Warning: skipping a corrupted file %s",str(f))
