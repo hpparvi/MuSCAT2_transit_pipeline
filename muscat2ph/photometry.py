@@ -1,4 +1,5 @@
 import warnings
+from textwrap import dedent
 
 import numpy as np
 import xarray as xa
@@ -111,16 +112,22 @@ class MasterFlat(MasterFrame):
 class ScienceFrame(ImageFrame):
     def __init__(self, root, passband, masterdark=None, masterflat=None):
         self.passband = passband
+
+        # Calibration files
+        # ------------------
         self.masterdark = self.dark = masterdark or MasterDark(root, self.passband)
         self.masterflat = self.flat = masterflat or MasterFlat(root, self.passband)
-        self._data = None
-        self._header = None
-        self._sfinder = None
-        self._stars = None
-        self._aps = None
-        self._psf_fit = None
+
+        # Basic data
+        # ----------
+        self._data = None       # FITS image data
+        self._header = None     # FITS header
+        self._wcs = None        # WCS data
+        self._centroids = None  # Star centroids in sky coordinates [DataFrame]
+        self._stars = None      # Star instances
 
     def load_fits(self, filename):
+        """Load the image data and WCS information from a fits."""
         filename = Path(filename)
         with pf.open(filename) as f:
             self._data = f[0].data.astype('d')
@@ -129,27 +136,29 @@ class ScienceFrame(ImageFrame):
         if wcsfile.exists():
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore', FITSFixedWarning)
-                self.wcs = WCS(pf.getheader(wcsfile))
+                self._wcs = WCS(pf.getheader(wcsfile))
         else:
-            self.wcs = WCS(self._header)
+            self._wcs = WCS(self._header)
 
     @property
     def reduced(self):
+        """Reduced image."""
         return (self._data - self.dark._data) / self.flat._data
 
     @property
     def raw(self):
         return self._data
 
+    def set_stars(self, csky, apertures=[8,12,16,20]):
+        self._centroids = csky
+        self._stars = [Star(ra, dec, apertures=apertures) for ra,dec in csky.values]
+        [s.calculate_centroid(self) for s in self._stars]
+
+
     def is_inside_boundaries(self, boundary=40):
         blow = (self._aps.positions < self._data.shape[0] - boundary).all(1)
         bhigh = (self._aps.positions > boundary).all(1)
         return blow & bhigh
-
-    def set_stars(self, stars):
-        self._stars = stars.copy()
-        self.nstars = self._stars.shape[0]
-        self._aps = CircularAperture(stars[['xcentroid', 'ycentroid']].values, 15)
 
     def find_stars(self, treshold=99.5, maxn=10):
         objects = mf(self.reduced, 6) > sap(self.reduced, treshold)
@@ -162,76 +171,23 @@ class ScienceFrame(ImageFrame):
         for i, fid in enumerate(fids[:maxn]):
             sorted_labels[labels == fid] = i + 1
 
-        centers = flip(array([com(self.reduced - median(self.reduced), sorted_labels, i)
-                              for i in range(1, maxn+1)]), 1)
-        self.set_stars(pd.DataFrame(centers, columns='xcentroid ycentroid'.split()))
+        cpix = flip(array([com(self.reduced - median(self.reduced), sorted_labels, i) for i in range(1, maxn+1)]), 1)
+        csky = pd.DataFrame(self._wcs.all_pix2world(cpix, 1), columns='RA Dec'.split())
+        self.set_stars(csky)
 
     def find_stars_dao(self, fwhm=10, treshold=90, maxn=10):
-        self._sfinder = DAOStarFinder(sap(self.reduced, treshold), fwhm, exclude_border=True)
-        self._stars = self._sfinder(self.reduced).to_pandas().sort_values('flux', ascending=False)[:maxn]
-        self._stars.index = arange(self._stars.shape[0])
-        self._aps = CircularAperture(self._stars[['xcentroid', 'ycentroid']].values, 15)
-        self._stars.drop('id roundness1 roundness2 npix sky flux mag'.split(), axis=1, inplace=True)
-        self.nstars = self._stars.shape[0]
+        sfinder = DAOStarFinder(sap(self.reduced, treshold), fwhm, exclude_border=True)
+        stars = sfinder(self.reduced).to_pandas().sort_values('flux', ascending=False)[:maxn]
+        stars.index = arange(stars.shape[0])
+        stars.drop('id roundness1 roundness2 npix sky flux mag'.split(), axis=1, inplace=True)
+        return stars
 
-    def remove_stars_near_edges(self, min_edgedist=30):
-        bmask = self.is_inside_boundaries(min_edgedist)
-        self._stars = self._stars[bmask]
-        self._stars.reset_index(drop=True, inplace=True)
-        self._aps = CircularAperture(self._stars[['xcentroid', 'ycentroid']].values, 15)
-        self.nstars = self._stars.shape[0]
-
-    def remove_stars(self, ids):
-        self._stars.drop(ids, inplace=True)
-        self._stars.reset_index(drop=True, inplace=True)
-        self._aps = CircularAperture(self._stars[['xcentroid', 'ycentroid']].values, 15)
-        self.nstars = self._stars.shape[0]
-
-    def centroid_com(self, pmin=80, pmax=95, niter=1):
-        fpmax = zeros(self.nstars)
-        for iiter in range(niter):
-            masks = self._aps.to_mask()
-            centers = zeros([self.nstars, 2])
-            for istar, mask in enumerate(masks):
-                d = mask.cutout(self.reduced)
-                p = percentile(d, [pmin, pmax])
-                fpmax[istar] = p[1]
-                d2 = clip(d, *p) - p[0]
-                c = com(d2)
-                self._aps.positions[istar, :] = flip(c, 0) + array([mask.slices[1].start, mask.slices[0].start])
-            self._stars['xcentroid'][:] = self._aps.positions[:, 0]
-            self._stars['ycentroid'][:] = self._aps.positions[:, 1]
-        self._stars['entropy'] = [entropy(m.cutout(self.reduced)) for m in self._aps.to_mask()]
-        return fpmax
-
-
-    def calculate_centroids(self, search_radius=None, fit_psf=False, use_average=False):
-        if search_radius is None:
-            masks = self._aps.to_mask()
-        else:
-            masks = CircularAperture(self._aps.positions, search_radius).to_mask()
-
-        if not fit_psf:
-            cs = pd.DataFrame([centroid_m(m.cutout(self.reduced - median(self.reduced))) for m in masks], columns='cy cx'.split())
-        else:
-            psf = GaussianDFPSF(masks[0].array.shape)
-            cs = pd.DataFrame([psf.fit(m.cutout(self.reduced)) for m in masks])
-            self._stars = cs.copy()
-            self._stars.columns = 'peak xcentroid ycentroid fwhm radius sky xl yl'.split()
-
-        en = [entropy(m.cutout(self.reduced)) for m in masks]
-        self._stars['entropy'] = en
-
-        if use_average:
-            cs['cx'] = cauchy.fit(cs.cx.values)[0]
-            cs['cy'] = cauchy.fit(cs.cy.values)[0]
-
-        cx = array([m.slices[1].start for m in masks]) + cs.cx.values
-        cy = array([m.slices[0].start for m in masks]) + cs.cy.values
-        self._aps.positions[:, 0] = cx
-        self._aps.positions[:, 1] = cy
-        self._stars['xcentroid'] = cx
-        self._stars['ycentroid'] = cy
+    def centroid_stars(self, r=20, pmin=80, pmax=95, niter=1):
+        for s in self._stars:
+            try:
+                s.calculate_centroid(self, r, pmin, pmax, niter)
+            except ValueError:
+                pass
 
     def plot_aperture_masks(self, radius=None, minp=0.0, maxp=99.9, cols=5, figsize=(11, 2.5)):
         if radius is not None:
@@ -257,8 +213,11 @@ class ScienceFrame(ImageFrame):
 
     def plot_apertures(self, ax, offset=5):
         if self._stars is not None:
-            self._aps.plot(ax=ax)
-            [ax.text(r.xcentroid+offset, r.ycentroid+offset, i) for i,r in self._stars.iterrows()]
+            for istar,s in enumerate(self._stars):
+                if all(isfinite(s.centroid)):
+                    apt = s._aobj[-1]
+                    apt.plot(ax=ax)
+                    ax.text(apt.positions[0,0]+offset, apt.positions[0,1]+offset, istar)
 
     def plot_raw(self, ax=None, figsize=(6,6), plot_apertures=True, minp=10, maxp=100):
         ax = super().plot(self.raw, ax=ax, figsize=figsize, title='Reduced image',
@@ -292,6 +251,7 @@ def apt_values(apt, im):
 class Star:
     def __init__(self, ra, dec, apertures, wsky=10):
         self.coords = SkyCoord(ra, dec, unit='deg', frame='fk5')
+        self.apertures = apertures
         self._aobj = [CircularAperture([0., 0.], r) for r in apertures]
         self._asky = CircularAnnulus([0., 0.], apertures[-1], apertures[-1] + wsky)
         self.napt = napt = len(apertures)
@@ -305,6 +265,15 @@ class Star:
         self._sky_entropy = None
         self._sky_median = None
 
+    def __repr__(self):
+        st = """
+             Star: Apertures {}
+               (RA, Dec): {:6.3f} {:6.3f}
+               (x,  y):   {:6.1f} {:6.1f}
+             """
+        return dedent(st).format(self.apertures, self.coords.ra.value, self.coords.dec.value,
+                         self._asky.positions[0,0], self._asky.positions[0,1])
+
     @property
     def flux(self):
         return self._flux.copy()
@@ -313,9 +282,21 @@ class Star:
     def apt_entropy(self):
         return self._apt_entropy.copy()
 
-    def centroid(self, im, r=20, pmin=80, pmax=95, niter=1):
-        cpix = array(self.coords.to_pixel(im.wcs))
+    @property
+    def centroid(self):
+        return self._centroid.copy()
+
+    @centroid.setter
+    def centroid(self, xy):
+        self._centroid[:] = xy
+        self._asky.positions[:] = xy
+        for ao in self._aobj:
+            ao.positions[:] = xy
+
+    def calculate_centroid(self, im, r=20, pmin=80, pmax=95, niter=1):
+        cpix = array(self.coords.to_pixel(im._wcs))
         if any(cpix < 0.) or any(cpix > im._data.shape[0]):
+            self.centroid = [nan, nan]
             raise ValueError("Star outside the image FOV.")
         apt = CircularAperture(cpix, r)
         for iiter in range(niter):
@@ -325,9 +306,7 @@ class Star:
             d2 = clip(d, *p) - p[0]
             c = com(d2)
             apt.positions[:] = flip(c, 0) + array([mask.slices[1].start, mask.slices[0].start])
-        self._asky.positions[:] = apt.positions
-        for ao in self._aobj:
-            ao.positions[:] = apt.positions
+        self.centroid = apt.positions
 
     def estimate_sky(self, im):
         sky_median = sigma_clipped_stats(apt_values(self._asky, im), sigma=4)[1]
@@ -340,8 +319,7 @@ class Star:
 
     def photometry(self, im):
         try:
-            self.centroid(im)
-            self._centroid[:] = self._asky.positions[0]
+            self.calculate_centroid(im)
             self._sky_median = self.estimate_sky(im)
             self._apt_entropy[:], self._sky_entropy = self.estimate_entropy(im)
             self._flux[:] = [ap.do_photometry(im.reduced)[0] - self._sky_median * ap.area() for ap in self._aobj]

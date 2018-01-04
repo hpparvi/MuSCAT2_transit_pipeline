@@ -26,11 +26,9 @@ def aperture_photometry(root, files, pb, stars, outfile=None, istart=0, iend=inf
 
     im = ScienceFrame(root, pb)
     im.load_fits(files[istart])
-    #im.set_stars(stars)
-    #im.centroid_com()
     nstars = stars.shape[0]
 
-    stars = [Star(*s[['RA','Dec']].values, apertures=apertures) for _, s in stars.iterrows()]
+    stars = [Star(ra, dec, apertures=apertures) for ra,dec in stars.values]
 
     cframe = arange(istart, iend)
     cstar = arange(nstars)
@@ -160,15 +158,10 @@ if __name__ == '__main__':
         # ---------------------------------------
         if args.load_stars:
             stars_sky = pd.read_csv('{}_stars.csv'.format(args.object), index_col=0)
-            stars = im.wcs.all_world2pix(stars_sky, 1)
-            im.set_stars(stars)
-            im.centroid_com()
+            im.set_stars(stars_sky)
         else:
             im.find_stars(maxn=args.n_stars)
-            im.centroid_com()
-            im.remove_stars_near_edges()
-            stars = im._stars
-            stars_sky = pd.DataFrame(im.wcs.all_pix2world(stars['xcentroid ycentroid'.split()].values, 1), columns='RA Dec'.split())
+            stars_sky = im._centroids
             if args.save_stars and ipb==0:
                 stars_sky.to_csv('{}_stars.csv'.format(args.object))
 
@@ -181,14 +174,15 @@ if __name__ == '__main__':
 
         # Individual aperture plots
         # -------------------------
-        asky = CircularAnnulus(im._aps.positions, 22, 32)
         fig2, axs2 = pl.subplots(1, 7, figsize=(11, 2.5), sharex=True, sharey=True)
-        for ax, m, p in zip(axs2, asky.to_mask(), asky.positions):
+        for ax, s in zip(axs2, im._stars):
+            p = array(s.centroid)
+            m = s._asky.to_mask()[0]
             d = m.cutout(im.reduced)
             ax.imshow(d, norm=sn(d, 'log'))
             o = array([m.slices[1].start, m.slices[0].start])
-            ask = CircularAnnulus(p - o, 22, 32)
-            [CircularAperture(p - o, r).plot(ax=ax, ls='--') for r in (10, 14, 18, 22)]
+            ask = CircularAnnulus(p - o, s._asky.r_in, s._asky.r_out)
+            [CircularAperture(p - o, r).plot(ax=ax, ls='--') for r in s.apertures]
             ask.plot(ax=ax)
         fig2.tight_layout()
         fig2.savefig('{}-{}-apertures.png'.format(args.object, pb))

@@ -1,7 +1,7 @@
 import xarray as xa
 from matplotlib.mlab import normpdf
 
-from numpy import inf, sqrt, dot, exp, linspace, log, zeros, array, arange, meshgrid
+from numpy import inf, sqrt, dot, exp, linspace, log, zeros, array, arange, meshgrid, ones
 import patsy
 from numpy.linalg import lstsq
 from photutils import CircularAperture
@@ -31,6 +31,12 @@ class PhotometryData:
         self.iapt = -1
         self.apt = self._flux.aperture[self.iapt]
         self.lin_formula = 'mjd + sky + xshift + yshift + entropy + airmass'
+
+        self._fmask = ones(self.nframes, 'bool')
+        self._fmask[:self.fstart] = 0
+        self._fmask[self.fend:] = 0
+        self._fmask &= self._flux.notnull().any(['star','aperture'])
+
         self._entropy_table = None
         self._calculate_effective_fwhm()
 
@@ -62,7 +68,8 @@ class PhotometryData:
             ip = interp1d(self._entropy_table.loc[aperture, :], self._entropy_table.fwhm, bounds_error=False,
                           fill_value=tuple(self._entropy_table.loc[aperture][[0, -1]]))
             for star in self._fwhm.star:
-                self._fwhm.loc[:, star, aperture] = ip(self._ds.obj_entropy.loc[:, star, aperture])
+                m = self._fwhm.loc[:, star, aperture].notnull()
+                self._fwhm.loc[m, star, aperture] = ip(self._ds.obj_entropy.loc[m, star, aperture])
 
     @property
     def aux(self):
@@ -73,15 +80,11 @@ class PhotometryData:
 
     @property
     def flux(self):
-        return self._flux[self.fstart:self.fend, :, :]
-
-    @property
-    def _auxr(self):
-        return self._aux[self.fstart:self.fend]
+        return self._flux[self._fmask, :, :]
 
     @property
     def mjd(self):
-        return Time(self._auxr.loc[:,'mjd'], format='mjd', scale='utc', location=lapalma)
+        return Time(self._aux.loc[self._fmask,'mjd'], format='mjd', scale='utc', location=lapalma)
 
     @property
     def jd(self):
@@ -93,27 +96,27 @@ class PhotometryData:
 
     @property
     def airmass(self):
-        return self._auxr.loc[:, 'airmass']
+        return self._aux.loc[self._fmask, 'airmass']
 
     @property
     def sky(self):
-        return self._sky[self.fstart:self.fend,:].mean('star')
+        return self._sky[self._fmask,:].mean('star')
 
     @property
     def entropy(self):
-        return self._ds.obj_entropy[self.fstart:self.fend,:,self.iapt].mean('star')
+        return self._ds.obj_entropy[self._fmask, :, self.iapt].mean('star')
 
     @property
     def effective_fwhm(self):
-        return self._fwhm[self.fstart:self.fend,:,self.iapt].mean('star')
+        return self._fwhm[self._fmask, :, self.iapt].mean('star')
 
     @property
     def xshift(self):
-        return (self._cnt[self.fstart:self.fend,:,0] - self._cnt[self.fstart,:,0]).mean('star')
+        return (self._cnt[self._fmask, :, 0] - self._cnt[self.fstart,:,0]).mean('star')
 
     @property
     def yshift(self):
-        return (self._cnt[self.fstart:self.fend,:,1] - self._cnt[self.fstart,:,1]).mean('star')
+        return (self._cnt[self._fmask, :, 1] - self._cnt[self.fstart,:,1]).mean('star')
 
     @property
     def relative_flux(self):
