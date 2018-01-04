@@ -152,8 +152,11 @@ class ScienceFrame(ImageFrame):
     def set_stars(self, csky, apertures=[8,12,16,20]):
         self._centroids = csky
         self._stars = [Star(ra, dec, apertures=apertures) for ra,dec in csky.values]
-        [s.calculate_centroid(self) for s in self._stars]
-
+        for s in self._stars:
+            try:
+                s.calculate_centroid(self)
+            except ValueError:
+                pass
 
     def is_inside_boundaries(self, boundary=40):
         blow = (self._aps.positions < self._data.shape[0] - boundary).all(1)
@@ -196,8 +199,8 @@ class ScienceFrame(ImageFrame):
             aps = self._aps
         fig, axs = subplots(int(ceil(self.nstars / cols)), cols, figsize=figsize, sharex=True, sharey=True)
         for m, ax in zip(aps.to_mask(), axs.flat):
-            #d = m.apply(self.reduced)
-            d = where(m.array.astype('bool'), m.cutout(self.reduced), nan)
+            #d = m.multiply(self.reduced)
+            d = where(m.data.astype('bool'), m.cutout(self.reduced), nan)
             ax.imshow(d, cmap=cm.gray_r, origin='image',
                       norm=sn(d, stretch='log', min_percent=minp, max_percent=maxp))
         fig.tight_layout()
@@ -206,7 +209,7 @@ class ScienceFrame(ImageFrame):
         aps = CircularAnnulus([self._stars.xcentroid, self._stars.ycentroid], r1, r2)
         fig, axs = subplots(int(ceil(self.nstars / cols)), cols, figsize=figsize, sharex=True, sharey=True)
         for m, ax in zip(aps.to_mask(), axs.flat):
-            d = where(m.array.astype('bool'), m.cutout(self.reduced), nan) #m.apply(self.reduced)
+            d = where(m.data.astype('bool'), m.cutout(self.reduced), nan) #m.multiply(self.reduced)
             ax.imshow(d, cmap=cm.gray_r, origin='image',
                       norm=sn(d, stretch='linear', min_percent=minp, max_percent=maxp))
         fig.tight_layout()
@@ -245,7 +248,7 @@ class ScienceFrame(ImageFrame):
 
 def apt_values(apt, im):
     m = apt.to_mask()[0]
-    return m.cutout(im.reduced)[m.array.astype('bool')]
+    return m.cutout(im.reduced)[m.data.astype('bool')]
 
 
 class Star:
@@ -264,6 +267,7 @@ class Star:
                                       coords={'axis': ['x', 'y']})
         self._sky_entropy = None
         self._sky_median = None
+
 
     def __repr__(self):
         st = """
@@ -295,9 +299,9 @@ class Star:
 
     def calculate_centroid(self, im, r=20, pmin=80, pmax=95, niter=1):
         cpix = array(self.coords.to_pixel(im._wcs))
-        if any(cpix < 0.) or any(cpix > im._data.shape[0]):
-            self.centroid = [nan, nan]
-            raise ValueError("Star outside the image FOV.")
+        #if any(cpix < 0.) or any(cpix > im._data.shape[0]):
+        #    self.centroid = [nan, nan]
+        #    raise ValueError("Star outside the image FOV.")
         apt = CircularAperture(cpix, r)
         for iiter in range(niter):
             mask = apt.to_mask()[0]
@@ -305,7 +309,7 @@ class Star:
             p = percentile(d, [pmin, pmax])
             d2 = clip(d, *p) - p[0]
             c = com(d2)
-            apt.positions[:] = flip(c, 0) + array([mask.slices[1].start, mask.slices[0].start])
+            apt.positions[:] = flip(c, 0) + array([mask.bbox.slices[1].start, mask.bbox.slices[0].start])
         self.centroid = apt.positions
 
     def estimate_sky(self, im):

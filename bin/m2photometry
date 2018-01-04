@@ -180,7 +180,7 @@ if __name__ == '__main__':
             m = s._asky.to_mask()[0]
             d = m.cutout(im.reduced)
             ax.imshow(d, norm=sn(d, 'log'))
-            o = array([m.slices[1].start, m.slices[0].start])
+            o = array([m.bbox.slices[1].start, m.bbox.slices[0].start])
             ask = CircularAnnulus(p - o, s._asky.r_in, s._asky.r_out)
             [CircularAperture(p - o, r).plot(ax=ax, ls='--') for r in s.apertures]
             ask.plot(ax=ax)
