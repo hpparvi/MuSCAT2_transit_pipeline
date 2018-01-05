@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from os import remove
+from itertools import repeat
 from numpy import nan, inf, array
 from multiprocessing import Pool
 from subprocess import run, PIPE
@@ -51,18 +52,21 @@ def run_astrometry(filename, overwrite=True):
     except IndexError:
         return str(filename), nan, nan, nan
 
+
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('objdir', type=Path)
     ap.add_argument('-n', '--n-processes', type=int, default=6)
     ap.add_argument('-f', '--overwrite', action='store_true', default=False)
+    ap.add_argument('--file-prefix', type=str, default='MCT2')
+    ap.add_argument('--file-postfix', type=str, default='.fits')
     ap.add_argument('--start-frame', type=int, default=0)
     ap.add_argument('--end-frame', type=int, default=inf)
     args = ap.parse_args()
 
-    logging.basicConfig(filename='m2astronomize.log', filemode='w', level=logging.DEBUG)
+    logging.basicConfig(filename='m2astrometry.log', filemode='w', level=logging.DEBUG)
 
-    files = sorted(list(args.objdir.rglob("MCT2*.fits")))
+    files = sorted(list(args.objdir.rglob("%s*%s"%(args.file_prefix, args.file_postfix))))
     istart = max(0, args.start_frame)
     iend = min(args.end_frame, len(files))
     files = files[istart:iend]

@@ -10,7 +10,7 @@ setup(name='MuSCAT2TA',
       packages=find_packages(),
       install_requires=["numpy", "scipy>=0.16", "astropy", "tqdm", "traitlets"],
       include_package_data=True,
-      scripts=['bin/m2organize', 'bin/m2photometry', 'bin/m2astronomize'],
+      scripts=['bin/m2organize', 'bin/m2photometry', 'bin/m2astrometry'],
       license='GPLv2',
       classifiers=[
           "Topic :: Scientific/Engineering",
