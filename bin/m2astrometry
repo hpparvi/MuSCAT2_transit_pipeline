@@ -64,17 +64,17 @@ if __name__ == '__main__':
     ap.add_argument('--end-frame', type=int, default=inf)
     args = ap.parse_args()
 
-    logging.basicConfig(filename='m2astrometry_{}.log'.format(args.objdir.absolute().name), filemode='w', level=logging.DEBUG)
-
     files = sorted(list(args.objdir.rglob("%s*%s"%(args.file_prefix, args.file_postfix))))
     istart = max(0, args.start_frame)
     iend = min(args.end_frame, len(files))
     files = files[istart:iend]
+    f = files[0].absolute()
+
+    logging.basicConfig(filename='00_m2astrometry_{}_{}.log'.format(str(f.parts[-3]), str(f.parts[-2])), filemode='w', level=logging.DEBUG)
 
     with Pool(args.n_processes) as p:
         r = list(tqdm(p.imap(run_astrometry, files), total=len(files), desc='Running astrometry.net'))
         df = pd.DataFrame(r, columns='filename RA Dec rotation'.split())
 
-    f = files[0].absolute()
-    dfname = 'm2astrometry_{}_{}.csv'.format(str(f.parts[-3]), str(f.parts[-2]))
+    dfname = '01_m2astrometry_{}_{}.csv'.format(str(f.parts[-3]), str(f.parts[-2]))
     df.to_csv(dfname, index=False)
