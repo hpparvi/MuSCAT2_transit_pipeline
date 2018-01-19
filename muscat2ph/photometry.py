@@ -21,6 +21,7 @@ from scipy.ndimage import center_of_mass as com
 from scipy.stats import scoreatpercentile as sap
 from tqdm import tqdm
 import pandas as pd
+import astropy.units as u
 
 from photutils import DAOStarFinder, DAOPhotPSFPhotometry, DAOGroup, CircularAperture
 from scipy.stats import scoreatpercentile as sap, cauchy
@@ -120,14 +121,15 @@ class ScienceFrame(ImageFrame):
 
         # Basic data
         # ----------
-        self._data = None       # FITS image data
-        self._header = None     # FITS header
-        self._wcs = None        # WCS data
-        self._centroids = None  # Star centroids in sky coordinates [DataFrame]
-        self._stars = None      # Star instances
+        self._data = None           # FITS image data
+        self._header = None         # FITS header
+        self._wcs = None            # WCS data (if available)
+        self._ref_centroids_sky = None  # Star centroids in sky coordinates [DataFrame]
+        self._ref_centroids_pix = None  # Star centroids in pixel coordinates [DataFrame]
+        self._stars = None          # Star instances
 
     def load_fits(self, filename):
-        """Load the image data and WCS information from a fits."""
+        """Load the image data and WCS information (if available)."""
         filename = Path(filename)
         with pf.open(filename) as f:
             self._data = f[0].data.astype('d')
@@ -137,8 +139,10 @@ class ScienceFrame(ImageFrame):
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore', FITSFixedWarning)
                 self._wcs = WCS(pf.getheader(wcsfile))
-        else:
-            self._wcs = WCS(self._header)
+
+    @property
+    def centroids_pix(self):
+        return xa.concat([s.centroid for s in self._stars], dim='star')
 
     @property
     def reduced(self):
@@ -149,19 +153,23 @@ class ScienceFrame(ImageFrame):
     def raw(self):
         return self._data
 
-    def set_stars(self, csky, apertures=[8,12,16,20]):
-        self._centroids = csky
-        self._stars = [Star(ra, dec, apertures=apertures) for ra,dec in csky.values]
-        for s in self._stars:
-            try:
-                s.calculate_centroid(self)
-            except ValueError:
-                pass
+    def set_stars(self, csky=None, cpix=None, apertures=[8,12,16,20]):
+        if csky is not None:
+            self._ref_centroids_sky = csky.copy()
+            self._stars = [Star(apertures=apertures, radec=(ra,dec)) for ra, dec in csky.values]
+        elif cpix is not None:
+            self._ref_centroids_pix = cpix.copy()
+            self._stars = [Star(apertures=apertures, xy=(x,y)) for x,y in cpix.values]
+        else:
+            raise ValueError('Need to give either csky or cpix')
+        self.centroid_stars(niter=3)
+
 
     def is_inside_boundaries(self, boundary=40):
         blow = (self._aps.positions < self._data.shape[0] - boundary).all(1)
         bhigh = (self._aps.positions > boundary).all(1)
         return blow & bhigh
+
 
     def find_stars(self, treshold=99.5, maxn=10):
         objects = mf(self.reduced, 6) > sap(self.reduced, treshold)
@@ -173,10 +181,14 @@ class ScienceFrame(ImageFrame):
         sorted_labels = zeros_like(labels)
         for i, fid in enumerate(fids[:maxn]):
             sorted_labels[labels == fid] = i + 1
-
         cpix = flip(array([com(self.reduced - median(self.reduced), sorted_labels, i) for i in range(1, maxn+1)]), 1)
-        csky = pd.DataFrame(self._wcs.all_pix2world(cpix, 1), columns='RA Dec'.split())
-        self.set_stars(csky)
+
+        if self._wcs:
+            csky = pd.DataFrame(self._wcs.all_pix2world(cpix, 0), columns='RA Dec'.split())
+            self.set_stars(csky=csky)
+        else:
+            self.set_stars(cpix=pd.DataFrame(cpix, columns=['x', 'y']))
+
 
     def find_stars_dao(self, fwhm=10, treshold=90, maxn=10):
         sfinder = DAOStarFinder(sap(self.reduced, treshold), fwhm, exclude_border=True)
@@ -184,6 +196,7 @@ class ScienceFrame(ImageFrame):
         stars.index = arange(stars.shape[0])
         stars.drop('id roundness1 roundness2 npix sky flux mag'.split(), axis=1, inplace=True)
         return stars
+
 
     def centroid_stars(self, r=20, pmin=80, pmax=95, niter=1):
         for s in self._stars:
@@ -252,8 +265,9 @@ def apt_values(apt, im):
 
 
 class Star:
-    def __init__(self, ra, dec, apertures, wsky=10):
-        self.coords = SkyCoord(ra, dec, unit='deg', frame='fk5')
+    def __init__(self, apertures, radec=None, xy=None, wsky=10):
+        self.coords_sky = None if radec is None else SkyCoord(*radec, unit=u.deg, frame='fk5')
+        self.coords_pix = None if xy is None else array(xy)
         self.apertures = apertures
         self._aobj = [CircularAperture([0., 0.], r) for r in apertures]
         self._asky = CircularAnnulus([0., 0.], apertures[-1], apertures[-1] + wsky)
@@ -275,8 +289,8 @@ class Star:
                (RA, Dec): {:6.3f} {:6.3f}
                (x,  y):   {:6.1f} {:6.1f}
              """
-        return dedent(st).format(self.apertures, self.coords.ra.value, self.coords.dec.value,
-                         self._asky.positions[0,0], self._asky.positions[0,1])
+        return dedent(st).format(self.apertures, self.coords_sky.ra.value, self.coords_sky.dec.value,
+                                 self._asky.positions[0,0], self._asky.positions[0,1])
 
     @property
     def flux(self):
@@ -298,7 +312,11 @@ class Star:
             ao.positions[:] = xy
 
     def calculate_centroid(self, im, r=20, pmin=80, pmax=95, niter=1):
-        cpix = array(self.coords.to_pixel(im._wcs))
+        if self.coords_sky is not None:
+            cpix = array(self.coords_sky.to_pixel(im._wcs))
+        else:
+            cpix = self.coords_pix
+
         #if any(cpix < 0.) or any(cpix > im._data.shape[0]):
         #    self.centroid = [nan, nan]
         #    raise ValueError("Star outside the image FOV.")

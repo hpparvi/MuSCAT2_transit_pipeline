@@ -30,7 +30,7 @@ def aperture_photometry(root, files, pb, stars, outfile=None, istart=0, iend=inf
     im.load_fits(files[istart])
     nstars = stars.shape[0]
 
-    stars = [Star(ra, dec, apertures=apertures) for ra,dec in stars.values]
+    stars = [Star(apertures=apertures, ra=ra, dec=dec) for ra, dec in stars.values]
 
     cframe = arange(istart, iend)
     cstar = arange(nstars)
@@ -163,7 +163,7 @@ if __name__ == '__main__':
             im.set_stars(stars_sky)
         else:
             im.find_stars(maxn=args.n_stars)
-            stars_sky = im._centroids
+            stars_sky = im._ref_centroids_sky
             if args.save_stars and ipb==0:
                 stars_sky.to_csv('{}_stars.csv'.format(args.object))
 
