@@ -8,7 +8,7 @@ setup(name='MuSCAT2TA',
       author_email='hpparvi@gmail.com',
       url='https://github.com/hpparvi/muscat2ta',
       packages=find_packages(),
-      install_requires=["numpy", "scipy>=0.16", "astropy", "tqdm", "traitlets"],
+      install_requires=["numpy", "scipy>=0.16", "astropy", "tqdm", "traitlets", 'pandas'],
       include_package_data=True,
       scripts=['bin/m2organize', 'bin/m2photometry', 'bin/m2astrometry'],
       license='GPLv2',
@@ -23,4 +23,4 @@ setup(name='MuSCAT2TA',
           "Programming Language :: Python :: 3"
       ],
       keywords= 'astronomy astrophysics exoplanets'
-     )
+      )

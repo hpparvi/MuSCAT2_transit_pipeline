@@ -16,6 +16,9 @@ from argparse import ArgumentParser
 
 from astropy.io import fits as pf
 from astropy.utils.exceptions import AstropyWarning
+from astropy.coordinates import SkyCoord
+import astropy.units as u
+from astroquery.simbad import Simbad
 
 from tqdm import tqdm
 
@@ -23,8 +26,14 @@ tmpexts = ".match .axy .rdls .solved -indx.xyls .corr".split()
 
 
 def run_astrometry(filename, overwrite=True):
-    h = pf.getheader(filename)
-    ra, dec = h['ra'], h['dec']
+    pradec = Path('radec.csv')
+    if pradec.exists():
+        with open(pradec, 'r') as f:
+            radec = f.readline()
+        ra, dec = list(map(lambda s: s.strip().replace(' ', ':'), radec.split(',')))
+    else:
+        h = pf.getheader(filename)
+        ra, dec = h['ra'], h['dec']
 
     astcall = ["solve-field", "--overwrite", "--no-plots", "--scale-low=0.3", "--scale-high=0.7", "--scale-units=app",
                "--new-fits=none", "--fits-image"]
@@ -69,6 +78,11 @@ if __name__ == '__main__':
     iend = min(args.end_frame, len(files))
     files = files[istart:iend]
     f = files[0].absolute()
+
+    obj = Simbad.query_object(pf.getval(f, 'object'))
+    if obj is not None:
+        with open('radec.csv', 'w') as radec:
+            radec.write('{}, {}\n'.format(obj['RA'][0], obj['DEC'][0]))
 
     logging.basicConfig(filename='00_m2astrometry_{}_{}.log'.format(str(f.parts[-3]), str(f.parts[-2])), filemode='w', level=logging.DEBUG)
 
