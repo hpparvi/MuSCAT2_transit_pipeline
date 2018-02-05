@@ -3,30 +3,42 @@
 from argparse import ArgumentParser
 from multiprocessing import Pool
 from pathlib import Path
-from time import sleep
 
 import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as pl
-import pandas as pd
-
 import xarray as xa
-from astropy.visualization import simple_norm as sn
-from numpy import *
+from numpy import median, zeros, inf, array
 from tqdm import tqdm
+from astropy.io import fits as pf
 
-from muscat2ph.photometry import ScienceFrame
+from muscat2ph.photometry import ScienceFrame, COMCentroider
 
 passbands = 'g r i z_s'.split()
-N = lambda a: a/median(a)
 
-def init():
-    global a
-    a = 2
+def init(root, pb, stars_file):
+    isize = 1024
+    global im, cc
+    im = ScienceFrame(root, pb)
+    im.load_reference_stars(stars_file)
+    im._data = zeros((isize, isize))
+    cc = COMCentroider(im, None, aperture_radius=15)
+    cc.select_stars(20)
 
-def f(x):
-    sleep(0.5)
-    return x*x
+def photometry(filename):
+    im.load_fits(filename)
+    cc.calculate_and_apply()
+
+    aux = [im._header['airmass'],
+           im._header['exptime'],
+           im._header['mjd-strt'] + 0.5 * im._header['exptime'] / 24 / 60 / 60]
+    aux = xa.DataArray(aux, dims='quantity', coords={'quantity':'airmass exptime mjd'.split()})
+    return im.photometry(centroid=False) + (aux,)
+
+def create_datacube(filename):
+    im.load_fits(filename)
+    cc.calculate_and_apply()
+    return im.get_aperture(5)
 
 if __name__ == '__main__':
     ap = ArgumentParser()
@@ -34,22 +46,90 @@ if __name__ == '__main__':
     ap.add_argument('object', type=str)
     ap.add_argument('passband', choices='g r i z_s all'.split())
     ap.add_argument('--result-dir', type=str, default='.')
-    ap.add_argument('--max-stars', type=int, default=8)
+    ap.add_argument('--max-stars', type=int, default=15)
     ap.add_argument('--edge-limit', type=float, default=30)
     ap.add_argument('--start-frame', type=int, default=0)
     ap.add_argument('--end-frame', type=int, default=inf)
     ap.add_argument('--plot-only', action='store_false', dest='do_photometry', default=True)
     ap.add_argument('--n-processes', type=int, default=5)
+    ap.add_argument('--chunksize', type=int, default=5)
     ap.add_argument('--save-stars', action='store_true', default=False)
+    ap.add_argument('--create-dc', action='store_true', default=False)
+
     args = ap.parse_args()
 
     root = Path(args.datadir)
     rdir = Path(args.result_dir)
 
-    files = {pb : list(root.joinpath('obj', args.object, pb).glob('MCT2?_*.fits')) for pb in 'g r i z_s'.split()}
+    all_files = {pb : sorted(list(root.joinpath('obj', args.object, pb).glob('MCT2?_*.fits'))) for pb in 'g r i z_s'.split()}
     pbs = [args.passband] if args.passband != 'all' else 'g r i z_s'.split()
 
-    with Pool(processes=4, initializer=init) as pool:
-        x = arange(12)
-        result = list(tqdm(pool.imap(f, x)))
-        print(result)
+    stars_file = Path('{}_stars.fits'.format(args.object))
+    for ipb, pb in enumerate(pbs):
+        files = all_files[pb]
+        istart = max(0, args.start_frame)
+        iend = min(args.end_frame, len(files))
+        files = files[istart:iend]
+        im = ScienceFrame(root, pb)
+        im.load_fits(files[0])
+
+        # Find, save, and load tn brightest stars
+        # ---------------------------------------
+        if (args.save_stars and ipb==0) or not stars_file.exists():
+            im.find_stars(maxn=args.max_stars)
+            im.save_reference_stars(stars_file)
+
+        im.load_reference_stars(stars_file)
+
+        # Masterframe plot with apertures
+        # -------------------------------
+        fig1 = pl.figure(figsize=(7,7))
+        if im._wcs:
+            ax1 = fig1.add_subplot(111, projection=im._wcs)
+            ax1.grid()
+        else:
+            ax1 = fig1.add_subplot(111)
+        ax1 = im.plot_reduced(minp=90, offset=10, ax=ax1)
+        ax1.set_title('Reference frame - {} {}'.format(args.object, args.passband))
+        fig1.savefig('{}-{}.png'.format(args.object, pb))
+        fig1.tight_layout()
+
+        # Individual aperture plots
+        # -------------------------
+        #fig2, axs2 = pl.subplots(1, 7, figsize=(11, 2.5), sharex=True, sharey=True)
+        #for ax, s in zip(axs2, im._apertures_obj[-1]):
+        #    p = array(s.centroid)
+        #    m = s._asky.to_mask()[0]
+        #     d = m.cutout(im.reduced)
+        #     ax.imshow(d, norm=sn(d, 'log'))
+        #     o = array([m.bbox.slices[1].start, m.bbox.slices[0].start])
+        #     ask = CircularAnnulus(p - o, s._asky.r_in, s._asky.r_out)
+        #     [CircularAperture(p - o, r).plot(ax=ax, ls='--') for r in s.apertures]
+        #     ask.plot(ax=ax)
+        # fig2.tight_layout()
+        # fig2.savefig('{}-{}-apertures.png'.format(args.object, pb))
+
+        # Datacube creation
+        # -----------------
+        if args.create_dc:
+            with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file)) as pool:
+                dc = array(list(tqdm(pool.imap(create_datacube, files, chunksize=args.chunksize), total=len(files))))
+                hdu = pf.PrimaryHDU(dc)
+                hdu.writeto('{}-{}-dc.fits'.format(args.object, pb), overwrite=True)
+
+        # Photometry
+        # ----------
+        if args.do_photometry:
+            with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file)) as pool:
+                result = list(tqdm(pool.imap(photometry, files, chunksize=args.chunksize), total=len(files)))
+
+            aux  = xa.concat([r[5] for r in result], 'frame')
+            ctime = xa.IndexVariable('mjd', aux.loc[:,'mjd'])
+            flux = xa.concat([r[0] for r in result], 'mjd').assign_coords(mjd = ctime)
+            msky = xa.concat([r[1] for r in result], 'mjd').assign_coords(mjd = ctime)
+            eobj = xa.concat([r[2] for r in result], 'mjd').assign_coords(mjd = ctime)
+            esky = xa.concat([r[3] for r in result], 'mjd').assign_coords(mjd = ctime)
+            cpos = xa.concat([r[4] for r in result], 'mjd').assign_coords(mjd = ctime)
+
+            ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos, aux=aux))
+            ds.to_netcdf('{}-{}.nc'.format(args.object, pb))
