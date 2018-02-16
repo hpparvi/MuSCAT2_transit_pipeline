@@ -3,6 +3,7 @@ from glob import glob
 from os.path import join
 
 import pandas as pd
+import xarray as xa
 from numpy import median, sqrt, diff, inf, unique, argmin
 
 

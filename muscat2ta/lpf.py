@@ -2,12 +2,13 @@ import warnings
 import math as mt
 from os.path import join, split
 
-from numpy import inf, sqrt, ones, hstack, zeros_like, median, floor, concatenate, dot, diff, log
+from numpy import (inf, sqrt, ones, hstack, zeros_like, median, floor, concatenate, dot, diff, log, ones_like,
+                   percentile, clip, argsort, any)
 from numpy.linalg import lstsq
 from numpy.random import uniform, normal
 from scipy.stats import norm as N, uniform as U, scoreatpercentile as sap
 from scipy.optimize import minimize
-
+from tqdm import tqdm
 from astropy.stats import sigma_clip, mad_std
 
 from george import GP
@@ -22,6 +23,8 @@ from exotk.utils.orbits import as_from_rhop
 from exotk.utils.likelihood import ll_normal_es
 from exotk.utils.misc import fold
 
+from pyde import DiffEvol
+
 import exodata
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -32,57 +35,42 @@ with warnings.catch_warnings():
 
 from scipy.stats import t as tdist
 
-from .parameter import *
+from parameter import *
+
 
 class BaseLPF:
-    def __init__(self, target, datasets, filters, nthreads=1, tce=2e-3, pre=1e-5, shift_tc=True):
-        self.tm = MA(interpolate=False, klims=(sqrt(0.007), sqrt(0.02)), nthr=nthreads)
+    def __init__(self, target, datasets, filters, nthreads=1):
+        self.tm = MA(interpolate=False, nthr=nthreads)
         self.target = target
         self.datasets = datasets
         self.filters = filters
         self.nthr = nthreads
-        self.npb = len(filters)
+        self.npb = npb = len(filters)
+
+        self.datasets.mask_outliers(5)
+        self.times = self.datasets.btimes
+        self.fluxes = self.datasets.bfluxes
+        self.covariates = self.datasets.bcovariates
+        self.wn = self.datasets.bwn
 
         # Read the planet parameters from the OEC
         # ---------------------------------------
-        self.planet = p  = exocat.searchPlanet(target)
-        self.star   = s  = p.star
-        self.t0_bjd = t0 = float(p.transittime)
-        self.period = pr = float(p.P)
-        self.sma         = float(p.a.rescale('R_s') / s.R)
-        self.inc         = float(p.i.rescale('rad'))
-        self.k           = float(p.R.rescale('R_s') / s.R)
-
-        # Extract the data
-        # ----------------
-        # Extract the data arrays from the dataframes and remove
-        # any outrageously clear outliers using sigma clipping
-        self._setup_arrays()
-        self.masks = outlier_masks = self.sigma_clip(sigma=3)
-        self._setup_arrays(outlier_masks)
-        self.npb = npb = len(self.fluxes)
-        self.wn = [mad_std(diff(f)) / sqrt(2) for f in self.fluxes]
-
-        t0 = self.t0
-        if shift_tc:
-            self.t0 = t0 = self.t0 + self.period * self.tno
-
-        self.compute_ot_masks()
-
-        # Define the parameters and their priors
-        # --------------------------------------
-        k2lims = array([0.8,1.2])*self.k**2
+        self.planet = exocat.searchPlanet(target)
+        p = self.planet.P if self.planet else 5.
+        t0 = datasets[0].time.mean()
+        k2lims = array([0.1, 1.2]) * diff(percentile(self.fluxes[0], [1, 99]))
+        tce = datasets[0].time.ptp() / 10
 
         psystem = [
-            GParameter('tc',  'zero_epoch',       'd',      N( t0,   tce), (-inf, inf)),
-            GParameter('pr',  'period',           'd',      N( pr,   pre), (   0, inf)),
-            GParameter('k2',  'area_ratio',       'A_s',    U(   *k2lims), (   0, inf)),
-            GParameter('rho', 'stellar_density',  'g/cm^3', U(1.0,   3.0), (   0, inf)),
-            GParameter('b',   'impact_parameter', 'R_s',    U(0.0,   1.0), (   0,   1))]
+            GParameter('tc', 'zero_epoch', 'd', N(t0, tce), (-inf, inf)),
+            GParameter('pr', 'period', 'd', N(p, 1e-5), (0, inf)),
+            GParameter('k2', 'area_ratio', 'A_s', U(*k2lims), (0, inf)),
+            GParameter('rho', 'stellar_density', 'g/cm^3', U(0.1, 5.0), (0, inf)),
+            GParameter('b', 'impact_parameter', 'R_s', U(0.0, 1.0), (0, 1))]
 
         pld = concatenate([
-            [PParameter('q1_{:d}'.format(i), 'q1_coefficient', '', U(0,1), bounds=(0,1)),
-             PParameter('q2_{:d}'.format(i), 'q2_coefficient', '', U(0,1), bounds=(0,1))]
+            [PParameter('q1_{:d}'.format(i), 'q1_coefficient', '', U(0, 1), bounds=(0, 1)),
+             PParameter('q2_{:d}'.format(i), 'q2_coefficient', '', U(0, 1), bounds=(0, 1))]
             for i in range(npb)])
 
         self.ps = ps = ParameterSet()
@@ -98,71 +86,36 @@ class BaseLPF:
         # ---------------------------
         self.par = BCP()
 
-
-    def _setup_arrays(self, masks=None):
-        self.times_bjd, self.fluxes, self.ferrs, self.auxs, self.npt = self._extract_arrays(self.datasets, masks)
-
-        # Apply the time offset
-        # ---------------------
-        self.time_offset = floor(self.times_bjd[0].min())
-        self.t0 = self.t0_bjd - self.time_offset
-        self.times       = [t - self.time_offset for t in self.times_bjd]
-        self.tno = int(round((median(self.times[0]) - self.t0)/self.period))
-
-
-    def _extract_arrays(self, datasets, masks=None):
-        times, fluxes, ferrs, auxs, npts = [], [], [], [], []
-        for i, f in enumerate(self.filters):
-            ds = datasets[f]
-            mask = ones(ds.bjd.size, bool) if masks is None else masks[i]
-            npt = int(mask.sum())
-            times.append(ds.bjd.values[mask])
-            fluxes.append(ds.flux.values[mask])
-            ferrs.append(ds.ferr.values[mask])
-            auxs.append(hstack([ones((npt, 1)), ds['bjd airmass dx dy fwhm'.split()].values[mask]]))
-            auxs[-1][:, 1:] -= auxs[-1][:, 1:].mean(0)
-            npts.append(npt)
-        return times, fluxes, ferrs, auxs, npt
-
-
-    def sigma_clip(self, pv=None, mf_width=10, sigma=6):
-        models = None if pv is None else self.compute_lc_model(pv)
-        masks = []
-        for i, flux in enumerate(self.fluxes):
-            if models is None:
-                d = zeros_like(flux)
-                d[1:] = flux[1:] - flux[:-1]
-            else:
-                d = flux - models[i]
-            masks.append(~sigma_clip(d, sigma=sigma, iters=10).mask)
-        return masks
+    def mask_outliers(self, sigma=5, mf_width=10, means=None):
+        self.datasets.mask_outliers(sigma=sigma, mf_width=mf_width, means=means)
+        self.times = self.datasets.times
+        self.fluxes = self.datasets.fluxes
+        self.covariates = self.datasets.covariates
+        self.wn = self.datasets.wn
 
     def create_pv_population(self, npop=50):
         pvp = self.ps.sample_from_prior(npop)
-        k2est = (1 - sap(concatenate(self.fluxes), 10))
-        pvp[:,2] = uniform(0.95*k2est, 1.05*k2est, pvp.shape[0])
-        #for i, p in enumerate(concatenate(self.compute_baseline_coeffs())):
-        #    pvp[:, self._sbl + i] = normal(p, 1e-3, pvp.shape[0])
+        ldsl = self.ps.blocks[1].slice
+        for i in range(pvp.shape[0]):
+            pid = argsort(pvp[i, ldsl][::2])[::-1]
+            pvp[i, ldsl][::2] = pvp[i, ldsl][::2][pid]
+            pvp[i, ldsl][1::2] = pvp[i, ldsl][1::2][pid]
         return pvp
 
-    def compute_ot_masks(self):
-        self.masks_ot = []
-        for time in self.times:
-            phase = (fold(time, self.period, self.t0, shift=0.5) - 0.5) * self.period
-            tdur = of.duration_eccentric_f(self.period, self.k, self.sma, self.inc, 0., 0., 1)
-            self.masks_ot.append(abs(phase) > 0.6 * tdur)
 
     def compute_baseline(self, pv):
         raise NotImplementedError
 
     def compute_transit(self, pv):
         _a = as_from_rhop(pv[3], pv[1])
+        if _a <= 1.:
+            return [ones_like(f) for f in self.times]
         _i = mt.acos(pv[4] / _a)
         _k = mt.sqrt(pv[2])
         fluxes = []
-        for t,s in zip(self.times, self._slld):
+        for t, s in zip(self.times, self._slld):
             q1, q2 = pv[s]
-            a, b = sqrt(q1), 2*q2
+            a, b = sqrt(q1), 2 * q2
             _uv = array([a * b, a * (1. - b)]).T
             fluxes.append(self.tm.evaluate(t, _k, _uv, pv[0], pv[1], _a, _i))
         return fluxes
@@ -179,7 +132,9 @@ class BaseLPF:
         raise NotImplementedError
 
     def lnposterior(self, pv):
-        if any(pv < self.ps.bounds[:,0]) or any(pv > self.ps.bounds[:,1]):
+        if any(pv < self.ps.bounds[:, 0]) or any(pv > self.ps.bounds[:, 1]):
+            return -inf
+        elif any(diff(sqrt(pv[self.ps.blocks[1].slice][::2])) > 0.):
             return -inf
         else:
             return self.lnprior(pv) + self.lnlikelihood(pv)
@@ -187,18 +142,22 @@ class BaseLPF:
     def __call__(self, pv):
         return self.lnposterior(pv)
 
-
+    def optimize_global(self, niter=200, npop=50):
+        self.de = DiffEvol(self.lnposterior, clip(self.ps.bounds, -1, 1), npop, maximize=True)
+        self.de._population[:, :] = self.create_pv_population(npop)
+        for _ in tqdm(self.de(niter), total=niter, desc='Differential evolution'):
+            pass
 
 class SimpleLPF(BaseLPF):
     def __init__(self, target, datasets, filters, nthreads=1):
         super().__init__(target, datasets, filters, nthreads)
 
-        pbl = [LParameter('bl_{:d}'.format(i), 'baseline', '', N(1, 1e-3), bounds=(-inf,inf)) for i in range(npb)]
-        per = [LParameter('er_{:d}'.format(i), 'sigma', '', U(1e-5, 1e-2), bounds=(-inf,inf)) for i in range(npb)]
+        pbl = [LParameter('bl_{:d}'.format(i), 'baseline', '', N(1, 1e-3), bounds=(-inf,inf)) for i in range(self.npb)]
+        per = [LParameter('er_{:d}'.format(i), 'sigma', '', U(1e-5, 1e-2), bounds=(-inf,inf)) for i in range(self.npb)]
         ps = self.ps
         ps.thaw()
-        ps.add_lightcurve_block('baseline', 1, npb, pbl)
-        ps.add_lightcurve_block('sigma', 1, npb, per)
+        ps.add_lightcurve_block('baseline', 1, self.npb, pbl)
+        ps.add_lightcurve_block('sigma', 1, self.npb, per)
         ps.freeze()
 
         # Define the parameter slices
@@ -214,26 +173,24 @@ class SimpleLPF(BaseLPF):
         return sum([ll_normal_es(self.fluxes[i], flux_m[i], pv[self._sler[i]]) for i in range(self.npb)])
 
 
-class LSqLPF(BaseLPF):
+class NormalLSqLPF(BaseLPF):
+    """Log posterior function with least-squares baseline and normal likelihood"""
     def compute_baseline(self, pv):
         model_fluxes = self.compute_transit(pv)
         for i, fm in enumerate(model_fluxes):
-            coefs = lstsq(self.auxs[i], self.fluxes[i] / fm)[0]
-            fbl = dot(self.auxs[i], coefs)
+            coefs = lstsq(self.covariates[i], self.fluxes[i] / fm)[0]
+            fbl = dot(self.covariates[i], coefs)
             model_fluxes[i] = fbl
         return model_fluxes
 
     def compute_lc_model(self, pv):
         model_fluxes = self.compute_transit(pv)
         for i, fm in enumerate(model_fluxes):
-            coefs = lstsq(self.auxs[i], self.fluxes[i] / fm)[0]
-            fbl = dot(self.auxs[i], coefs)
+            coefs = lstsq(self.covariates[i], self.fluxes[i] / fm)[0]
+            fbl = dot(self.covariates[i], coefs)
             model_fluxes[i] *= fbl
         return model_fluxes
 
-
-class NormalLSqLPF(LSqLPF):
-    """Log posterior function with least-squares baseline and normal likelihood"""
     def lnlikelihood(self, pv):
         flux_m = self.compute_lc_model(pv)
         lnlike = 0.0
@@ -242,17 +199,17 @@ class NormalLSqLPF(LSqLPF):
         return lnlike
 
 
-class StudentLSqLPF(LSqLPF):
+class StudentLSqLPF(NormalLSqLPF):
     """Log posterior function with least-squares baseline and Student T likelihood"""
 
     def __init__(self, target, datasets, filters, nthreads=1, **kwargs):
         super().__init__(target, datasets, filters, nthreads, **kwargs)
-        ps = self.ps
-        ps.thaw()
+        #ps = self.ps
+        self.ps.thaw()
         perr = [LParameter('et_{:d}'.format(i), 'error_df', '', U(1e-6, 1), bounds=(1e-6, 1)) for i in range(self.npb)]
-        ps.add_lightcurve_block('error', 1, self.npb, perr)
-        ps.freeze()
-        self.ps = ps
+        self.ps.add_lightcurve_block('error', 1, self.npb, perr)
+        self.ps.freeze()
+        #self.ps = ps
         self._sler = self.ps.blocks[2].slices
 
     def lnlikelihood(self, pv):
@@ -320,10 +277,10 @@ class GPLPF(LinearLPF):
         super().__init__(target, datasets, filters, nthreads, **kwargs)
 
         self.kernels = [
-            CK(log(1e-6), (log(1e-14), log(1e-4)), ndim=4, axes=[0]) * EK(1.0, (0.01, 1e5), ndim=4, axes=[0]) +
-            CK(log(1e-6), (log(1e-14), log(1e-4)), ndim=4, axes=[1]) * ESK(1.0, (0.50, 1e5), ndim=4, axes=[1]) +
-            CK(log(1e-6), (log(1e-14), log(1e-4)), ndim=4, axes=[2]) * ESK(1.0, (0.50, 1e5), ndim=4, axes=[2]) +
-            CK(log(1e-6), (log(1e-14), log(1e-4)), ndim=4, axes=[3]) * ESK(1.0, (0.50, 1e5), ndim=4, axes=[3])
+            CK(log(1e-6), log([[1e-14, 1e-4]]), ndim=4, axes=[0]) * EK( 1.0, log([[0.01, 1e5]]), ndim=4, axes=[0]) +
+            CK(log(1e-6), log([[1e-14, 1e-4]]), ndim=4, axes=[1]) * ESK(1.0, log([[0.50, 1e5]]), ndim=4, axes=[1]) +
+            CK(log(1e-6), log([[1e-14, 1e-4]]), ndim=4, axes=[2]) * ESK(1.0, log([[0.50, 1e5]]), ndim=4, axes=[2]) +
+            CK(log(1e-6), log([[1e-14, 1e-4]]), ndim=4, axes=[3]) * ESK(1.0, log([[0.50, 1e5]]), ndim=4, axes=[3])
             for i in range(self.npb)]
         self.gps = [GP(self.kernels[i]) for i in range(len(filters))]
 
@@ -343,9 +300,9 @@ class GPLPF(LinearLPF):
             self.lsq.append(b[:3])
             r = res[i] - dot(self.auxs[i], b)
             r -= r.mean()
-            hps.append(minimize(lambda pv: gp.nll(pv, r), gp.get_vector(),
-                                jac=lambda pv: gp.grad_nll(pv, r), bounds=gp.get_bounds()))
-            gp.set_vector(self.hps[-1].x)
+            hps.append(minimize(lambda pv: gp.nll(pv, r), gp.get_parameter_vector(),
+                                jac=lambda pv: gp.grad_nll(pv, r), bounds=gp.get_parameter_bounds()))
+            gp.set_parameter_vector(self.hps[-1].x)
             gp.compute(self.auxs[i][:, [1, 3, 4, 5]], self.wn[i])
 
     def compute_baseline(self, pv):
