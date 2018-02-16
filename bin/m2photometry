@@ -28,7 +28,6 @@ def init(root, pb, stars_file):
 def photometry(filename):
     im.load_fits(filename)
     cc.calculate_and_apply()
-
     aux = [im._header['airmass'],
            im._header['exptime'],
            im._header['mjd-strt'] + 0.5 * im._header['exptime'] / 24 / 60 / 60]

@@ -266,8 +266,8 @@ class ScienceFrame(ImageFrame):
                 warnings.simplefilter('ignore', FITSFixedWarning)
                 self._wcs = WCS(pf.getheader(wcsfile))
             if self._ref_centroids_sky is not None:
-                self._ref_centroids_pix = array(self._ref_centroids_sky.to_pixel(self._wcs)).T
-                self._cur_centroids_pix = self._ref_centroids_pix.copy()
+                self._cur_centroids_pix = array(self._ref_centroids_sky.to_pixel(self._wcs)).T
+
 
     def _initialize_tables(self, nstars, napt):
         iapt = self._xad_apt
@@ -504,8 +504,7 @@ class ScienceFrame(ImageFrame):
         for iapt, apt in enumerate(self._apertures_obj):
             self._flux[:, iapt] = apt.do_photometry(self.reduced)[0] - self._sky_median * apt.area()
         self._cshift[:] = self._cur_centroids_pix - self._ref_centroids_pix
-
-        return self.flux, self._sky_median, self.apt_entropy, self._sky_entropy, self.cshift
+        return self.flux, self._sky_median.copy(), self.apt_entropy, self._sky_entropy.copy(), self.cshift
 
 
 def apt_values(apt, im):

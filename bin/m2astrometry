@@ -10,7 +10,7 @@ from os import remove
 from itertools import repeat
 from numpy import nan, inf, array
 from multiprocessing import Pool
-from subprocess import run, PIPE
+from subprocess import run, PIPE, TimeoutExpired
 from pathlib import Path
 from argparse import ArgumentParser
 
@@ -45,8 +45,11 @@ def run_astrometry(filename, overwrite=True):
         logging.info("%s -- No RA and Dec info in the header", filename.stem)
     astcall.append(str(filename))
 
-    r = run(astcall, stdout=PIPE, stderr=PIPE, timeout=30)
-    rout = r.stdout.decode()
+    try:
+        r = run(astcall, stdout=PIPE, stderr=PIPE, timeout=30)
+        rout = r.stdout.decode()
+    except TimeoutExpired:
+        return str(filename), nan, nan, nan
 
     for ext in tmpexts:
         try:

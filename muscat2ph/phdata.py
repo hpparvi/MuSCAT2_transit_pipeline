@@ -1,13 +1,14 @@
 import xarray as xa
 from matplotlib.mlab import normpdf
 
-from numpy import inf, sqrt, dot, exp, linspace, log, zeros, array, arange, meshgrid, ones
+from numpy import inf, sqrt, dot, exp, linspace, log, zeros, array, arange, meshgrid, ones, r_
 import patsy
 from numpy.linalg import lstsq
 from photutils import CircularAperture
 from scipy.interpolate import interp1d
 from astropy.time import Time
 from astropy import coordinates as coord, units as u
+from astropy.stats import mad_std
 
 lapalma = coord.EarthLocation.from_geodetic(-17.8799*u.deg, 28.758*u.deg, 2327*u.m)
 
@@ -36,6 +37,7 @@ class PhotometryData:
         self._fmask[:self.fstart] = 0
         self._fmask[self.fend:] = 0
         self._fmask &= self._flux.notnull().any(['star','aperture'])
+        self._fmask = array(self._fmask)
 
         self._entropy_table = None
         self._calculate_effective_fwhm()
@@ -49,13 +51,13 @@ class PhotometryData:
             return -(a * log(a)).sum()
 
         fwhms = exp(linspace(log(1), log(50), 100))
-        self._entropy_table = xa.DataArray(zeros((3, 100)), name='entropy', dims='aperture fwhm'.split(),
+        self._entropy_table = xa.DataArray(zeros((self.napt, 100)), name='entropy', dims='aperture fwhm'.split(),
                                            coords={'aperture': self._ds.aperture, 'fwhm': fwhms})
 
         for i, ar in enumerate(array(self._ds.aperture)):
             apt = CircularAperture((0, 0), ar)
             msk = apt.to_mask()[0]
-            mb = msk.array.astype('bool')
+            mb = msk.data.astype('bool')
             x, y = meshgrid(arange(mb.shape[0]), arange(mb.shape[1]))
             r = sqrt((x - ar)**2 + (y - ar)**2)
             sigmas = fwhms / 2.355
@@ -71,11 +73,16 @@ class PhotometryData:
                 m = self._fwhm.loc[:, star, aperture].notnull()
                 self._fwhm.loc[m, star, aperture] = ip(self._ds.obj_entropy.loc[m, star, aperture])
 
+
+    def select_aperture(self):
+        self.iapt = int(self.normalized_relative_flux_ptps.argmin())
+
+
     @property
     def aux(self):
         return xa.DataArray(list(map(array, [self.mjd.value, self.sky, self.airmass, self.xshift, self.yshift, self.entropy])),
-                     name='aux', dims='quantity frame'.split(),
-                     coords={'frame': self._ds.frame[self.fstart:self.fend],
+                     name='aux', dims='quantity mjd'.split(),
+                     coords={'mjd': self._ds.mjd[self.fstart:self.fend],
                              'quantity': 'mjd sky airmass xshift yshift entropy'.split()}).T
 
     @property
@@ -100,28 +107,33 @@ class PhotometryData:
 
     @property
     def sky(self):
-        return self._sky[self._fmask,:].mean('star')
+        return self._sky[self._fmask,r_[self.tid, self.cids]].mean('star')
 
     @property
     def entropy(self):
-        return self._ds.obj_entropy[self._fmask, :, self.iapt].mean('star')
+        return self._ds.obj_entropy[self._fmask, r_[self.tid, self.cids], self.iapt].mean('star')
 
     @property
     def effective_fwhm(self):
-        return self._fwhm[self._fmask, :, self.iapt].mean('star')
+        return self._fwhm[self._fmask, r_[self.tid, self.cids], self.iapt].mean('star')
 
     @property
     def xshift(self):
-        return (self._cnt[self._fmask, :, 0] - self._cnt[self.fstart,:,0]).mean('star')
+        return (self._cnt[self._fmask, r_[self.tid, self.cids], 0] - self._cnt[self.fstart,r_[self.tid, self.cids],0]).mean('star')
 
     @property
     def yshift(self):
-        return (self._cnt[self._fmask, :, 1] - self._cnt[self.fstart,:,1]).mean('star')
+        return (self._cnt[self._fmask, r_[self.tid, self.cids], 1] - self._cnt[self.fstart,r_[self.tid, self.cids],1]).mean('star')
 
     @property
     def relative_flux(self):
+        f = self.flux[:, self.tid, self.iapt] / self.flux[:, self.cids, self.iapt].sum('star')
+        return f / f.median('mjd')
+
+    @property
+    def relative_fluxes(self):
         f = self.flux[:, self.tid, :] / self.flux[:, self.cids, :].sum('star')
-        return f / f.median('frame')
+        return f / f.median('mjd')
 
     @property
     def linear_trend(self):
@@ -132,19 +144,20 @@ class PhotometryData:
     @property
     def detrended_relative_flux(self):
         f = self.relative_flux / self.linear_trend
-        return f / f.median('frame')
+        return f / f.median('mjd')
 
     @property
     def normalized_std_per_star(self):
-        return (self.flux / self.flux.median('frame')).std('frame')
+        return (self.flux / self.flux.median('mjd')).std('mjd')
 
     @property
     def normalized_ptps_per_star(self):
-        return (self.flux / self.flux.median('frame')).diff('frame').std('frame') / sqrt(2)
+        return (self.flux / self.flux.median('mjd')).diff('mjd').std('mjd') / sqrt(2)
 
     @property
     def normalized_relative_flux_ptps(self):
-        return self.relative_flux.diff('frame').std('frame') / sqrt(2)
+        return xa.DataArray(mad_std(self.relative_fluxes.diff('mjd'), 0) / sqrt(2),
+                            dims='aperture', coords={'aperture': self._flux.aperture})
 
     def plot_single(self, iobj, iapt, plot_excluded=False):
         self.flux[:, iobj, iapt].plot(marker='.', linestyle='')
