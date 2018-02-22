@@ -1,0 +1,67 @@
+#!/usr/bin/env python
+import warnings
+import sys
+from argparse import ArgumentParser
+
+from numpy import sqrt
+from matplotlib.backends.backend_pdf import PdfPages
+import matplotlib.pyplot as pl
+
+from corner import corner
+from muscat2ta.transitanalysis import TransitAnalysis
+from muscat2ta.gp import find_period
+
+if __name__ == '__main__':
+    ap = ArgumentParser()
+    ap.add_argument('target', type=str)
+    ap.add_argument('datadir', type=str)
+    ap.add_argument('tid', type=int)
+    ap.add_argument('cids', type=int, nargs='+')
+    ap.add_argument('--exptime', type=float, default=30.)
+    ap.add_argument('--plot-dir', type=str, default='.')
+    ap.add_argument('--npop', default=100, type=int)
+    ap.add_argument('--niter-od', default=30, type=int)
+    ap.add_argument('--niter-de', default=500, type=int)
+    ap.add_argument('--niter-mc', default=500, type=int)
+    ap.add_argument('--npasses', default=2, type=int)
+    args = ap.parse_args()
+
+    ta = TransitAnalysis(args.datadir, args.target, args.tid, args.cids, etime=args.exptime)
+
+    with PdfPages('{}.pdf'.format(args.target)) as pdf:
+        ta.optimize_linear_model(args.niter_de)
+        ta.learn_gp_hyperparameters()
+        ta.optimize_gp_model(args.niter_de)
+        ta.sample_gp_model(args.niter_mc, 5)
+
+        pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
+        pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
+        pdf.savefig(ta.plot_light_curve('gp', 'de',   detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
+        pdf.savefig(ta.plot_light_curve('gp', 'mcmc', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
+        pdf.savefig(ta.plot_noise('bins'))
+        df = ta.posterior_samples()
+        df['k'] = sqrt(df.k2)
+        df.drop('k2', axis=1, inplace=True)
+        pdf.savefig(corner(df))
+
+        ta.print_ptp_scatter()
+        ta.save()
+
+        #fig, axs = pl.subplots(2, 2, figsize=(11, 6), sharex=True, sharey=True)
+        #for i, gpf in enumerate(ta.gpfs):
+        #    prediction = gpf.gp.predict(gpf.residuals, gpf.covariates, return_cov=False, kernel=gpf.kernels[2])
+        #    axs.flat[i].tripcolor(gpf.covariates[:, 2], gpf.covariates[:, 3], prediction)
+        #fig.tight_layout()
+        #pdf.savefig(fig)
+
+        #fig, axs = pl.subplots(2, 2, figsize=(11, 6), sharex=True, sharey=True)
+        #for i in range(4):
+        #    _, freq1, power1 = find_period(ta.gpfs[i].time, ta.gpfs[i].residuals)
+        #    _, freq2, power2 = find_period(ta.gpfs[i].time, ta.gpfs[i].residuals - ta.gp_predictions[i])
+            # axs.flat[i].plot(1/freq1*60*24, power1/power1.max(), 'k', alpha=0.5)
+            # axs.flat[i].plot(1/freq2*60*24, power2/power1.max(), '.')
+        #    axs.flat[i].plot(1 / freq1 * 60 * 24, power1, 'k', alpha=0.5)
+        #    axs.flat[i].plot(1 / freq2 * 60 * 24, power2, '.')
+        # setp(axs, xlim=(1,6))
+        #fig.tight_layout()
+        #pdf.savefig(fig)
