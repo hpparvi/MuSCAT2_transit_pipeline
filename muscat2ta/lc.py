@@ -2,10 +2,16 @@ import math as m
 import numpy as np
 
 
-from numpy import ones, sqrt, array, concatenate, diff, ones_like, floor, ceil
+from numpy import ones, full, sqrt, array, concatenate, diff, ones_like, floor, ceil, all, arange, digitize, zeros, nan
 from scipy.ndimage import median_filter as mf
 from astropy.stats import sigma_clip, mad_std
 
+def find_period(time, flux, minp=1, maxp=10):
+    min2day = 1 / 60 / 24
+    ls = LombScargle(time, flux - flux.mean())
+    freq = linspace(1 / (maxp * min2day), 1 / (minp * min2day), 2500)
+    power = ls.power(freq)
+    return 1 / freq[argmax(power)], freq, power
 
 class M2LightCurve:
     def __init__(self, time, flux, covariates):
@@ -19,25 +25,39 @@ class M2LightCurve:
         self.bcovariates = self.covariates
         self.bwn = self.wn
 
-    def downsample_time(self, exptime, inttime=30.):
-        pperbin = int(ceil(inttime / exptime))
-        nbins = int(floor(self.flux.size / pperbin))
-        iend = pperbin * nbins
+    def downsample_time(self, inttime=30.):
+        duration = 24 * 60 * 60 * self.time.ptp()
+        nbins = int(ceil(duration / inttime))
+        bins = arange(nbins)
+        edges = self.time[0] + bins * inttime / 24 / 60 / 60
+        bids = digitize(self.time, edges) - 1
+        bt, bf, be, bc = full(nbins, nan), zeros(nbins), zeros(nbins), zeros([nbins, self.covariates.shape[1]])
+        for i, bid in enumerate(bins):
+            bmask = bid == bids
+            if bmask.sum() > 0:
+                bt[i] = self.time[bmask].mean()
+                bf[i] = self.flux[bmask].mean()
+                if bmask.sum() > 2:
+                    be[i] = self.flux[bmask].std() / sqrt(bmask.sum())
+                else:
+                    be[i] = self.wn
+                bc[i] = self.covariates[bmask].mean(0)
+        m = np.isfinite(bt)
+        self.btime, self.bflux, self.bwn, self.bcovariates = bt[m], bf[m], be[m], bc[m]
 
-        self.btime = self.time[:iend].reshape([-1, pperbin]).mean(1)
-        self.bflux = self.flux[:iend].reshape([-1, pperbin]).mean(1)
-        self.bwn   = self.flux[:iend].reshape([-1, pperbin]).std(1) / sqrt(pperbin)
-        self.bcovariates = self.covariates[:iend].reshape([-1, pperbin, 7]).mean(1)
 
     def downsample_nbins(self, nbins=500):
-        pperbin = int(floor((self.flux.size / nbins)))
-        nbins = int(floor(self.flux.size / pperbin))
+        pperbin = max(1, int(floor((self.flux.size / nbins))))
+        nbins = max(1, int(floor(self.flux.size / pperbin)))
         iend =  pperbin * nbins
 
         self.btime = self.time[:iend].reshape([-1, pperbin]).mean(1)
         self.bflux = self.flux[:iend].reshape([-1, pperbin]).mean(1)
         self.bwn   = self.flux[:iend].reshape([-1, pperbin]).std(1) / sqrt(pperbin)
         self.bcovariates = self.covariates[:iend].reshape([-1, pperbin, 7]).mean(1)
+
+        if all(self.bwn < 1e-8):
+            self.bwn[:] = self.wn
 
     @property
     def time(self):
