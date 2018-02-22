@@ -79,14 +79,18 @@ class BaseLPF:
              PParameter('q2_{:d}'.format(i), 'q2_coefficient', '', U(0, 1), bounds=(0, 1))]
             for i in range(npb)])
 
+        pbl = [LParameter('bl_{:d}'.format(i), 'baseline', '', N(1, 1e-3), bounds=(-inf,inf)) for i in range(self.npb)]
+
         self.ps = ps = ParameterSet()
         ps.add_global_block('system', psystem)
         ps.add_passband_block('ldc', 2, npb, pld)
+        ps.add_lightcurve_block('baseline', 1, npb, pbl)
         ps.freeze()
 
         # Define the parameter slices
         # ---------------------------
         self._slld = ps.blocks[1].slices
+        self._slbl = ps.blocks[2].slice
 
         # Setup basic parametrisation
         # ---------------------------
@@ -110,7 +114,7 @@ class BaseLPF:
         return pvp
 
     def baseline(self, pv):
-        return ones(self.npb)
+        return pv[self._slbl]
 
     def transit_model(self, pv):
         _a = as_from_rhop(pv[3], pv[1])
@@ -201,16 +205,16 @@ class NormalLSqLPF(BaseLPF):
     def baseline(self, pv):
         model_fluxes = self.transit_model(pv)
         for i, fm in enumerate(model_fluxes):
-            coefs = lstsq(self.covariates[i], self.fluxes[i] / fm)[0]
-            fbl = dot(self.covariates[i], coefs)
+            coefs = lstsq(self.covariates[i][:,1:], self.fluxes[i] / fm)[0]
+            fbl = dot(self.covariates[i][:,1:], coefs)
             model_fluxes[i] = fbl
         return model_fluxes
 
     def flux_model(self, pv):
         model_fluxes = self.transit_model(pv)
         for i, fm in enumerate(model_fluxes):
-            coefs = lstsq(self.covariates[i], self.fluxes[i] / fm)[0]
-            fbl = dot(self.covariates[i], coefs)
+            coefs = lstsq(self.covariates[i][:,1:], self.fluxes[i] / fm)[0]
+            fbl = dot(self.covariates[i][:,1:], coefs)
             model_fluxes[i] *= fbl
         return model_fluxes
 
@@ -231,7 +235,7 @@ class StudentLSqLPF(NormalLSqLPF):
         perr = [LParameter('et_{:d}'.format(i), 'error_df', '', U(1e-6, 1), bounds=(1e-6, 1)) for i in range(self.npb)]
         self.ps.add_lightcurve_block('error', 1, self.npb, perr)
         self.ps.freeze()
-        self._sler = self.ps.blocks[2].slices
+        self._sler = self.ps.blocks[3].slices
 
     def lnlikelihood(self, pv):
         flux_m = self.flux_model(pv)
