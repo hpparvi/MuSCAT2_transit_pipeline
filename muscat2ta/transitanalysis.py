@@ -18,13 +18,14 @@ from muscat2ta.lpf import StudentLSqLPF, GPLPF
 class TransitAnalysis:
     pbs = 'g r i z_s'.split()
 
-    def __init__(self, datadir, target, tid, cids, fend=inf, etime=30.):
+    def __init__(self, datadir, target, tid, cids, fends=(inf, inf, inf, inf), etime=30.):
         self.ddata = dd = Path(datadir)
         self.target = target
         self.tid = tid
         self.cids = cids
         self.phs = [PhotometryData(dd.joinpath('{}-{}.nc'.format(target, pb)), tid, cids, fend=fend)
-                    for pb in self.pbs]
+                    for pb,fend in zip(self.pbs, fends)]
+
         [ph.select_aperture() for ph in self.phs]
         self.lcs = M2LCSet([M2LightCurve(ph.jd, ph.relative_flux, ph.aux) for ph in self.phs])
         self.lcs.mask_outliers()
@@ -34,8 +35,8 @@ class TransitAnalysis:
             et = float(ph._aux.loc[:, 'exptime'].mean())
             lc.downsample_time(etime)
 
-        self.lmlpf = StudentLSqLPF(target, self.lcs, self.pbs)
-        self.gplpf = GPLPF(target, self.lcs, self.pbs)
+        self.lmlpf = StudentLSqLPF(target, self.lcs, self.pbs, free_k=True)
+        self.gplpf = GPLPF(target, self.lcs, self.pbs, free_k=True)
 
         self.lm_pv = None
         self.gp_pv = None
@@ -64,9 +65,10 @@ class TransitAnalysis:
         self.lmlpf.mask_outliers(sigma=sigma, means=self.lmlpf.flux_model(self.lm_pv))
 
 
-    def learn_gp_hyperparameters(self):
+    def learn_gp_hyperparameters(self, method='L-BFGS-B'):
         assert self.lm_pv is not None, 'Must carry out linear model optimisation before GP hyperparameter optimisation'
-        self.gplpf.optimize_hps(self.lm_pv)
+        self.gplpf.optimize_hps_jointly(self.lm_pv, method=method)
+        #self.gplpf.optimize_hps(self.lm_pv, method=method)
 
     def posterior_samples(self, nsteps=0, model='gp', include_ldc=False):
         assert model in ('linear', 'gp')
@@ -106,7 +108,7 @@ class TransitAnalysis:
 
         if model == 'linear':
             baseline = lpf.baseline(pv)
-            fluxes_obs = [lpf.fluxes[i] / baseline[i] for i in range(4)] if detrend_obs else lpf.fluxes
+            fluxes_obs = [lpf.fluxes[i] - baseline[i] for i in range(4)] if detrend_obs else lpf.fluxes
             fluxes_mod = lpf.transit_model(pv) if detrend_mod else lpf.flux_model(pv)
         else:
             baseline = lpf.predict(pv)
@@ -125,8 +127,6 @@ class TransitAnalysis:
                 ax.plot(lpf.times[i], fluxes_mod[i], 'k-', lw=1)
                 ax.plot(lpf.times[i], fluxes_obs[i] - fluxes_mod[i] + shift, 'k.', alpha=0.25)
                 if posterior_limits:
-                    ax.fill_between(lpf.times[i], posterior_limits[i][2], posterior_limits[i][3], facecolor='k',
-                                    alpha=0.3)
                     ax.fill_between(lpf.times[i], posterior_limits[i][0], posterior_limits[i][1], facecolor='k',
                                     alpha=0.3)
         setp(axs, xlim=lpf.times[0][[0, -1]])
@@ -169,7 +169,7 @@ class TransitAnalysis:
                             coords={'gp_parameter': self.gplpf.ps.names})
         gphp = xa.DataArray(self.gplpf.gphps, dims='filter gp_hyperparameter'.split(),
                             coords={'filter': 'g r i z'.split(),
-                                    'gp_hyperparameter': 'mean sky airmass xy_amplitude xy_scale entropy'.split()})
+                                    'gp_hyperparameter': 'sky airmass xy_amplitude xy_scale entropy'.split()})
         gpmc = xa.DataArray(self.gplpf.sampler.chain, dims='pvector step gp_parameter'.split(),
                             coords={'gp_parameter': self.gplpf.ps.names},
                             attrs={'ndim': self.gplpf.de.n_par, 'npop': self.gplpf.de.n_pop})

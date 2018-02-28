@@ -9,7 +9,7 @@ import matplotlib.pyplot as pl
 
 from corner import corner
 from muscat2ta.transitanalysis import TransitAnalysis
-from muscat2ta.gp import find_period
+from muscat2ta.lc import find_period
 
 if __name__ == '__main__':
     ap = ArgumentParser()
@@ -40,8 +40,8 @@ if __name__ == '__main__':
         pdf.savefig(ta.plot_light_curve('gp', 'mcmc', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
         pdf.savefig(ta.plot_noise('bins'))
         df = ta.posterior_samples()
-        df['k'] = sqrt(df.k2)
-        df.drop('k2', axis=1, inplace=True)
+        #df['k'] = sqrt(df.k2)
+        #df.drop('k2', axis=1, inplace=True)
         pdf.savefig(corner(df))
 
         ta.print_ptp_scatter()
