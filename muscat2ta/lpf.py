@@ -245,17 +245,20 @@ class GPLPF(BaseLPF):
         self.covariates = [cv[:, self.covids] for cv in self.covariates]
         self.freeze = []
         self.standardize = []
+
         self.gps = [GP(self._create_kernel(),
-                       #mean=0., fit_mean=False,
+                       mean=0., fit_mean=False,
                        white_noise=wn, fit_white_noise=False) for wn in self.logwnvar]
+
+        # Freeze the GP hyperparameters marked as frozen in _create_kernel
         for gp in self.gps:
             pars = gp.get_parameter_names()
             [gp.freeze_parameter(pars[i]) for i in self.freeze]
-        #self.gps = [GP(self._create_kernel()) for wn in self.logwnvar]
 
-        #for c in self.covariates:
-        #    for i in self.standardize:
-        #        c[:,i] = (c[:,i] - c[:,i].min()) / c[:,i].ptp()
+        # Standardize the covariates marked to be standardized in _create_kernel
+        for c in self.covariates:
+            for i in self.standardize:
+                c[:,i] = (c[:,i] - c[:,i].min()) / c[:,i].ptp()
 
         self.compute_always = False
         self.compute_gps()
@@ -303,51 +306,7 @@ class GPLPF(BaseLPF):
 
     def _create_kernel(self):
         self.covids = (2, 3, 4, 5, 6)
-        nd = len(self.covids)
-        logv = self.logwnvar.mean()
-        kernel_sk = LK(0, order=1, bounds=((None, None),), ndim=nd, axes=0)
-        kernel_am = LK(0, order=1, bounds=((None, None),), ndim=nd, axes=1)
-        kernel_xy = (CK(logv, bounds=((-18, -7),), ndim=nd, axes=[2, 3])
-                     * ESK(2, metric_bounds=((0, 20),), ndim=nd, axes=[2, 3]))
-        kernel_en = LK(0, order=1, bounds=((None, None),), ndim=nd, axes=4)
-        self.kernels = kernel_sk, kernel_am, kernel_xy, kernel_en
-        return kernel_sk + kernel_am + kernel_xy + kernel_en
-
-
-    def _create_kernel(self):
-        self.covids = (2, 3, 4, 5, 6)
-        logv = self.logwnvar.mean()
-        kernel_sk = CK(logv, bounds=((-18, -8),), ndim=5) * ESK(10, metric_bounds=((1, 20),), ndim=5, axes=0)
-        kernel_am = CK(logv, bounds=((-18, -8),), ndim=5) * ESK(10, metric_bounds=((1, 20),), ndim=5, axes=1)
-        kernel_xy = (CK(logv, bounds=((-18, -8),), ndim=5)
-                     * ESK(10, metric_bounds=((0, 10),), ndim=5, axes=[2, 3]))
-        kernel_en = CK(logv, bounds=((-18, -8),), ndim=5) * ESK(10, metric_bounds=((1, 20),), ndim=5, axes=4)
-        self.kernels = kernel_sk, kernel_am, kernel_xy, kernel_en
-        return kernel_sk + kernel_am + kernel_xy + kernel_en
-
-    def _create_kernel(self):
-        self.covids = (1,4,5)
-        nd = len(self.covids)
-        logv = self.logwnvar.mean()
-        kernel_tm = (CK(logv, bounds=((-18, -8),), ndim=3) * EK(0.01, metric_bounds=((-10, 10),), ndim=3, axes=0))
-        kernel_xy = (CK(logv, bounds=((-18, -8),), ndim=3) * ESK(10, metric_bounds=((0, 10),), ndim=3, axes=[1, 2]))
-        self.kernels = kernel_tm, kernel_xy
-        return kernel_tm + kernel_xy
-
-    def _create_kernel(self):
-        self.covids = (6,4,5)
-        nd = len(self.covids)
-        logv = self.logwnvar.mean()
-        kernel_tm = CK(logv, bounds=((-18, -8),), ndim=nd) * LK(0, order=1, bounds=((None, None),), ndim=nd, axes=0)
-        #kernel_tm = (CK(logv, bounds=((-18, -8),), ndim=nd) * EK(1e3, metric_bounds=((0, 40),), ndim=nd, axes=0))
-        kernel_xy =  ESK(10, metric_bounds=((0, 10),), ndim=nd, axes=[1, 2])
-        self.kernels = kernel_tm, kernel_xy
-        #self.freeze = [2]
-        return kernel_tm * kernel_xy
-
-    def _create_kernel(self):
-        self.covids = (2, 3, 4, 5, 6)
-        self.standardize = (0,1,4)
+        self.standardize = []
         nd = len(self.covids)
         logv = self.logwnvar.mean()
         kernel_sk = LK(0, order=1, bounds=((None, None),), ndim=nd, axes=0)
