@@ -18,12 +18,13 @@ from muscat2ta.lpf import StudentLSqLPF, GPLPF
 class TransitAnalysis:
     pbs = 'g r i z_s'.split()
 
-    def __init__(self, datadir, target, tid, cids, fends=(inf, inf, inf, inf), etime=30.):
+    def __init__(self, datadir, target, date, tid, cids, fends=(inf, inf, inf, inf), etime=30., free_k=True):
         self.ddata = dd = Path(datadir)
         self.target = target
         self.tid = tid
         self.cids = cids
-        self.phs = [PhotometryData(dd.joinpath('{}-{}.nc'.format(target, pb)), tid, cids, fend=fend)
+        self.free_k = free_k
+        self.phs = [PhotometryData(dd.joinpath('{}_{}_{}.nc'.format(target, date, pb)), tid, cids, fend=fend)
                     for pb,fend in zip(self.pbs, fends)]
 
         [ph.select_aperture() for ph in self.phs]
@@ -35,8 +36,8 @@ class TransitAnalysis:
             et = float(ph._aux.loc[:, 'exptime'].mean())
             lc.downsample_time(etime)
 
-        self.lmlpf = StudentLSqLPF(target, self.lcs, self.pbs, free_k=True)
-        self.gplpf = GPLPF(target, self.lcs, self.pbs, free_k=True)
+        self.lmlpf = StudentLSqLPF(target, self.lcs, self.pbs, free_k=free_k)
+        self.gplpf = GPLPF(target, self.lcs, self.pbs, free_k=free_k)
 
         self.lm_pv = None
         self.gp_pv = None
@@ -65,19 +66,22 @@ class TransitAnalysis:
         self.lmlpf.mask_outliers(sigma=sigma, means=self.lmlpf.flux_model(self.lm_pv))
 
 
-    def learn_gp_hyperparameters(self, method='L-BFGS-B'):
+    def learn_gp_hyperparameters(self, joint_fit=True, method='L-BFGS-B'):
         assert self.lm_pv is not None, 'Must carry out linear model optimisation before GP hyperparameter optimisation'
-        self.gplpf.optimize_hps_jointly(self.lm_pv, method=method)
-        #self.gplpf.optimize_hps(self.lm_pv, method=method)
+        if joint_fit:
+            self.gplpf.optimize_hps_jointly(self.lm_pv, method=method)
+        else:
+            self.gplpf.optimize_hps(self.lm_pv, method=method)
 
     def posterior_samples(self, nsteps=0, model='gp', include_ldc=False):
         assert model in ('linear', 'gp')
         lpf = self.lmlpf if model == 'linear' else self.gplpf
+        ldstart = lpf._slld[0].start
         fc = lpf.sampler.chain[:,-nsteps:,:].reshape([-1, lpf.de.n_par])
         if include_ldc:
             return pd.DataFrame(fc, columns=lpf.ps.names)
         else:
-            return pd.DataFrame(fc[:,:5], columns=lpf.ps.names[:5])
+            return pd.DataFrame(fc[:,:ldstart], columns=lpf.ps.names[:ldstart])
 
     def plot_mcmc_chains(self, pid=0, model='gp', alpha=0.1):
         assert model in ('linear', 'gp')
@@ -103,7 +107,7 @@ class TransitAnalysis:
             fc = lpf.sampler.chain[:, niter // 2:, :].reshape([-1, lpf.de.n_par])
             fms = [lpf.flux_model(pv) for pv in permutation(fc)[:100]]
             fms = [array([fm[i] for fm in fms]) for i in range(4)]
-            posterior_limits = [percentile(fm, [16, 84, 0.5, 99.5], 0) for fm in fms]
+            posterior_limits = pl = [percentile(fm, [16, 84, 0.5, 99.5], 0) for fm in fms]
             pv = median(fc, 0)
 
         if model == 'linear':
@@ -113,26 +117,48 @@ class TransitAnalysis:
         else:
             baseline = lpf.predict(pv)
             fluxes_obs = [lpf.fluxes[i] - baseline[i] for i in range(4)] if detrend_obs else lpf.fluxes
-            fluxes_mod = lpf.transit_model(pv) if detrend_mod else [fm + bl for fm, bl in zip(lpf.transit_model(pv), baseline)]
+            fluxes_mod = lpf.flux_model(pv)
 
         fig, axs = subplots(2, 2, figsize=figsize, sharex=True, sharey=True)
-        for i, ax in enumerate(axs.flat):
-            ax.plot(lpf.times[i], fluxes_obs[i], 'k.', alpha=0.25)
+        for i, (ax, time) in enumerate(zip(axs.flat, lpf.times)):
+
+            # Plot the observations
+            # ---------------------
+            ax.plot(time, fluxes_obs[i], 'k.', alpha=0.25)
+
             if include_mod:
+                # Plot the residuals
+                # ------------------
                 omin = fluxes_obs[i].min()
                 rmax = (fluxes_obs[i] - fluxes_mod[i]).max()
                 shift = omin - rmax
-                if not posterior_limits:
-                    ax.plot(lpf.times[i], fluxes_mod[i], 'w-', lw=3)
-                ax.plot(lpf.times[i], fluxes_mod[i], 'k-', lw=1)
-                ax.plot(lpf.times[i], fluxes_obs[i] - fluxes_mod[i] + shift, 'k.', alpha=0.25)
+                ax.plot(time, fluxes_obs[i] - fluxes_mod[i] + shift, 'k.', alpha=0.25)
+
+                # Plot the model
+                # ---------------
                 if posterior_limits:
-                    ax.fill_between(lpf.times[i], posterior_limits[i][0], posterior_limits[i][1], facecolor='k',
-                                    alpha=0.3)
+                    ax.fill_between(time, pl[i][0], pl[i][1], facecolor='k', alpha=0.5)
+                    ax.fill_between(time, pl[i][2], pl[i][3], facecolor='k', alpha=0.2)
+                else:
+                    ax.plot(lpf.times[i], fluxes_mod[i], 'w-', lw=3)
+                    ax.plot(lpf.times[i], fluxes_mod[i], 'k-', lw=1)
+
         setp(axs, xlim=lpf.times[0][[0, -1]])
         fig.tight_layout()
         return fig
 
+    def plot_gpfit(self, figsize=(11,6)):
+        lpf = self.gplpf
+        pv = lpf.de.minimum_location
+        predictions = lpf.predict(pv, True)
+        flux_m = lpf.flux_model(pv)
+        fig, axs = subplots(2, 2, figsize=figsize, sharey=True, sharex=True)
+        for i,(tm,fo,fm,pr) in enumerate(zip(lpf.times, lpf.fluxes, flux_m, predictions)):
+            axs.flat[i].plot(tm, fo, 'k.', alpha=0.2)
+            axs.flat[i].plot(tm, fm + pr[0], 'k')
+            axs.flat[i].fill_between(tm, pr[0] + fm + 3*sqrt(pr[1]), pr[0] + fm - 3*sqrt(pr[1]), alpha=0.5)
+        fig.tight_layout()
+        return fig
 
     def plot_noise(self, xtype='time'):
         binf = arange(1, 50)
@@ -177,4 +203,4 @@ class TransitAnalysis:
                                    'gp_hyperparameters': gphp, 'gp_mcmc': gpmc},
                         attrs={'created': strftime('%Y-%m-%d %H:%M:%S'), 'obsnight':self.ddata.absolute().name,
                                'tid':self.tid, 'cids':self.cids, 'target':self.target})
-        ds.to_netcdf('{}_{}_fit.nc'.format(self.target, self.ddata.absolute().name))
+        ds.to_netcdf('{}_{}_{}_fit.nc'.format(self.target, self.ddata.absolute().name, 'nongray' if self.free_k else 'gray'))
