@@ -49,7 +49,7 @@ if __name__ == '__main__':
     ap.add_argument('--edge-limit', type=float, default=30)
     ap.add_argument('--start-frame', type=int, default=0)
     ap.add_argument('--end-frame', type=int, default=inf)
-    ap.add_argument('--with-wcs-only', action='store_true, default=False)
+    ap.add_argument('--with-wcs-only', action='store_true', default=False)
     ap.add_argument('--plot-only', action='store_false', dest='do_photometry', default=True)
     ap.add_argument('--n-processes', type=int, default=5)
     ap.add_argument('--chunksize', type=int, default=5)
