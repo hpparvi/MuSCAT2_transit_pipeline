@@ -18,12 +18,15 @@ from muscat2ta.lpf import StudentLSqLPF, GPLPF
 class TransitAnalysis:
     pbs = 'g r i z_s'.split()
 
-    def __init__(self, datadir, target, date, tid, cids, fends=(inf, inf, inf, inf), etime=30., free_k=True):
+    def __init__(self, datadir, target, date, tid, cids, fends=(inf, inf, inf, inf), etime=30.,
+                 free_k=True, contamination=True, npop=100):
         self.ddata = dd = Path(datadir)
         self.target = target
         self.tid = tid
         self.cids = cids
         self.free_k = free_k
+        self.npop = npop
+
         self.phs = [PhotometryData(dd.joinpath('{}_{}_{}.nc'.format(target, date, pb)), tid, cids, fend=fend)
                     for pb,fend in zip(self.pbs, fends)]
 
@@ -36,8 +39,8 @@ class TransitAnalysis:
             et = float(ph._aux.loc[:, 'exptime'].mean())
             lc.downsample_time(etime)
 
-        self.lmlpf = StudentLSqLPF(target, self.lcs, self.pbs, free_k=free_k)
-        self.gplpf = GPLPF(target, self.lcs, self.pbs, free_k=free_k)
+        self.lmlpf = StudentLSqLPF(target, self.lcs, self.pbs, free_k=free_k, contamination=contamination)
+        self.gplpf = GPLPF(target, self.lcs, self.pbs, free_k=free_k, contamination=contamination)
 
         self.lm_pv = None
         self.gp_pv = None
@@ -51,11 +54,11 @@ class TransitAnalysis:
 
 
     def optimize_linear_model(self, niter=100):
-        self.lmlpf.optimize_global(niter, label='Optimizing linear model')
+        self.lmlpf.optimize_global(niter, self.npop, label='Optimizing linear model')
         self.lm_pv = self.lmlpf.de.minimum_location
 
     def optimize_gp_model(self, niter=100):
-        self.gplpf.optimize_global(niter, label='Optimizing GP model')
+        self.gplpf.optimize_global(niter, self.npop, label='Optimizing GP model')
         self.gp_pv = self.gplpf.de.minimum_location
 
     def sample_gp_model(self, niter=100, thin=5):
@@ -112,7 +115,9 @@ class TransitAnalysis:
 
         if model == 'linear':
             baseline = lpf.baseline(pv)
-            fluxes_obs = [lpf.fluxes[i] - baseline[i] for i in range(4)] if detrend_obs else lpf.fluxes
+            trends = lpf.trends(pv)
+            fluxes_obs = [lpf.fluxes[i] / baseline[i] - trends[i] for i in range(4)] if detrend_obs else [f/b for f,b in zip(lpf.fluxes, baseline)]
+            fluxes_trm = lpf.transit_model(pv)
             fluxes_mod = lpf.transit_model(pv) if detrend_mod else lpf.flux_model(pv)
         else:
             baseline = lpf.predict(pv)
@@ -126,6 +131,7 @@ class TransitAnalysis:
             # ---------------------
             ax.plot(time, fluxes_obs[i], 'k.', alpha=0.25)
 
+
             if include_mod:
                 # Plot the residuals
                 # ------------------
@@ -133,6 +139,8 @@ class TransitAnalysis:
                 rmax = (fluxes_obs[i] - fluxes_mod[i]).max()
                 shift = omin - rmax
                 ax.plot(time, fluxes_obs[i] - fluxes_mod[i] + shift, 'k.', alpha=0.25)
+                ax.text(0.97, 0.9, 'STD: {:3.0f} ppm'.format((fluxes_obs[i] / fluxes_trm[i]).std()*1e6),
+                        ha='right', transform=ax.transAxes)
 
                 # Plot the model
                 # ---------------
@@ -142,6 +150,9 @@ class TransitAnalysis:
                 else:
                     ax.plot(lpf.times[i], fluxes_mod[i], 'w-', lw=3)
                     ax.plot(lpf.times[i], fluxes_mod[i], 'k-', lw=1)
+            else:
+                ax.text(0.97, 0.9, 'STD: {:3.0f} ppm'.format((fluxes_obs[i]).std()*1e6),
+                        ha='right', transform=ax.transAxes)
 
         setp(axs, xlim=lpf.times[0][[0, -1]])
         fig.tight_layout()
