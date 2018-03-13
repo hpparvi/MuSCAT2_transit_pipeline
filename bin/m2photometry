@@ -49,6 +49,7 @@ if __name__ == '__main__':
     ap.add_argument('--edge-limit', type=float, default=30)
     ap.add_argument('--start-frame', type=int, default=0)
     ap.add_argument('--end-frame', type=int, default=inf)
+    ap.add_argument('--with-wcs-only', action='store_true, default=False)
     ap.add_argument('--plot-only', action='store_false', dest='do_photometry', default=True)
     ap.add_argument('--n-processes', type=int, default=5)
     ap.add_argument('--chunksize', type=int, default=5)
@@ -61,6 +62,8 @@ if __name__ == '__main__':
     rdir = Path(args.result_dir)
 
     all_files = {pb : sorted(list(root.joinpath('obj', args.object, pb).glob('MCT2?_*.fits'))) for pb in 'g r i z_s'.split()}
+    if args.with_wcs_only:
+        all_files = {pb : list(filter(lambda f: f.with_suffix('.wcs').exists(), all_files[pb])) for pb in all_files.keys()}
     pbs = [args.passband] if args.passband != 'all' else 'g r i z_s'.split()
 
     stars_file = Path('{}_stars.fits'.format(args.object))
