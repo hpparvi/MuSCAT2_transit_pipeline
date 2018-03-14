@@ -106,14 +106,12 @@ class BaseLPF:
              PParameter('q2_{:d}'.format(i), 'q2_coefficient', '', U(0, 1), bounds=(0, 1))]
             for i in range(npb)])
 
-        pbl = [LParameter('bl_{:d}'.format(i), 'baseline', '', N(1, 1e-2), bounds=(-inf,inf)) for i in range(npb)]
 
         self.ps = ps = ParameterSet()
         ps.add_global_block('system', psystem)
         if free_k:
             ps.add_passband_block('k2', 1, npb, pk2)
         ps.add_passband_block('ldc', 2, npb, pld)
-        ps.add_lightcurve_block('baseline', 1, npb, pbl)
         ps.freeze()
 
         self.teff_prior = U(2500, 12000)
@@ -121,10 +119,8 @@ class BaseLPF:
         # Define the parameter slices
         # ---------------------------
         self._slk2 = ps.blocks[1].slices if free_k else 4*[s_[4:5]]
-        self._slld = ps.blocks[-2].slices
-        self._slbl = ps.blocks[-1].slice
+        self._slld = ps.blocks[-1].slices
 
-        self._stbl = ps.blocks[-1].start
         # Setup basic parametrisation
         # ---------------------------
         self.par = BCP()
@@ -143,8 +139,8 @@ class BaseLPF:
         pvp = self.ps.sample_from_prior(npop)
         for sl in self._slk2:
             pvp[:,sl] = uniform(1e-8, 0.2**2, size=(npop, 1))
-        for i in range(self.npb):
-            pvp[:,self._stbl+i] = normal(sap(self.fluxes[i], 95), 2e-3, size=npop)
+        #for i in range(self.npb):
+        #    pvp[:,self._stbl+i] = normal(sap(self.fluxes[i], 95), 2e-3, size=npop)
         ldsl = self.ps.blocks[1].slice
         for i in range(pvp.shape[0]):
             pid = argsort(pvp[i, ldsl][::2])[::-1]
@@ -158,7 +154,7 @@ class BaseLPF:
 
     def baseline(self, pv):
         """Flux baseline (multiplicative)"""
-        return pv[self._slbl]
+        return ones(self.npb)
 
     def trends(self, pv):
         """Systematic trends (additive)"""
@@ -257,6 +253,7 @@ class BaseLPF:
 
 class NormalLSqLPF(BaseLPF):
     """Log posterior function with least-squares baseline and normal likelihood"""
+
     def trends(self, pv):
         trends = []
         for i, (tm,bl) in enumerate(zip(self.transit_model(pv), self.baseline(pv))):
@@ -283,7 +280,7 @@ class StudentLSqLPF(NormalLSqLPF):
         perr = [LParameter('et_{:d}'.format(i), 'error_df', '', U(1e-6, 1), bounds=(1e-6, 1)) for i in range(self.npb)]
         self.ps.add_lightcurve_block('error', 1, self.npb, perr)
         self.ps.freeze()
-        self._sler = self.ps.blocks[3].slices
+        self._sler = self.ps.blocks[-1].slices
 
     def lnlikelihood(self, pv):
         flux_m = self.flux_model(pv)
@@ -297,6 +294,15 @@ class StudentLSqLPF(NormalLSqLPF):
 class GPLPF(BaseLPF):
     def __init__(self, target, datasets, filters, nthreads=1, free_k=False, **kwargs):
         super().__init__(target, datasets, filters, nthreads, free_k, **kwargs)
+
+        pbl = [LParameter('bl_{:d}'.format(i), 'baseline', '', N(1, 1e-2), bounds=(-inf,inf)) for i in range(self.npb)]
+        self.ps.thaw()
+        self.ps.add_lightcurve_block('baseline', 1, self.npb, pbl)
+        self.ps.freeze()
+
+        self._slbl = self.ps.blocks[-1].slice
+        self._stbl = self.ps.blocks[-1].start
+
         self.logwnvar = log(array(self.wn) ** 2)
         self._create_kernel()
         self.covariates = [cv[:, self.covids] for cv in self.covariates]
@@ -378,6 +384,11 @@ class GPLPF(BaseLPF):
         self.compute_gps(self.gphps)
         return [gp.predict(residuals, cv, return_cov=False, return_var=return_var)
                 for gp, residuals, cv in zip(self.gps, self.residuals(pv), self.covariates)]
+
+
+    def baseline(self, pv):
+        """Flux baseline (multiplicative)"""
+        return pv[self._slbl]
 
     def lnlikelihood(self, pv):
         if self.compute_always:

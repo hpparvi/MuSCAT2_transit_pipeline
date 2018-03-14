@@ -22,6 +22,7 @@ class TransitAnalysis:
                  free_k=True, contamination=True, npop=100):
         self.ddata = dd = Path(datadir)
         self.target = target
+        self.date = date
         self.tid = tid
         self.cids = cids
         self.free_k = free_k
