@@ -6,7 +6,7 @@ import re
 import numpy as np
 import pandas as pd
 
-from os import remove
+from os import remove, chdir
 from itertools import repeat
 from numpy import nan, inf, array
 from multiprocessing import Pool
@@ -22,8 +22,8 @@ from astroquery.simbad import Simbad
 
 from tqdm import tqdm
 
-tmpexts = ".match .axy .rdls .solved -indx.xyls .corr".split()
-
+TMPEXTS = ".match .axy .rdls .solved -indx.xyls .corr".split()
+MAX_TIMEOUT = 60
 
 def run_astrometry(filename, overwrite=True):
     pradec = Path('radec.csv')
@@ -46,12 +46,12 @@ def run_astrometry(filename, overwrite=True):
     astcall.append(str(filename))
 
     try:
-        r = run(astcall, stdout=PIPE, stderr=PIPE, timeout=30)
+        r = run(astcall, stdout=PIPE, stderr=PIPE, timeout=MAX_TIMEOUT)
         rout = r.stdout.decode()
     except TimeoutExpired:
         return str(filename), nan, nan, nan
 
-    for ext in tmpexts:
+    for ext in TMPEXTS:
         try:
             remove(filename.parent.joinpath(filename.stem + ext))
         except FileNotFoundError:
@@ -65,9 +65,36 @@ def run_astrometry(filename, overwrite=True):
         return str(filename), nan, nan, nan
 
 
+def process_datadir(datadir, logdir, file_prefix, file_postfix, start_frame, end_frame):
+    files = sorted(list(datadir.rglob("%s*%s"%(file_prefix, file_postfix))))
+    istart = max(0, start_frame)
+    iend = min(end_frame, len(files))
+    files = files[istart:iend]
+    f = files[0].absolute()
+
+    target = str(f.parts[-3])
+    pb = str(f.parts[-2])
+
+    obj = Simbad.query_object(pf.getval(f, 'object'))
+    if obj is not None:
+        with open('radec.csv', 'w') as radec:
+            radec.write('{}, {}\n'.format(obj['RA'][0], obj['DEC'][0]))
+
+    logging.basicConfig(filename=logdir.joinpath('00_m2astrometry_{}_{}.log'.format(target, pb)),
+                        filemode='w', level=logging.DEBUG)
+
+    with Pool(args.n_processes) as p:
+        r = list(tqdm(p.imap(run_astrometry, files), total=len(files),
+                      desc='Solving astrometry for {} {}'.format(target, pb)))
+        df = pd.DataFrame(r, columns='filename RA Dec rotation'.split())
+
+    dfname = '01_m2astrometry_{}_{}.csv'.format(target, pb)
+    df.to_csv(logdir.joinpath(dfname), index=False)
+
+
 if __name__ == '__main__':
     ap = ArgumentParser()
-    ap.add_argument('objdir', type=Path)
+    ap.add_argument('--root', type=Path, default=Path('.').absolute())
     ap.add_argument('-n', '--n-processes', type=int, default=6)
     ap.add_argument('-f', '--overwrite', action='store_true', default=False)
     ap.add_argument('--file-prefix', type=str, default='MCT2')
@@ -76,22 +103,18 @@ if __name__ == '__main__':
     ap.add_argument('--end-frame', type=int, default=inf)
     args = ap.parse_args()
 
-    files = sorted(list(args.objdir.rglob("%s*%s"%(args.file_prefix, args.file_postfix))))
-    istart = max(0, args.start_frame)
-    iend = min(args.end_frame, len(files))
-    files = files[istart:iend]
-    f = files[0].absolute()
+    passbands = 'g r i z_s'.split()
 
-    obj = Simbad.query_object(pf.getval(f, 'object'))
-    if obj is not None:
-        with open('radec.csv', 'w') as radec:
-            radec.write('{}, {}\n'.format(obj['RA'][0], obj['DEC'][0]))
+    curdir = Path('.').absolute()
+    objdir = args.root.joinpath('obj')
 
-    logging.basicConfig(filename='00_m2astrometry_{}_{}.log'.format(str(f.parts[-3]), str(f.parts[-2])), filemode='w', level=logging.DEBUG)
-
-    with Pool(args.n_processes) as p:
-        r = list(tqdm(p.imap(run_astrometry, files), total=len(files), desc='Running astrometry.net'))
-        df = pd.DataFrame(r, columns='filename RA Dec rotation'.split())
-
-    dfname = '01_m2astrometry_{}_{}.csv'.format(str(f.parts[-3]), str(f.parts[-2]))
-    df.to_csv(dfname, index=False)
+    if objdir.exists():
+        targets = list(objdir.glob('*'))
+        for tdir in targets:
+            chdir(tdir.absolute())
+            for pb in passbands:
+                datadir = tdir.joinpath(pb)
+                process_datadir(datadir, tdir, args.file_prefix, args.file_postfix, args.start_frame, args.end_frame)
+        chdir(curdir)
+    else:
+        print('Error: Could not find "obj" directory.')
