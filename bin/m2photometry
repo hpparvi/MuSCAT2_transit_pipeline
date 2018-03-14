@@ -11,6 +11,7 @@ import xarray as xa
 from numpy import median, zeros, inf, array
 from tqdm import tqdm
 from astropy.io import fits as pf
+from astropy.wcs.wcs import NoConvergence
 
 from muscat2ph.photometry import ScienceFrame, COMCentroider
 
@@ -26,13 +27,16 @@ def init(root, pb, stars_file):
     cc.select_stars(20)
 
 def photometry(filename):
-    im.load_fits(filename)
-    cc.calculate_and_apply()
-    aux = [im._header['airmass'],
-           im._header['exptime'],
-           im._header['mjd-strt'] + 0.5 * im._header['exptime'] / 24 / 60 / 60]
-    aux = xa.DataArray(aux, dims='quantity', coords={'quantity':'airmass exptime mjd'.split()})
-    return im.photometry(centroid=False) + (aux,)
+    try:
+        im.load_fits(filename)
+        cc.calculate_and_apply()
+        aux = [im._header['airmass'],
+               im._header['exptime'],
+               im._header['mjd-strt'] + 0.5 * im._header['exptime'] / 24 / 60 / 60]
+        aux = xa.DataArray(aux, dims='quantity', coords={'quantity':'airmass exptime mjd'.split()})
+        return im.photometry(centroid=False) + (aux,)
+    except NoConvergence:
+        return None
 
 def create_datacube(filename):
     im.load_fits(filename)
@@ -124,7 +128,8 @@ if __name__ == '__main__':
         if args.do_photometry:
             with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file)) as pool:
                 result = list(tqdm(pool.imap(photometry, files, chunksize=args.chunksize), total=len(files)))
-
+            result = list(filter(lambda r:r is not None, result))
+                
             aux  = xa.concat([r[5] for r in result], 'frame')
             ctime = xa.IndexVariable('mjd', aux.loc[:,'mjd'])
             flux = xa.concat([r[0] for r in result], 'mjd').assign_coords(mjd = ctime)
