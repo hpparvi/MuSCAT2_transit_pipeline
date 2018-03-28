@@ -95,6 +95,7 @@ def process_datadir(datadir, logdir, file_prefix, file_postfix, start_frame, end
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('--root', type=Path, default=Path('.').absolute())
+    ap.add_argument('--directory', type=Path, default=None)
     ap.add_argument('-n', '--n-processes', type=int, default=6)
     ap.add_argument('-f', '--overwrite', action='store_true', default=False)
     ap.add_argument('--file-prefix', type=str, default='MCT2')
@@ -114,7 +115,8 @@ if __name__ == '__main__':
             chdir(tdir.absolute())
             for pb in passbands:
                 datadir = tdir.joinpath(pb)
-                process_datadir(datadir, tdir, args.file_prefix, args.file_postfix, args.start_frame, args.end_frame)
+                if datadir.exists():
+                    process_datadir(datadir, tdir, args.file_prefix, args.file_postfix, args.start_frame, args.end_frame)
         chdir(curdir)
     else:
         print('Error: Could not find "obj" directory.')
