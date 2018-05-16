@@ -82,7 +82,7 @@ class BaseLPF:
         psystem = [
             GParameter('tc', 'zero_epoch', 'd', N(t0, tce), (-inf, inf)),
             GParameter('pr', 'period', 'd', N(p, 1e-5), (0, inf)),
-            GParameter('rho', 'stellar_density', 'g/cm^3', U(0.1, 5.0), (0, inf)),
+            GParameter('rho', 'stellar_density', 'g/cm^3', U(0.1, 25.0), (0, inf)),
             GParameter('b', 'impact_parameter', 'R_s', U(0.0, 1.0), (0, 1))]
 
         # We have three possible scenarios for the radius ratio parametrisation
@@ -114,7 +114,10 @@ class BaseLPF:
         ps.add_passband_block('ldc', 2, npb, pld)
         ps.freeze()
 
-        self.teff_prior = U(2500, 12000)
+        if 'teff' in kwargs.keys():
+            self.teff_prior = N(kwargs['teff'], 50)
+        else:
+            self.teff_prior = U(2500, 12000)
 
         # Define the parameter slices
         # ---------------------------

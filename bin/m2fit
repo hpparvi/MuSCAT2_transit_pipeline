@@ -20,6 +20,8 @@ if __name__ == '__main__':
     ap.add_argument('tid', type=int)
     ap.add_argument('cids', type=int, nargs='+')
     ap.add_argument('--free-k', action='store_true', default=False)
+    ap.add_argument('--fit-contamination', action='store_true', default=False)
+    ap.add_argument('--teff', type=float, default=None)
     ap.add_argument('--exptime', type=float, default=30.)
     ap.add_argument('--plot-dir', type=Path, default='.')
     ap.add_argument('--npop', default=100, type=int)
@@ -29,15 +31,23 @@ if __name__ == '__main__':
     ap.add_argument('--npasses', default=2, type=int)
     args = ap.parse_args()
 
-    ta = TransitAnalysis(args.datadir, args.target, args.date, args.tid, args.cids, etime=args.exptime, free_k=args.free_k)
+    ta = TransitAnalysis(args.datadir, args.target, args.date, args.tid, args.cids, etime=args.exptime,
+                         free_k=args.free_k, contamination=args.fit_contamination, teff=args.teff)
 
-    basename = '{}_{}_{}'.format(args.target, args.datadir.absolute().name, 'nongray' if args.free_k else 'gray')
+    kterm = 'nongray' if args.free_k else 'gray'
+    cterm = 'blended' if args.fit_contamination else 'noblend'
 
-    with PdfPages('{}_{}_{}.pdf'.format(args.target, args.datadir.absolute().name, 'nongray' if args.free_k else 'gray')) as pdf:
+    basename = '{}_{}_{}_{}'.format(args.target, args.datadir.absolute().name, kterm, cterm)
+
+    with PdfPages('{}.pdf'.format(basename)) as pdf:
         ta.optimize_linear_model(args.niter_de)
+        ta.save_fits('linear')
         ta.learn_gp_hyperparameters()
         ta.optimize_gp_model(args.niter_de)
+        ta.save_fits('gp')
         ta.sample_gp_model(args.niter_mc, 5)
+        ta.print_ptp_scatter()
+        ta.save()
 
         pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
         pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
@@ -52,9 +62,6 @@ if __name__ == '__main__':
             df.drop(l, axis=1, inplace=True)
 
         pdf.savefig(corner(df))
-
-        ta.print_ptp_scatter()
-        ta.save()
 
         #fig, axs = pl.subplots(2, 2, figsize=(11, 6), sharex=True, sharey=True)
         #for i, gpf in enumerate(ta.gpfs):

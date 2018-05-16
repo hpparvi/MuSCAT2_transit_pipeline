@@ -10,6 +10,8 @@ from matplotlib.pyplot import subplots, setp
 from numpy import array, arange, min, max, sqrt, inf, floor, diff, percentile, median
 from numpy.random import permutation
 from astropy.stats import mad_std
+from astropy.table import Table
+from astropy.io import fits as pf
 
 from muscat2ph.phdata import PhotometryData
 from muscat2ta.lc import M2LCSet, M2LightCurve
@@ -19,13 +21,14 @@ class TransitAnalysis:
     pbs = 'g r i z_s'.split()
 
     def __init__(self, datadir, target, date, tid, cids, fends=(inf, inf, inf, inf), etime=30.,
-                 free_k=True, contamination=True, npop=100):
+                 free_k=False, contamination=False, npop=100, teff=None):
         self.ddata = dd = Path(datadir)
         self.target = target
         self.date = date
         self.tid = tid
         self.cids = cids
         self.free_k = free_k
+        self.contamination = contamination
         self.npop = npop
 
         self.phs = [PhotometryData(dd.joinpath('{}_{}_{}.nc'.format(target, date, pb)), tid, cids, fend=fend)
@@ -40,8 +43,8 @@ class TransitAnalysis:
             et = float(ph._aux.loc[:, 'exptime'].mean())
             lc.downsample_time(etime)
 
-        self.lmlpf = StudentLSqLPF(target, self.lcs, self.pbs, free_k=free_k, contamination=contamination)
-        self.gplpf = GPLPF(target, self.lcs, self.pbs, free_k=free_k, contamination=contamination)
+        self.lmlpf = StudentLSqLPF(target, self.lcs, self.pbs, free_k=free_k, contamination=contamination, teff=teff)
+        self.gplpf = GPLPF(target, self.lcs, self.pbs, free_k=free_k, contamination=contamination, teff=teff)
 
         self.lm_pv = None
         self.gp_pv = None
@@ -123,6 +126,7 @@ class TransitAnalysis:
         else:
             baseline = lpf.predict(pv)
             fluxes_obs = [lpf.fluxes[i] - baseline[i] for i in range(4)] if detrend_obs else lpf.fluxes
+            fluxes_trm = lpf.transit_model(pv)
             fluxes_mod = lpf.flux_model(pv)
 
         fig, axs = subplots(2, 2, figsize=figsize, sharex=True, sharey=True)
@@ -215,4 +219,33 @@ class TransitAnalysis:
                                    'gp_hyperparameters': gphp, 'gp_mcmc': gpmc},
                         attrs={'created': strftime('%Y-%m-%d %H:%M:%S'), 'obsnight':self.ddata.absolute().name,
                                'tid':self.tid, 'cids':self.cids, 'target':self.target})
-        ds.to_netcdf('{}_{}_{}_fit.nc'.format(self.target, self.ddata.absolute().name, 'nongray' if self.free_k else 'gray'))
+        ds.to_netcdf('{}_{}_{}_{}_fit.nc'.format(self.target, self.ddata.absolute().name,
+                                                 'nongray' if self.free_k else 'gray',
+                                                 'blended' if self.contamination else 'noblend'))
+
+    def save_fits(self, model='linear'):
+        assert model in ('linear', 'gp')
+        phdu = pf.PrimaryHDU()
+        phdu.header.update(target=self.target, night=self.date)
+        hdul = pf.HDUList(phdu)
+
+        if model == 'linear':
+            lpf = self.lmlpf
+            pv = self.lm_pv
+            trends = lpf.trends(pv)
+        else:
+            lpf = self.gplpf
+            pv = self.gp_pv
+            trends = lpf.predict(pv)
+
+        transit = lpf.transit_model(pv)
+
+        for i, pb in enumerate('g r i z'.split()):
+            df = Table(np.transpose([lpf.times[i], lpf.fluxes[i] - trends[i], trends[i], transit[i]]),
+                       names='time flux trend model'.split(),
+                       meta={'extname': pb, 'filter': pb, 'trends': model})
+            hdul.append(pf.BinTableHDU(df))
+        fname = '{}_{}_{}_{}_{}.fits'.format(self.target, self.date, model,
+                                             'nongray' if self.free_k else 'gray',
+                                             'blended' if self.contamination else 'noblend')
+        hdul.writeto(fname, overwrite=True)
