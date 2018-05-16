@@ -64,11 +64,11 @@ if __name__ == '__main__':
     args = ap.parse_args()
 
     root = Path(args.datadir)
+    pbs = [args.passband] if args.passband != 'all' else 'r g i z_s'.split()
 
-    all_files = {pb : sorted(list(root.joinpath('obj', args.object, pb).glob('MCT2?_*.fits'))) for pb in 'g r i z_s'.split()}
+    all_files = {pb : sorted(list(root.joinpath('obj', args.object, pb).glob('MCT2?_*.fits'))) for pb in pbs}
     if args.with_wcs_only:
         all_files = {pb : list(filter(lambda f: f.with_suffix('.wcs').exists(), all_files[pb])) for pb in all_files.keys()}
-    pbs = [args.passband] if args.passband != 'all' else 'r g i z_s'.split()
 
     h = pf.getheader(all_files['g'][0])
     obsnight = datetime.strptime(h['date-obs'], '%Y-%m-%d')
