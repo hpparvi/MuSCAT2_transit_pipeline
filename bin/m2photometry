@@ -67,10 +67,12 @@ if __name__ == '__main__':
     pbs = [args.passband] if args.passband != 'all' else 'r g i z_s'.split()
 
     if args.object is None:
-        objects = root.joinpath('obj').glob('*')
+        objects = [o.name for o in list(root.joinpath('obj').glob('*'))]
     else:
         objects = [args.object]
 
+    print(objects)
+        
     for object in objects:
         all_files = {pb : sorted(list(root.joinpath('obj', object, pb).glob('MCT2?_*.fits'))) for pb in pbs}
         if args.with_wcs_only:
