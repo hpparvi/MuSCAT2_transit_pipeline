@@ -48,7 +48,7 @@ def create_datacube(filename):
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('datadir', type=str)
-    ap.add_argument('object', type=str)
+    ap.add_argument('--object', type=str, default=None)
     ap.add_argument('--passband', choices='g r i z_s all'.split(), default='all')
     ap.add_argument('--result-dir', type=Path, default=None)
     ap.add_argument('--max-stars', type=int, default=15)
@@ -66,89 +66,95 @@ if __name__ == '__main__':
     root = Path(args.datadir)
     pbs = [args.passband] if args.passband != 'all' else 'r g i z_s'.split()
 
-    all_files = {pb : sorted(list(root.joinpath('obj', args.object, pb).glob('MCT2?_*.fits'))) for pb in pbs}
-    if args.with_wcs_only:
-        all_files = {pb : list(filter(lambda f: f.with_suffix('.wcs').exists(), all_files[pb])) for pb in all_files.keys()}
-
-    h = pf.getheader(all_files['g'][0])
-    obsnight = datetime.strptime(h['date-obs'], '%Y-%m-%d')
-    if h['MJD-STRT'] % 1 < 0.5:
-        obsnight -= timedelta(1)
-
-    if args.result_dir:
-        rdir = Path(args.result_dir)
+    if args.object is None:
+        objects = root.joinpath('obj').glob('*')
     else:
-        rdir = Path('.').resolve().joinpath(args.object, obsnight.strftime('%y%m%d'))
-        if not rdir.exists():
-            makedirs(rdir)
+        objects = [args.object]
 
-    stars_file = rdir.joinpath('{}_stars.fits'.format(args.object))
-    for ipb, pb in enumerate(pbs):
-        files = all_files[pb]
-        istart = max(0, args.start_frame)
-        iend = min(args.end_frame, len(files))
-        files = files[istart:iend]
-        im = ScienceFrame(root, pb)
-        im.load_fits(files[0])
+    for object in objects:
+        all_files = {pb : sorted(list(root.joinpath('obj', object, pb).glob('MCT2?_*.fits'))) for pb in pbs}
+        if args.with_wcs_only:
+            all_files = {pb : list(filter(lambda f: f.with_suffix('.wcs').exists(), all_files[pb])) for pb in all_files.keys()}
 
-        # Find, save, and load tn brightest stars
-        # ---------------------------------------
-        if (args.save_stars and ipb==0) or not stars_file.exists():
-            im.find_stars(maxn=args.max_stars)
-            im.save_reference_stars(stars_file)
+        h = pf.getheader(all_files['g'][0])
+        obsnight = datetime.strptime(h['date-obs'], '%Y-%m-%d')
+        if h['MJD-STRT'] % 1 < 0.5:
+            obsnight -= timedelta(1)
 
-        im.load_reference_stars(stars_file)
-
-        # Masterframe plot with apertures
-        # -------------------------------
-        fig1 = pl.figure(figsize=(7,7))
-        if im._wcs:
-            ax1 = fig1.add_subplot(111, projection=im._wcs)
-            ax1.grid()
+        if args.result_dir:
+            rdir = Path(args.result_dir)
         else:
-            ax1 = fig1.add_subplot(111)
-        ax1 = im.plot_reduced(minp=90, offset=10, ax=ax1)
-        ax1.set_title('Reference frame - {} {}'.format(args.object, args.passband))
-        fig1.savefig(str(rdir.joinpath('{}_{}_{}.png'.format(args.object, root.absolute().name, pb))))
-        fig1.tight_layout()
+            rdir = Path('.').resolve().joinpath(object, obsnight.strftime('%y%m%d'))
+            if not rdir.exists():
+                makedirs(rdir)
 
-        # Individual aperture plots
-        # -------------------------
-        #fig2, axs2 = pl.subplots(1, 7, figsize=(11, 2.5), sharex=True, sharey=True)
-        #for ax, s in zip(axs2, im._apertures_obj[-1]):
-        #    p = array(s.centroid)
-        #    m = s._asky.to_mask()[0]
-        #     d = m.cutout(im.reduced)
-        #     ax.imshow(d, norm=sn(d, 'log'))
-        #     o = array([m.bbox.slices[1].start, m.bbox.slices[0].start])
-        #     ask = CircularAnnulus(p - o, s._asky.r_in, s._asky.r_out)
-        #     [CircularAperture(p - o, r).plot(ax=ax, ls='--') for r in s.apertures]
-        #     ask.plot(ax=ax)
-        # fig2.tight_layout()
-        # fig2.savefig('{}-{}-apertures.png'.format(args.object, pb))
+        stars_file = rdir.joinpath('{}_stars.fits'.format(object))
+        for ipb, pb in enumerate(pbs):
+            files = all_files[pb]
+            istart = max(0, args.start_frame)
+            iend = min(args.end_frame, len(files))
+            files = files[istart:iend]
+            im = ScienceFrame(root, pb)
+            im.load_fits(files[0])
 
-        # Datacube creation
-        # -----------------
-        if args.create_dc:
-            with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file)) as pool:
-                dc = array(list(tqdm(pool.imap(create_datacube, files, chunksize=args.chunksize), total=len(files))))
-                hdu = pf.PrimaryHDU(dc)
-                hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(args.object, root.absolute().name, pb))), overwrite=True)
+            # Find, save, and load tn brightest stars
+            # ---------------------------------------
+            if (args.save_stars and ipb==0) or not stars_file.exists():
+                im.find_stars(maxn=args.max_stars)
+                im.save_reference_stars(stars_file)
 
-        # Photometry
-        # ----------
-        if args.do_photometry:
-            with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file)) as pool:
-                result = list(tqdm(pool.imap(photometry, files, chunksize=args.chunksize), total=len(files)))
-            result = list(filter(lambda r:r is not None, result))
-                
-            aux  = xa.concat([r[5] for r in result], 'frame')
-            ctime = xa.IndexVariable('mjd', aux.loc[:,'mjd'])
-            flux = xa.concat([r[0] for r in result], 'mjd').assign_coords(mjd = ctime)
-            msky = xa.concat([r[1] for r in result], 'mjd').assign_coords(mjd = ctime)
-            eobj = xa.concat([r[2] for r in result], 'mjd').assign_coords(mjd = ctime)
-            esky = xa.concat([r[3] for r in result], 'mjd').assign_coords(mjd = ctime)
-            cpos = xa.concat([r[4] for r in result], 'mjd').assign_coords(mjd = ctime)
+            im.load_reference_stars(stars_file)
 
-            ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos, aux=aux))
-            ds.to_netcdf(str(rdir.joinpath('{}_{}_{}.nc'.format(args.object, root.absolute().name, pb))))
+            # Masterframe plot with apertures
+            # -------------------------------
+            fig1 = pl.figure(figsize=(7,7))
+            if im._wcs:
+                ax1 = fig1.add_subplot(111, projection=im._wcs)
+                ax1.grid()
+            else:
+                ax1 = fig1.add_subplot(111)
+            ax1 = im.plot_reduced(minp=90, offset=10, ax=ax1)
+            ax1.set_title('Reference frame - {} {}'.format(object, args.passband))
+            fig1.tight_layout()
+            fig1.savefig(str(rdir.joinpath('{}_{}_{}.png'.format(object, root.absolute().name, pb))))
+
+            # Individual aperture plots
+            # -------------------------
+            #fig2, axs2 = pl.subplots(1, 7, figsize=(11, 2.5), sharex=True, sharey=True)
+            #for ax, s in zip(axs2, im._apertures_obj[-1]):
+            #    p = array(s.centroid)
+            #    m = s._asky.to_mask()[0]
+            #     d = m.cutout(im.reduced)
+            #     ax.imshow(d, norm=sn(d, 'log'))
+            #     o = array([m.bbox.slices[1].start, m.bbox.slices[0].start])
+            #     ask = CircularAnnulus(p - o, s._asky.r_in, s._asky.r_out)
+            #     [CircularAperture(p - o, r).plot(ax=ax, ls='--') for r in s.apertures]
+            #     ask.plot(ax=ax)
+            # fig2.tight_layout()
+            # fig2.savefig('{}-{}-apertures.png'.format(args.object, pb))
+
+            # Datacube creation
+            # -----------------
+            if args.create_dc:
+                with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file)) as pool:
+                    dc = array(list(tqdm(pool.imap(create_datacube, files, chunksize=args.chunksize), total=len(files))))
+                    hdu = pf.PrimaryHDU(dc)
+                    hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, root.absolute().name, pb))), overwrite=True)
+
+            # Photometry
+            # ----------
+            if args.do_photometry:
+                with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file)) as pool:
+                    result = list(tqdm(pool.imap(photometry, files, chunksize=args.chunksize), total=len(files)))
+                result = list(filter(lambda r:r is not None, result))
+
+                aux  = xa.concat([r[5] for r in result], 'frame')
+                ctime = xa.IndexVariable('mjd', aux.loc[:,'mjd'])
+                flux = xa.concat([r[0] for r in result], 'mjd').assign_coords(mjd = ctime)
+                msky = xa.concat([r[1] for r in result], 'mjd').assign_coords(mjd = ctime)
+                eobj = xa.concat([r[2] for r in result], 'mjd').assign_coords(mjd = ctime)
+                esky = xa.concat([r[3] for r in result], 'mjd').assign_coords(mjd = ctime)
+                cpos = xa.concat([r[4] for r in result], 'mjd').assign_coords(mjd = ctime)
+
+                ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos, aux=aux))
+                ds.to_netcdf(str(rdir.joinpath('{}_{}_{}.nc'.format(object, root.absolute().name, pb))))
