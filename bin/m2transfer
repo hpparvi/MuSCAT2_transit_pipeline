@@ -1,0 +1,14 @@
+from subprocess import run, PIPE, TimeoutExpired
+from pathlib import Path
+from argparse import ArgumentParser
+from datetime import date
+
+if __name__ == '__main__':
+    ap = ArgumentParser()
+    ap.add_argument('root_loc', type=Path, default=Path('/data'))
+    ap.add_argument('root_ext', type=str)
+    ap.add_argument('--date', type=str, default=None)
+    args = ap.parse_args()
+
+    if args.date is None:
+        date = date.today().strftime('%y%m%d')
