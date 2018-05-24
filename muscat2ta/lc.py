@@ -1,8 +1,10 @@
 import math as m
 import numpy as np
+import statsmodels.api as sm
 
-
-from numpy import ones, full, sqrt, array, concatenate, diff, ones_like, floor, ceil, all, arange, digitize, zeros, nan
+from numpy import (ones, full, sqrt, array, concatenate, diff, ones_like, floor, ceil, all, arange, digitize, zeros,
+                   nan, linspace)
+from numpy.polynomial.legendre import legvander
 from scipy.ndimage import median_filter as mf
 from astropy.stats import sigma_clip, mad_std
 
@@ -58,6 +60,28 @@ class M2LightCurve:
 
         if all(self.bwn < 1e-8):
             self.bwn[:] = self.wn
+
+
+    def detrend_poly(self, npol=20, istart=None, iend=None):
+        flux = self.flux[istart:iend]
+        covs = self.covariates[istart:iend, [2,4,5,6]].copy()
+        covs -= covs.mean(0)
+        pol = legvander(linspace(-1, 1, flux.size), npol)
+        pol[:, 1:] /= pol[:, 1:].ptp(0)
+
+        covs = concatenate([covs, pol], 1)
+        rlm = sm.RLM(flux, covs, hasconst=True)
+        res = rlm.fit()
+
+        coefs = res.params.copy()
+        res.params[4:] = 0
+        systematics = res.predict()
+        res.params[:] = coefs
+        res.params[:4] = 0
+        baseline = res.predict()
+        flux_corr = flux - systematics + systematics.mean()
+        return self.time[istart:iend], flux_corr, systematics, baseline
+
 
     @property
     def time(self):

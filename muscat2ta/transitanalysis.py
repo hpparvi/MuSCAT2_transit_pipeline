@@ -36,8 +36,8 @@ class TransitAnalysis:
 
         [ph.select_aperture() for ph in self.phs]
         self.lcs = M2LCSet([M2LightCurve(ph.jd, ph.relative_flux, ph.aux) for ph in self.phs])
-        self.lcs.mask_outliers()
-        self.lcs.mask_covariate_outliers()
+        #self.lcs.mask_outliers()
+        #self.lcs.mask_covariate_outliers()
 
         for ph, lc in zip(self.phs, self.lcs):
             et = float(ph._aux.loc[:, 'exptime'].mean())
@@ -55,6 +55,17 @@ class TransitAnalysis:
         r2s = [(res - pre).std() for res, pre in zip(self.gplpf.residuals(self.gp_pv), self.gplpf.predict(self.gp_pv))]
         for r1, r2, pb in zip(r1s, r2s, 'g r i z'.split()):
             print('{} {:5.0f} ppm -> {:5.0f} ppm'.format(pb, 1e6 * r1, 1e6 * r2))
+
+
+    def detrend_polynomial(self, npol=20):
+        time, fcorr, fsys, fbase = [], [], [], []
+        for lc in self.lcs:
+            tm, fc, fs, fb = lc.detrend_poly(npol)
+            time.append(tm)
+            fcorr.append(fc)
+            fsys.append(fs)
+            fbase.append(fb)
+        return time, fcorr, fsys, fbase
 
 
     def optimize_linear_model(self, niter=100):
@@ -223,29 +234,40 @@ class TransitAnalysis:
                                                  'nongray' if self.free_k else 'gray',
                                                  'blended' if self.contamination else 'noblend'))
 
-    def save_fits(self, model='linear'):
-        assert model in ('linear', 'gp')
+
+    def save_fits(self, model='linear', npoly=10):
+        assert model in ('linear', 'gp', 'linpoly')
         phdu = pf.PrimaryHDU()
         phdu.header.update(target=self.target, night=self.date)
         hdul = pf.HDUList(phdu)
 
-        if model == 'linear':
-            lpf = self.lmlpf
-            pv = self.lm_pv
-            trends = lpf.trends(pv)
+        if model == 'linpoly':
+            times, fcorr, fsys, fbase = self.detrend_polynomial(20)
+            for i, pb in enumerate('g r i z'.split()):
+                df = Table(np.transpose([times[i], fcorr[i], fsys[i], fbase[i]]),
+                           names='time flux trend model'.split(),
+                           meta={'extname': pb, 'filter': pb, 'trends': model})
+                hdul.append(pf.BinTableHDU(df))
+            fname = '{}_{}_{}.fits'.format(self.target, self.date, model)
         else:
-            lpf = self.gplpf
-            pv = self.gp_pv
-            trends = lpf.predict(pv)
+            if model == 'linear':
+                lpf = self.lmlpf
+                pv = self.lm_pv
+                trends = lpf.trends(pv)
+            else:
+                lpf = self.gplpf
+                pv = self.gp_pv
+                trends = lpf.predict(pv)
 
-        transit = lpf.transit_model(pv)
+            transit = lpf.transit_model(pv)
 
-        for i, pb in enumerate('g r i z'.split()):
-            df = Table(np.transpose([lpf.times[i], lpf.fluxes[i] - trends[i], trends[i], transit[i]]),
-                       names='time flux trend model'.split(),
-                       meta={'extname': pb, 'filter': pb, 'trends': model})
-            hdul.append(pf.BinTableHDU(df))
-        fname = '{}_{}_{}_{}_{}.fits'.format(self.target, self.date, model,
-                                             'nongray' if self.free_k else 'gray',
-                                             'blended' if self.contamination else 'noblend')
+            for i, pb in enumerate('g r i z'.split()):
+                df = Table(np.transpose([lpf.times[i], lpf.fluxes[i] - trends[i], trends[i], transit[i]]),
+                           names='time flux trend model'.split(),
+                           meta={'extname': pb, 'filter': pb, 'trends': model})
+                hdul.append(pf.BinTableHDU(df))
+
+            fname = '{}_{}_{}_{}_{}.fits'.format(self.target, self.date, model,
+                                                 'nongray' if self.free_k else 'gray',
+                                                 'blended' if self.contamination else 'noblend')
         hdul.writeto(fname, overwrite=True)

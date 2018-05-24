@@ -19,6 +19,8 @@ if __name__ == '__main__':
     ap.add_argument('datadir', type=Path)
     ap.add_argument('tid', type=int)
     ap.add_argument('cids', type=int, nargs='+')
+    ap.add_argument('--detrend-only', action='store_true', default=False)
+    ap.add_argument('--npoly', type=int, default=10)
     ap.add_argument('--free-k', action='store_true', default=False)
     ap.add_argument('--fit-contamination', action='store_true', default=False)
     ap.add_argument('--teff', type=float, default=None)
@@ -39,45 +41,48 @@ if __name__ == '__main__':
 
     basename = '{}_{}_{}_{}'.format(args.target, args.datadir.absolute().name, kterm, cterm)
 
-    with PdfPages('{}.pdf'.format(basename)) as pdf:
-        ta.optimize_linear_model(args.niter_de)
-        ta.save_fits('linear')
-        ta.learn_gp_hyperparameters()
-        ta.optimize_gp_model(args.niter_de)
-        ta.save_fits('gp')
-        ta.sample_gp_model(args.niter_mc, 5)
-        ta.print_ptp_scatter()
-        ta.save()
+    if args.detrend_only:
+        ta.save_fits('linpoly', npoly=args.npoly)
+    else:
+        with PdfPages('{}.pdf'.format(basename)) as pdf:
+            ta.optimize_linear_model(args.niter_de)
+            ta.save_fits('linear')
+            ta.learn_gp_hyperparameters()
+            ta.optimize_gp_model(args.niter_de)
+            ta.save_fits('gp')
+            ta.sample_gp_model(args.niter_mc, 5)
+            ta.print_ptp_scatter()
+            ta.save()
 
-        pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
-        pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
-        pdf.savefig(ta.plot_light_curve('gp', 'de',   detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
-        pdf.savefig(ta.plot_light_curve('gp', 'mcmc', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
-        pdf.savefig(ta.plot_noise('bins'))
+            pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
+            pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
+            pdf.savefig(ta.plot_light_curve('gp', 'de',   detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
+            pdf.savefig(ta.plot_light_curve('gp', 'mcmc', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
+            pdf.savefig(ta.plot_noise('bins'))
 
-        df = ta.posterior_samples()
-        k2labels = 'k2_g k2_r k2_i k2_z'.split() if ta.gplpf.free_k else ['k2']
-        for l in k2labels:
-            df[l.replace('k2','k')] = sqrt(df[l])
-            df.drop(l, axis=1, inplace=True)
+            df = ta.posterior_samples()
+            k2labels = 'k2_g k2_r k2_i k2_z'.split() if ta.gplpf.free_k else ['k2']
+            for l in k2labels:
+                df[l.replace('k2','k')] = sqrt(df[l])
+                df.drop(l, axis=1, inplace=True)
 
-        pdf.savefig(corner(df))
+            pdf.savefig(corner(df))
 
-        #fig, axs = pl.subplots(2, 2, figsize=(11, 6), sharex=True, sharey=True)
-        #for i, gpf in enumerate(ta.gpfs):
-        #    prediction = gpf.gp.predict(gpf.residuals, gpf.covariates, return_cov=False, kernel=gpf.kernels[2])
-        #    axs.flat[i].tripcolor(gpf.covariates[:, 2], gpf.covariates[:, 3], prediction)
-        #fig.tight_layout()
-        #pdf.savefig(fig)
+            #fig, axs = pl.subplots(2, 2, figsize=(11, 6), sharex=True, sharey=True)
+            #for i, gpf in enumerate(ta.gpfs):
+            #    prediction = gpf.gp.predict(gpf.residuals, gpf.covariates, return_cov=False, kernel=gpf.kernels[2])
+            #    axs.flat[i].tripcolor(gpf.covariates[:, 2], gpf.covariates[:, 3], prediction)
+            #fig.tight_layout()
+            #pdf.savefig(fig)
 
-        #fig, axs = pl.subplots(2, 2, figsize=(11, 6), sharex=True, sharey=True)
-        #for i in range(4):
-        #    _, freq1, power1 = find_period(ta.gpfs[i].time, ta.gpfs[i].residuals)
-        #    _, freq2, power2 = find_period(ta.gpfs[i].time, ta.gpfs[i].residuals - ta.gp_predictions[i])
-            # axs.flat[i].plot(1/freq1*60*24, power1/power1.max(), 'k', alpha=0.5)
-            # axs.flat[i].plot(1/freq2*60*24, power2/power1.max(), '.')
-        #    axs.flat[i].plot(1 / freq1 * 60 * 24, power1, 'k', alpha=0.5)
-        #    axs.flat[i].plot(1 / freq2 * 60 * 24, power2, '.')
-        # setp(axs, xlim=(1,6))
-        #fig.tight_layout()
-        #pdf.savefig(fig)
+            #fig, axs = pl.subplots(2, 2, figsize=(11, 6), sharex=True, sharey=True)
+            #for i in range(4):
+            #    _, freq1, power1 = find_period(ta.gpfs[i].time, ta.gpfs[i].residuals)
+            #    _, freq2, power2 = find_period(ta.gpfs[i].time, ta.gpfs[i].residuals - ta.gp_predictions[i])
+                # axs.flat[i].plot(1/freq1*60*24, power1/power1.max(), 'k', alpha=0.5)
+                # axs.flat[i].plot(1/freq2*60*24, power2/power1.max(), '.')
+            #    axs.flat[i].plot(1 / freq1 * 60 * 24, power1, 'k', alpha=0.5)
+            #    axs.flat[i].plot(1 / freq2 * 60 * 24, power2, '.')
+            # setp(axs, xlim=(1,6))
+            #fig.tight_layout()
+            #pdf.savefig(fig)
