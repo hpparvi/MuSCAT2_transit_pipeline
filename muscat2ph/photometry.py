@@ -1,9 +1,6 @@
 import warnings
-from textwrap import dedent
-
 import numpy as np
 import xarray as xa
-
 
 from astropy.io import fits as pf
 from astropy.visualization import simple_norm as sn
@@ -346,7 +343,7 @@ class ScienceFrame(ImageFrame):
         return blow & bhigh
 
 
-    def find_stars(self, treshold=99.5, maxn=10):
+    def find_stars(self, treshold=99.5, maxn=10, target_sky=None, target_pix=None):
         objects = mf(self.reduced, 6) > sap(self.reduced, treshold)
         labels, nl = label(objects)
         fluxes = [self.reduced[labels == l].mean() for l in range(1, nl + 1)]
@@ -357,7 +354,13 @@ class ScienceFrame(ImageFrame):
         sorted_labels = zeros_like(labels)
         for i, fid in enumerate(fids[:maxn]):
             sorted_labels[labels == fid] = i + 1
-        cpix = flip(array([com(self.reduced - median(self.reduced), sorted_labels, i) for i in range(1, maxn+1)]), 1)
+        cpix = flip(array([com(self.reduced - median(self.reduced), sorted_labels, i) for i in range(1, maxn + 1)]), 1)
+
+        if self._wcs and target_sky is not None:
+            target_pix = array(target_sky.to_pixel(self._wcs))
+            cpix = concatenate([atleast_2d(target_pix), cpix])
+        elif target_pix is not None:
+            cpix = concatenate([atleast_2d(target_pix), cpix])
 
         self._initialize_tables(self.nstars, self.napt)
         if self._wcs:

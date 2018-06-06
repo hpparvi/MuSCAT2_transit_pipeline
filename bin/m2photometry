@@ -1,5 +1,7 @@
 #!/usr/bin/env python
+import warnings
 
+from warnings import simplefilter, catch_warnings
 from argparse import ArgumentParser
 from multiprocessing import Pool
 from pathlib import Path
@@ -10,10 +12,14 @@ import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as pl
 import xarray as xa
-from numpy import median, zeros, inf, array
+from numpy import median, zeros, inf, array, fromstring
 from tqdm import tqdm
 from astropy.io import fits as pf
 from astropy.wcs.wcs import NoConvergence
+from astropy.coordinates import SkyCoord, FK5
+from astroquery.simbad import Simbad
+import astropy.units as u
+
 
 from muscat2ph.photometry import ScienceFrame, COMCentroider
 
@@ -45,11 +51,26 @@ def create_datacube(filename):
     cc.calculate_and_apply()
     return im.get_aperture(5)
 
+
+def get_sky_coordinates(names):
+    assert isinstance(['ds'], (str, list, tuple))
+    names = (names,) if isinstance(names, str) else names
+    with catch_warnings():
+        simplefilter('ignore', UserWarning)
+        for name in names:
+            obj = Simbad.query_object(name)
+            if obj:
+                return SkyCoord(obj['RA'][0], obj['DEC'][0], frame=FK5, unit=(u.hourangle, u.deg))
+
+
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('datadir', type=str)
     ap.add_argument('--object', type=str, default=None)
     ap.add_argument('--passband', choices='g r i z_s all'.split(), default='all')
+    ap.add_argument('--target-catalog-name', type=str, default=None)
+    ap.add_argument('--target-sky-coords', type=str, default=None)
+    ap.add_argument('--target-pix-coords', type=str, default=None)
     ap.add_argument('--result-dir', type=Path, default=None)
     ap.add_argument('--max-stars', type=int, default=15)
     ap.add_argument('--edge-limit', type=float, default=30)
@@ -65,20 +86,36 @@ if __name__ == '__main__':
 
     root = Path(args.datadir)
     pbs = [args.passband] if args.passband != 'all' else 'r g i z_s'.split()
+    target_sky_coords = None
+    target_pix_coords = None
 
-    if args.object is None:
-        objects = [o.name for o in list(root.joinpath('obj').glob('*'))]
-    else:
-        objects = [args.object]
+    objects = [args.object] if args.object else [o.name for o in list(root.joinpath('obj').glob('*'))]
 
-    print(objects)
-        
+    # Get the sky and pixel coordinates for the target if a single target is defined
+    # ------------------------------------------------------------------------------
+    if args.object:
+        if args.target_sky_coords is not None:
+            target_sky_coords = SkyCoord(args.target_sky_coords, frame=FK5, unit=(u.hourangle, u.deg))
+        else:
+            target_sky_coords = get_sky_coordinates([args.target_catalog_name, args.object])
+        if target_sky_coords is None and args.target_pix_coords:
+            try:
+                target_pix_coords = fromstring(args.target_pix_coords, sep=',')
+            except TypeError:
+                pass
+
+    # Do the photometry for all the targets
+    # -------------------------------------
     for object in objects:
         all_files = {pb : sorted(list(root.joinpath('obj', object, pb).glob('MCT2?_*.fits'))) for pb in pbs}
         if args.with_wcs_only:
             all_files = {pb : list(filter(lambda f: f.with_suffix('.wcs').exists(), all_files[pb])) for pb in all_files.keys()}
 
-        h = pf.getheader(all_files['g'][0])
+        for k, it in all_files.items():
+            if len(it) > 0:
+                h = pf.getheader(it[0])
+                break
+
         obsnight = datetime.strptime(h['date-obs'], '%Y-%m-%d')
         if h['MJD-STRT'] % 1 < 0.5:
             obsnight -= timedelta(1)
@@ -102,7 +139,7 @@ if __name__ == '__main__':
             # Find, save, and load tn brightest stars
             # ---------------------------------------
             if (args.save_stars and ipb==0) or not stars_file.exists():
-                im.find_stars(maxn=args.max_stars)
+                im.find_stars(maxn=args.max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords)
                 im.save_reference_stars(stars_file)
 
             im.load_reference_stars(stars_file)
@@ -119,21 +156,6 @@ if __name__ == '__main__':
             ax1.set_title('Reference frame - {} {}'.format(object, args.passband))
             fig1.tight_layout()
             fig1.savefig(str(rdir.joinpath('{}_{}_{}.png'.format(object, root.absolute().name, pb))))
-
-            # Individual aperture plots
-            # -------------------------
-            #fig2, axs2 = pl.subplots(1, 7, figsize=(11, 2.5), sharex=True, sharey=True)
-            #for ax, s in zip(axs2, im._apertures_obj[-1]):
-            #    p = array(s.centroid)
-            #    m = s._asky.to_mask()[0]
-            #     d = m.cutout(im.reduced)
-            #     ax.imshow(d, norm=sn(d, 'log'))
-            #     o = array([m.bbox.slices[1].start, m.bbox.slices[0].start])
-            #     ask = CircularAnnulus(p - o, s._asky.r_in, s._asky.r_out)
-            #     [CircularAperture(p - o, r).plot(ax=ax, ls='--') for r in s.apertures]
-            #     ask.plot(ax=ax)
-            # fig2.tight_layout()
-            # fig2.savefig('{}-{}-apertures.png'.format(args.object, pb))
 
             # Datacube creation
             # -----------------
