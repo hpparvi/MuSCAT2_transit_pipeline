@@ -7,7 +7,7 @@ from time import strftime
 
 from tqdm import tqdm
 from matplotlib.pyplot import subplots, setp
-from numpy import array, arange, min, max, sqrt, inf, floor, diff, percentile, median
+from numpy import array, arange, min, max, sqrt, inf, floor, diff, percentile, median, isin, zeros
 from numpy.random import permutation
 from astropy.stats import mad_std
 from astropy.table import Table
@@ -21,7 +21,7 @@ class TransitAnalysis:
     pbs = 'g r i z_s'.split()
 
     def __init__(self, datadir, target, date, tid, cids, fends=(inf, inf, inf, inf), etime=30.,
-                 free_k=False, contamination=False, npop=100, teff=None):
+                 free_k=False, contamination=False, npop=100, teff=None, **kwargs):
         self.ddata = dd = Path(datadir)
         self.target = target
         self.date = date
@@ -29,25 +29,33 @@ class TransitAnalysis:
         self.cids = cids
         self.free_k = free_k
         self.contamination = contamination
+        self.teff = teff
         self.npop = npop
+        self.etime = etime
 
-        self.phs = [PhotometryData(dd.joinpath('{}_{}_{}.nc'.format(target, date, pb)), tid, cids, fend=fend)
+        self.phs = [PhotometryData(dd.joinpath('{}_{}_{}.nc'.format(target, date, pb)), tid, cids, fend=fend, objname=target,
+                                   **kwargs)
                     for pb,fend in zip(self.pbs, fends)]
-
-        [ph.select_aperture() for ph in self.phs]
-        self.lcs = M2LCSet([M2LightCurve(ph.jd, ph.relative_flux, ph.aux) for ph in self.phs])
-        #self.lcs.mask_outliers()
-        #self.lcs.mask_covariate_outliers()
-
-        for ph, lc in zip(self.phs, self.lcs):
-            et = float(ph._aux.loc[:, 'exptime'].mean())
-            lc.downsample_time(etime)
-
-        self.lmlpf = StudentLSqLPF(target, self.lcs, self.pbs, free_k=free_k, contamination=contamination, teff=teff)
-        self.gplpf = GPLPF(target, self.lcs, self.pbs, free_k=free_k, contamination=contamination, teff=teff)
+        self._init_lcs()
 
         self.lm_pv = None
         self.gp_pv = None
+
+
+    def _init_lcs(self):
+        self.lcs = M2LCSet([M2LightCurve(ph.bjd, ph.relative_flux, ph.relative_error, ph.aux) for ph in self.phs])
+        self.lcs.mask_outliers()
+        self.lcs.mask_covariate_outliers()
+
+        for ph, lc in zip(self.phs, self.lcs):
+            et = float(ph._aux.loc[:, 'exptime'].mean())
+            lc.downsample_time(self.etime)
+
+        try:
+            self.lmlpf = StudentLSqLPF(self.target, self.lcs, self.pbs, free_k=self.free_k, contamination=self.contamination, teff=self.teff)
+            self.gplpf = GPLPF(self.target, self.lcs, self.pbs, free_k=self.free_k, contamination=self.contamination, teff=self.teff)
+        except ValueError:
+            print("Couldn't initialise the LPFs")
 
 
     def print_ptp_scatter(self):

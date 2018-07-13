@@ -16,9 +16,10 @@ def find_period(time, flux, minp=1, maxp=10):
     return 1 / freq[argmax(power)], freq, power
 
 class M2LightCurve:
-    def __init__(self, time, flux, covariates):
+    def __init__(self, time, flux, error, covariates):
         self._time = array(time)
         self._flux = array(flux)
+        self._error = array(error)
         self._covariates = concatenate([ones([self._time.size, 1]), array(covariates)], 1)
         self._mask = ones(time.size, np.bool)
 
@@ -92,6 +93,10 @@ class M2LightCurve:
         return self._flux[self._mask]
 
     @property
+    def error(self):
+        return self._error[self._mask]
+
+    @property
     def covariates(self):
         return self._covariates[self._mask]
 
@@ -105,7 +110,7 @@ class M2LightCurve:
         for i in cids:
             v = self._covariates[mask, i]
             mv = mf(v, mf_width)
-            mmv = sigma_clip(v - mv, sigma, iters=10, stdfunc=mad_std)
+            mmv = sigma_clip(v - mv, sigma, iters=10)
             mask[mask] &= ~mmv.mask
         self._mask &= mask
 
