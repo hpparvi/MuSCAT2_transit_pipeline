@@ -129,6 +129,7 @@ class BaseLPF:
         self.par = BCP()
 
         self.transit_model = self.contaminated_transit_model if contamination else self.uncontaminated_transit_model
+        self.lnpriors = []
 
 
     def mask_outliers(self, sigma=5, mf_width=10, means=None):
@@ -214,6 +215,10 @@ class BaseLPF:
         else:
             return 0.
 
+    def lnprior_hooks(self, pv):
+        """Additional constraints."""
+        return sum([f(pv) for f in self.lnpriors])
+
     def lnlikelihood(self, pv):
         flux_m = self.flux_model(pv)
         lnlike = 0.0
@@ -229,7 +234,7 @@ class BaseLPF:
         elif self.contamination and (pv[5] > pv[4]):
             return -inf
         else:
-            return self.lnprior(pv) + self.lnprior_ext(pv) + self.lnlikelihood(pv)
+            return self.lnprior(pv) + self.lnprior_ext(pv) + self.lnlikelihood(pv) + self.lnprior_hooks(pv)
 
     def __call__(self, pv):
         return self.lnposterior(pv)
@@ -375,10 +380,10 @@ class GPLPF(BaseLPF):
         self.standardize = []
         nd = len(self.covids)
         logv = self.logwnvar.mean()
-        kernel_sk = LK(0, order=1, bounds=((None, None),), ndim=nd, axes=0)
-        kernel_am = LK(0, order=1, bounds=((None, None),), ndim=nd, axes=1)
+        kernel_sk = ESK(10, bounds=((None, None),), ndim=nd, axes=0)
+        kernel_am = ESK(1, bounds=((None, None),), ndim=nd, axes=1)
         kernel_xy = ESK(2, metric_bounds=((0, 20),), ndim=nd, axes=[2, 3])
-        kernel_en = LK(0, order=1, bounds=((None, None),), ndim=nd, axes=4)
+        kernel_en = ESK(1, bounds=((None, None),), ndim=nd, axes=4)
         self.kernels = kernel_sk, kernel_am, kernel_xy, kernel_en
         return CK(logv, bounds=((-18, -7),), ndim=nd) * kernel_sk * kernel_am * kernel_xy * kernel_en
 
