@@ -217,7 +217,7 @@ class ScienceFrame(ImageFrame):
     height = 1024
     width  = 1024
 
-    def __init__(self, root, passband, masterdark=None, masterflat=None, aperture_radii=(8, 12, 16, 20, 24, 30, 40, 50, 60)):
+    def __init__(self, root, passband, masterdark=None, masterflat=None, aperture_radii=(6, 8, 12, 16, 20, 24, 30, 40, 50, 60)):
         self.passband = passband
         self.aperture_radii = aperture_radii
         self.napt = len(aperture_radii)
