@@ -9,7 +9,7 @@ from astropy.coordinates import SkyCoord, FK5
 from astropy.wcs import WCS, FITSFixedWarning
 from astropy.table import Table
 from matplotlib import cm
-from matplotlib.pyplot import subplots, figure, subplot
+from matplotlib.pyplot import subplots, figure, subplot, setp
 from numpy import *
 from pathlib import Path
 from photutils import CircularAperture, CircularAnnulus
@@ -217,10 +217,12 @@ class ScienceFrame(ImageFrame):
     height = 1024
     width  = 1024
 
-    def __init__(self, root, passband, masterdark=None, masterflat=None, aperture_radii=(6, 8, 12, 16, 20, 24, 30, 40, 50, 60)):
+    def __init__(self, root, passband, masterdark=None, masterflat=None,
+                 aperture_radii=(6, 8, 12, 16, 20, 24, 30, 40, 50, 60), margin=20):
         self.passband = passband
         self.aperture_radii = aperture_radii
         self.napt = len(aperture_radii)
+        self.margin = 20
 
         # Calibration files
         # ------------------
@@ -237,6 +239,10 @@ class ScienceFrame(ImageFrame):
         self._cur_centroids_pix = None  # Star centroids in pixel coordinates [DataFrame]
         self._apertures_obj = None      # Photometry apertures
         self._apertures_sky = None      # Photometry apertures
+
+        self._target_center = None      # Target center in sky coordinates
+        self._separation_cut = None     # Include all stars found within this distance to the target [arcmin]
+        self._margins_cut = False       # Flag showing whether the stars close to the image borders have been removed
 
         self._flux = None
         self._entropy = None
@@ -316,7 +322,7 @@ class ScienceFrame(ImageFrame):
                       names='ra dec x y'.split())
         else:
             t = Table(self._ref_centroids_pix, names=['x', 'y'])
-        t.write(fname)
+        t.write(fname, overwrite=True)
 
 
     def set_reference_stars(self, cpix, csky=None, wsky=15):
@@ -370,12 +376,57 @@ class ScienceFrame(ImageFrame):
             self.set_reference_stars(cpix)
 
 
-    def find_stars_dao(self, fwhm=10, treshold=90, maxn=10):
-        sfinder = DAOStarFinder(sap(self.reduced, treshold), fwhm, exclude_border=True)
-        stars = sfinder(self.reduced).to_pandas().sort_values('flux', ascending=False)[:maxn]
-        stars.index = arange(stars.shape[0])
-        stars.drop('id roundness1 roundness2 npix sky flux mag'.split(), axis=1, inplace=True)
-        return stars
+    def find_stars_dao(self, fwhm=5, maxn=100, target_sky=None, target_pix=None):
+        data = self.reduced
+        imean, imedian, istd = sigma_clipped_stats(data, sigma=3.0, iters=5)
+        sfinder = DAOStarFinder(5*istd, fwhm, exclude_border=True)
+        stars = sfinder(data)
+        sids = argsort(array(stars['flux']))[::-1]
+        cpix = array([stars['xcentroid'], stars['ycentroid']]).T
+        cpix = cpix[sids,:][:maxn,:]
+        self.nstars = cpix.shape[0]
+
+        if self._wcs and target_sky is not None:
+            target_pix = array(target_sky.to_pixel(self._wcs))
+            cpix = concatenate([atleast_2d(target_pix), cpix])
+        elif target_pix is not None:
+            cpix = concatenate([atleast_2d(target_pix), cpix])
+
+        self._initialize_tables(self.nstars, self.napt)
+        if self._wcs:
+            csky = pd.DataFrame(self._wcs.all_pix2world(cpix, 0), columns='RA Dec'.split())
+            self.set_reference_stars(cpix, csky=csky)
+        else:
+            self.set_reference_stars(cpix)
+
+
+    def cut_margin(self, margin=None):
+        if not margin:
+            margin = self.margin
+        else:
+            self.margin = margin
+        imsize = self._data.shape[0]
+        mask = all((self._ref_centroids_pix > margin) & ((self._ref_centroids_pix < imsize - margin)), 1)
+        self.set_reference_stars(self._ref_centroids_pix[mask], self._ref_centroids_sky[mask])
+        self._margins_cut = True
+
+
+    def cut_separation(self, target=None, max_separation=3.0, keep_n_brightest=10):
+        target = target or self._target_center
+        if isinstance(target, int):
+            sc_center = self._ref_centroids_sky[target]
+        elif isinstance(target, SkyCoord):
+            sc_center = target
+        elif isinstance(target, str):
+            sc_center = SkyCoord(target, frame=FK5, unit=(u.hourangle, u.deg))
+        self._target_center = sc_center
+        separation = sc_center.separation(self._ref_centroids_sky)
+        mask = separation.arcmin <= max_separation
+        mask[:keep_n_brightest] = True
+        stars = self._ref_centroids_sky[mask]
+        self.set_reference_stars(stars.to_pixel(self._wcs), stars)
+        self._separation_cut = max_separation*u.arcmin
+
 
     def centroid_single(self, star, r=20, pmin=80, pmax=95, niter=1):
         #if any(cpix < 0.) or any(cpix > im._data.shape[0]):
@@ -452,6 +503,17 @@ class ScienceFrame(ImageFrame):
         ax = super().plot(flt(self.reduced), ax=ax, figsize=figsize, title='Reduced image', minp=minp, maxp=maxp)
         if plot_apertures:
             self.plot_apertures(ax, **kwargs)
+        if self._separation_cut is not None:
+            from photutils import SkyCircularAperture
+            sa = SkyCircularAperture(self._target_center, self._separation_cut).to_pixel(self._wcs)
+            ax.plot(*self._target_center.to_pixel(self._wcs), marker='x', c='k', ms=15)
+            sa.plot(ax=ax)
+        if self._margins_cut:
+            ax.axvline(self.margin, c='k', ls='--')
+            ax.axvline(self.width - self.margin, c='k', ls='--')
+            ax.axhline(self.margin, c='k', ls='--')
+            ax.axhline(self.height - self.margin, c='k', ls='--')
+        setp(ax, xlim=(0,self.width), ylim=(0,self.height))
         return ax
 
     def plot_reduction(self, figsize=(11,12)):

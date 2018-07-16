@@ -25,10 +25,12 @@ from muscat2ph.photometry import ScienceFrame, COMCentroider
 
 passbands = 'g r i z_s'.split()
 
-def init(root, pb, stars_file):
+def init(root, pb, stars_file, apertures):
     isize = 1024
     global im, cc
-    im = ScienceFrame(root, pb)
+    im = ScienceFrame(root, pb, aperture_radii=apertures)
+    im.aperture_radii = apertures
+    im.napt = len(apertures)
     im.load_reference_stars(stars_file)
     im._data = zeros((isize, isize))
     cc = COMCentroider(im, None, aperture_radius=15)
@@ -82,12 +84,25 @@ if __name__ == '__main__':
     ap.add_argument('--chunksize', type=int, default=5)
     ap.add_argument('--save-stars', action='store_true', default=False)
     ap.add_argument('--create-dc', action='store_true', default=False)
+    ap.add_argument('--tfop', action='store_true', default=False)
+    ap.add_argument('--border-margin', type=int, default=30)
+    ap.add_argument('--apply-separation-cut', action='store_true', default=False)
+    ap.add_argument('--separation-cut-distance', type=float, default=2.0)
     args = ap.parse_args()
 
     root = Path(args.datadir)
     pbs = [args.passband] if args.passband != 'all' else 'r g i z_s'.split()
     target_sky_coords = None
     target_pix_coords = None
+
+    # Set up the defaults
+    # -------------------
+    if args.tfop:
+        apertures = (4, 8, 12, 16, 20)
+        max_stars = 200
+    else:
+        apertures  = (6, 8, 12, 16, 20, 24, 30, 40, 50, 60)
+        max_stars = args.max_stars
 
     objects = [args.object] if args.object else [o.name for o in list(root.joinpath('obj').glob('*'))]
 
@@ -133,13 +148,21 @@ if __name__ == '__main__':
             istart = max(0, args.start_frame)
             iend = min(args.end_frame, len(files))
             files = files[istart:iend]
-            im = ScienceFrame(root, pb)
+            im = ScienceFrame(root, pb, aperture_radii=apertures)
+            if target_sky_coords is not None:
+                im._target_center = target_sky_coords
             im.load_fits(files[0])
 
-            # Find, save, and load tn brightest stars
-            # ---------------------------------------
+            # Find, cut, save, and load the stars
+            # -----------------------------------
             if (args.save_stars and ipb==0) or not stars_file.exists():
-                im.find_stars(maxn=args.max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords)
+                if args.tfop:
+                    im.find_stars_dao(maxn=150)
+                else:
+                    im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords)
+                im.cut_margin(args.border_margin)
+                if args.tfop or args.apply_separation_cut:
+                    im.cut_separation(target_sky_coords, args.separation_cut_distance)
                 im.save_reference_stars(stars_file)
 
             im.load_reference_stars(stars_file)
@@ -160,7 +183,7 @@ if __name__ == '__main__':
             # Datacube creation
             # -----------------
             if args.create_dc:
-                with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file)) as pool:
+                with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file, apertures)) as pool:
                     dc = array(list(tqdm(pool.imap(create_datacube, files, chunksize=args.chunksize), total=len(files))))
                     hdu = pf.PrimaryHDU(dc)
                     hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, root.absolute().name, pb))), overwrite=True)
@@ -168,7 +191,7 @@ if __name__ == '__main__':
             # Photometry
             # ----------
             if args.do_photometry:
-                with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file)) as pool:
+                with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file, apertures)) as pool:
                     result = list(tqdm(pool.imap(photometry, files, chunksize=args.chunksize), total=len(files)))
                 result = list(filter(lambda r:r is not None, result))
 
