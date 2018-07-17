@@ -206,12 +206,12 @@ if __name__ == '__main__':
                 cpix = xa.DataArray(im._ref_centroids_pix,
                                     name='centroids_pix',
                                     dims='star centroid_pix'.split(),
-                                    coords={'centroid': ['x', 'y']})
+                                    coords={'centroid_pix': ['x', 'y']})
 
                 csky = xa.DataArray(c_[im._ref_centroids_sky.ra.deg, im._ref_centroids_sky.dec.deg],
                                     name='centroids_sky',
                                     dims='star centroid_sky'.split(),
-                                    coords={'centroid': ['ra', 'dec']})
+                                    coords={'centroid_sky': ['ra', 'dec']})
 
                 ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos,
                                      aux=aux, centroids_pix=cpix, centroids_sky=csky))
