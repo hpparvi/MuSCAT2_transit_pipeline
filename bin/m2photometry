@@ -203,5 +203,16 @@ if __name__ == '__main__':
                 esky = xa.concat([r[3] for r in result], 'mjd').assign_coords(mjd = ctime)
                 cpos = xa.concat([r[4] for r in result], 'mjd').assign_coords(mjd = ctime)
 
-                ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos, aux=aux))
+                cpix = xa.DataArray(im._ref_centroids_pix,
+                                    name='centroids_pix',
+                                    dims='star centroid_pix'.split(),
+                                    coords={'centroid': ['x', 'y']})
+
+                csky = xa.DataArray(c_[im._ref_centroids_sky.ra.deg, im._ref_centroids_sky.dec.deg],
+                                    name='centroids_sky',
+                                    dims='star centroid_sky'.split(),
+                                    coords={'centroid': ['ra', 'dec']})
+
+                ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos,
+                                     aux=aux, centroids_pix=cpix, centroids_sky=csky))
                 ds.to_netcdf(str(rdir.joinpath('{}_{}_{}.nc'.format(object, root.absolute().name, pb))))
