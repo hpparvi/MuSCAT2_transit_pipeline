@@ -3,30 +3,25 @@ import math as mt
 from os.path import join, split
 
 from numpy import (inf, sqrt, ones, hstack, zeros_like, median, floor, concatenate, dot, diff, log, ones_like,
-                   percentile, clip, argsort, any, array, s_, zeros)
+                   percentile, clip, argsort, any, array, s_, zeros, arccos, nan, isnan, full, pi, sum)
 from numpy.linalg import lstsq
-from numpy.random import uniform, normal
-from scipy.stats import norm as N, uniform as U, gamma as GM, scoreatpercentile as sap
+from numba import njit
 from scipy.optimize import minimize
 from tqdm import tqdm
-from astropy.stats import sigma_clip, mad_std
 
 from emcee import EnsembleSampler
 
 from george import GP
 from george.kernels import ExpKernel as EK, ExpSquaredKernel as ESK, ConstantKernel as CK, Matern32Kernel as M32
-from george.kernels import LinearKernel as LK
 
 from pytransit import MandelAgol as MA
-from pytransit.param.basicparameterization import BasicCircularParameterization as BCP
-from pytransit.orbits_f import orbits as of
+from pytransit.orbits_py import z_circular
+from pytransit.param.parameter import *
+from pytransit.param.parameter import UniformPrior as U, NormalPrior as N, GammaPrior as GM
 from pytransit.contamination import SMContamination, apparent_radius_ratio, true_radius_ratio
 from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
 from pytransit.contamination.instrument import Instrument
-
-from exotk.utils.orbits import as_from_rhop
-from exotk.utils.likelihood import ll_normal_es
-from exotk.utils.misc import fold
+from pytransit.utils.orbits import as_from_rhop
 
 from pyde import DiffEvol
 
@@ -40,27 +35,56 @@ with warnings.catch_warnings():
 
 from scipy.stats import t as tdist
 
-from muscat2ta.parameter import *
-from muscat2ta.parameter import UniformPrior as U
+@njit(cache=True)
+def lnlike_normal(o, m, e):
+    return -sum(log(e)) -0.5*p.size*log(2.*pi) - 0.5*sum((o-m)**2/e**2)
 
+@njit("f8(f8[:], f8[:], f8)", cache=True)
+def lnlike_normal_s(o, m, e):
+    return -o.size*log(e) -0.5*o.size*log(2.*pi) - 0.5*sum((o-m)**2)/e**2
+
+@njit("f8[:](f8[:], f8[:])", fastmath=False, cache=True)
+def unpack_orbit(pv, zpv):
+    zpv[:2] = pv[:2]
+    zpv[2] = as_from_rhop(pv[2], pv[1])
+    if zpv[2] <= 1.:
+        zpv[2] = nan
+    else:
+        zpv[3] = arccos(pv[3] / zpv[2])
+    return zpv
+
+@njit("f8[:,:](f8[:], f8[:,:])", fastmath=True, cache=True)
+def qq_to_uv(pv, uv):
+    a, b = sqrt(pv[::2]), 2.*pv[1::2]
+    uv[:,0] = a * b
+    uv[:,1] = a * (1. - b)
+    return uv
 
 class BaseLPF:
     def __init__(self, target, datasets, filters, nthreads=1, free_k=False, contamination=False, **kwargs):
         assert (not free_k) or (free_k != contamination), 'Cannot set both free_k and contamination on'
-        self.tm = MA(interpolate=False, nthr=nthreads)
+        self.tm = MA(interpolate=True, klims=(0.05, 0.55), nk=512, nz=512)
         self.target = target
         self.datasets = datasets
         self.filters = filters
         self.nthr = nthreads
         self.npb = npb = len(filters)
+        self.nlc = datasets.size
         self.free_k = free_k
         self.contamination = contamination
 
-        self.datasets.mask_outliers(5)
-        self.times = self.datasets.btimes
-        self.fluxes = self.datasets.bfluxes
-        self.covariates = self.datasets.bcovariates
-        self.wn = [median(wn) for wn in self.datasets.bwn]
+        if datasets is not None:
+            self.datasets.mask_outliers(5)
+            self.times = self.datasets.btimes
+            self.fluxes = self.datasets.bfluxes
+            self.covariates = self.datasets.bcovariates
+            self.wn = [median(wn) for wn in self.datasets.bwn]
+            self.timea = concatenate(self.times)
+            self.ofluxa = concatenate(self.fluxes)
+            self.mfluxa = zeros_like(self.ofluxa)
+            self.pbida = concatenate([full(t.size, ds.pbid) for t,ds in zip(self.times, self.datasets)])
+            self.lcida = concatenate([full(t.size, i) for i,t in enumerate(self.times)])
+
 
         self.de = None
         self.sampler = None
@@ -69,8 +93,8 @@ class BaseLPF:
         # ---------------------------------------
         self.planet = exocat.searchPlanet(target)
         p = self.planet.P if self.planet else 5.
-        t0 = datasets[0].time.mean()
-        tce = datasets[0].time.ptp() / 10
+        t0 = datasets[0].time.mean() if datasets is not None else None
+        tce = datasets[0].time.ptp() / 10 if datasets is not None else None
 
         # Set up the instrument and contamination model
         # --------------------------------------------
@@ -114,22 +138,31 @@ class BaseLPF:
         ps.add_passband_block('ldc', 2, npb, pld)
         ps.freeze()
 
-        if 'teff' in kwargs.keys():
+        if kwargs.get('teff', None) is not None:
             self.teff_prior = N(kwargs['teff'], 50)
         else:
             self.teff_prior = U(2500, 12000)
 
         # Define the parameter slices
         # ---------------------------
-        self._slk2 = ps.blocks[1].slices if free_k else 4*[s_[4:5]]
-        self._slld = ps.blocks[-1].slices
+        if free_k:
+            self._slk2 = [s_[ps.blocks[1].start + pbi : ps.blocks[1].start + (pbi + 1)] for pbi in self.datasets.pbids]
+        else:
+            self._slk2 = self.nlc*[s_[4:5]]
+            self.nlc*[s_[4:5]]
+
+        start = ps.blocks[-1].start
+        self._slld = [s_[start + 2 * pbi:start + 2 * (pbi + 1)] for pbi in self.datasets.pbids]
 
         # Setup basic parametrisation
         # ---------------------------
-        self.par = BCP()
+        #self.par = BCP()
 
         self.transit_model = self.contaminated_transit_model if contamination else self.uncontaminated_transit_model
         self.lnpriors = []
+
+        self._zpv = zeros(6)
+        self._tuv = zeros((self.npb, 2))
 
 
     def mask_outliers(self, sigma=5, mf_width=10, means=None):
@@ -158,41 +191,37 @@ class BaseLPF:
 
     def baseline(self, pv):
         """Flux baseline (multiplicative)"""
-        return ones(self.npb)
+        return ones(self.nlc)
 
     def trends(self, pv):
         """Systematic trends (additive)"""
-        return zeros(self.npb)
+        return zeros(self.nlc)
 
     def uncontaminated_transit_model(self, pv):
         """Base transit shape model"""
-        _a = as_from_rhop(pv[2], pv[1])
-        if _a <= 1.:
-            return [ones_like(f) for f in self.times]
-        _i = mt.acos(pv[3] / _a)
-        fluxes = []
-        for i, (t, s) in enumerate(zip(self.times, self._slld)):
-            _k = mt.sqrt(pv[self._slk2[i]])
-            q1, q2 = pv[s]
-            a, b = sqrt(q1), 2 * q2
-            _uv = array([a * b, a * (1. - b)]).T
-            fluxes.append(self.tm.evaluate(t, _k, _uv, pv[0], pv[1], _a, _i))
+        zpv = unpack_orbit(pv, self._zpv)
+        if isnan(zpv[2]):
+            fluxes = [ones_like(t) for t in self.times]
+        else:
+            uv = qq_to_uv(pv[self.ps.blocks[2].slice], self._tuv)
+            fluxes = []
+            for i, t in enumerate(self.times):
+                _k = mt.sqrt(pv[self._slk2[i]])
+                fluxes.append(self.tm(z_circular(t, zpv), _k, uv[i:i + 1, :]).ravel())
         return fluxes
 
     def contaminated_transit_model(self, pv):
         cnref = 1. - pv[5]/pv[4]
         cnt = self.cm.contamination(cnref, pv[6], pv[7])
-        _a = as_from_rhop(pv[2], pv[1])
-        if _a <= 1.:
-            return [ones_like(f) for f in self.times]
-        _i = mt.acos(pv[3] / _a)
+        self._zpv = unpack_orbit(pv, self._zpv)
         _k = sqrt(pv[4])
+        pbids = self.datasets.pbids
         fluxes = []
-        for i, (t, s, c) in enumerate(zip(self.times, self._slld, cnt)):
+        for i, (t, s, pbi) in enumerate(zip(self.times, self._slld, pbids)):
             q1, q2 = pv[s]
             a, b = sqrt(q1), 2 * q2
             _uv = array([a * b, a * (1. - b)]).T
-            fluxes.append(self.tm.evaluate(t, _k, _uv, pv[0], pv[1], _a, _i, c=c))
+            fluxes.append(self.tm(z_circular(t, self._zpv), _k, _uv, c=cnt[pbi]).ravel())
         return fluxes
 
     def flux_model(self, pv):
@@ -211,7 +240,7 @@ class BaseLPF:
         """Additional constraints."""
         if self.contamination:
             c = 1. - pv[5]/pv[4]
-            return (1-c) * self.teff_prior.logpdf(pv[6]) + c * self.teff_prior.logpdf(pv[7])
+            return self.teff_prior.logpdf((1-c)*pv[6] + c*pv[7])
         else:
             return 0.
 
@@ -222,8 +251,8 @@ class BaseLPF:
     def lnlikelihood(self, pv):
         flux_m = self.flux_model(pv)
         lnlike = 0.0
-        for i in range(self.npb):
-            lnlike += ll_normal_es(self.fluxes[i], flux_m[i], self.wn[i])
+        for i in range(self.nlc):
+            lnlike += lnlike_normal_s(self.fluxes[i], flux_m[i], self.wn[i])
         return lnlike
 
     def lnposterior(self, pv):
@@ -234,7 +263,7 @@ class BaseLPF:
         elif self.contamination and (pv[5] > pv[4]):
             return -inf
         else:
-            return self.lnprior(pv) + self.lnprior_ext(pv) + self.lnlikelihood(pv) + self.lnprior_hooks(pv)
+            return self.lnprior(pv) + self.lnlikelihood(pv) + self.lnprior_hooks(pv)
 
     def __call__(self, pv):
         return self.lnposterior(pv)
@@ -249,12 +278,14 @@ class BaseLPF:
         for _ in tqdm(self.de(niter), total=niter, desc=label):
             pass
 
-    def sample_mcmc(self, niter=500, thin=5, label='MCMC sampling'):
+    def sample_mcmc(self, niter=500, thin=5, label='MCMC sampling', reset=False):
         if self.sampler is None:
             self.sampler = EnsembleSampler(self.de.n_pop, self.de.n_par, self.lnposterior)
             pop0 = self.de.population
         else:
-            pop0 = self.sampler.chain[:,-1,:]
+            pop0 = self.sampler.chain[:,-1,:].copy()
+        if reset:
+            self.sampler.reset()
         for _ in tqdm(self.sampler.sample(pop0, iterations=niter, thin=thin), total=niter, desc=label):
             pass
 
@@ -303,9 +334,9 @@ class GPLPF(BaseLPF):
     def __init__(self, target, datasets, filters, nthreads=1, free_k=False, **kwargs):
         super().__init__(target, datasets, filters, nthreads, free_k, **kwargs)
 
-        pbl = [LParameter('bl_{:d}'.format(i), 'baseline', '', N(1, 1e-2), bounds=(-inf,inf)) for i in range(self.npb)]
+        pbl = [LParameter('bl_{:d}'.format(i), 'baseline', '', N(1, 1e-2), bounds=(-inf,inf)) for i in range(self.nlc)]
         self.ps.thaw()
-        self.ps.add_lightcurve_block('baseline', 1, self.npb, pbl)
+        self.ps.add_lightcurve_block('baseline', 1, self.nlc, pbl)
         self.ps.freeze()
 
         self._slbl = self.ps.blocks[-1].slice
@@ -319,7 +350,7 @@ class GPLPF(BaseLPF):
 
         self.gps = [GP(self._create_kernel(),
                        mean=0., fit_mean=False,
-                       white_noise=wn, fit_white_noise=False) for wn in self.logwnvar]
+                       white_noise=wn, fit_white_noise=True) for wn in self.logwnvar]
 
         # Freeze the GP hyperparameters marked as frozen in _create_kernel
         for gp in self.gps:
@@ -345,8 +376,9 @@ class GPLPF(BaseLPF):
     def optimize_hps(self, pv, method='L-BFGS-B'):
         self.gphpres = []
         self.gphps = []
-        for gp, residual in tqdm(zip(self.gps, self.residuals(pv)), total=self.npb, desc='Optimizing GP hyperparameters'):
-            residual -= residual.mean()
+        trends = [t-t.mean() for t in [o-m for o,m in zip(self.fluxes, self.transit_model(pv))]]
+
+        for gp, residual in tqdm(zip(self.gps, trends), total=self.nlc, desc='Optimizing GP hyperparameters'):
             def nll(hp):
                 gp.set_parameter_vector(hp)
                 l = gp.log_likelihood(residual, quiet=True)
@@ -359,12 +391,12 @@ class GPLPF(BaseLPF):
     def optimize_hps_jointly(self, pv, method='L-BFGS-B'):
         self.gphpres = []
         self.gphps = []
-        residuals = [r - r.mean() for r in self.residuals(pv)]
+        trends = [t-t.mean() for t in [o-m for o,m in zip(self.fluxes, self.transit_model(pv))]]
 
         def nll(hp):
             [gp.set_parameter_vector(hp) for gp in self.gps]
-            l = sum([gp.log_likelihood(res, quiet=True) for res,gp in zip(residuals, self.gps)])
-            g = sum([gp.grad_log_likelihood(res, quiet=True) for res,gp in zip(residuals, self.gps)])
+            l = sum([gp.log_likelihood(res, quiet=True) for res,gp in zip(trends, self.gps)])
+            g = sum([gp.grad_log_likelihood(res, quiet=True) for res,gp in zip(trends, self.gps)])
             return -l, -g
 
         res = minimize(nll, self.gps[0].get_parameter_vector(), jac=True, bounds=self.gps[0].get_parameter_bounds(),
@@ -403,5 +435,5 @@ class GPLPF(BaseLPF):
             self.compute_gps()
         lnlike = 0.0
         for gp, residuals in zip(self.gps, self.residuals(pv)):
-            lnlike += gp.lnlikelihood(residuals)
+            lnlike += gp.log_likelihood(residuals)
         return lnlike
