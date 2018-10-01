@@ -4,9 +4,11 @@ from os.path import join, split
 
 from numpy import (inf, sqrt, ones, hstack, zeros_like, median, floor, concatenate, dot, diff, log, ones_like,
                    percentile, clip, argsort, any, array, s_, zeros, arccos, nan, isnan, full, pi, sum)
-from numpy.linalg import lstsq
+from numpy.random import uniform, normal
+from numpy.linalg import lstsq, LinAlgError
 from numba import njit
 from scipy.optimize import minimize
+from scipy.stats import norm
 from tqdm import tqdm
 
 from emcee import EnsembleSampler
@@ -15,7 +17,8 @@ from george import GP
 from george.kernels import ExpKernel as EK, ExpSquaredKernel as ESK, ConstantKernel as CK, Matern32Kernel as M32
 
 from pytransit import MandelAgol as MA
-from pytransit.orbits_py import z_circular
+from pytransit.mandelagol_py import eval_quad_ip_mp
+from pytransit.orbits_py import z_circular, duration_eccentric
 from pytransit.param.parameter import *
 from pytransit.param.parameter import UniformPrior as U, NormalPrior as N, GammaPrior as GM
 from pytransit.contamination import SMContamination, apparent_radius_ratio, true_radius_ratio
@@ -35,15 +38,15 @@ with warnings.catch_warnings():
 
 from scipy.stats import t as tdist
 
-@njit(cache=True)
+@njit(cache=False)
 def lnlike_normal(o, m, e):
     return -sum(log(e)) -0.5*p.size*log(2.*pi) - 0.5*sum((o-m)**2/e**2)
 
-@njit("f8(f8[:], f8[:], f8)", cache=True)
+@njit("f8(f8[:], f8[:], f8)", cache=False)
 def lnlike_normal_s(o, m, e):
     return -o.size*log(e) -0.5*o.size*log(2.*pi) - 0.5*sum((o-m)**2)/e**2
 
-@njit("f8[:](f8[:], f8[:])", fastmath=False, cache=True)
+@njit("f8[:](f8[:], f8[:])", fastmath=False, cache=False)
 def unpack_orbit(pv, zpv):
     zpv[:2] = pv[:2]
     zpv[2] = as_from_rhop(pv[2], pv[1])
@@ -53,7 +56,7 @@ def unpack_orbit(pv, zpv):
         zpv[3] = arccos(pv[3] / zpv[2])
     return zpv
 
-@njit("f8[:,:](f8[:], f8[:,:])", fastmath=True, cache=True)
+@njit("f8[:,:](f8[:], f8[:,:])", fastmath=True, cache=False)
 def qq_to_uv(pv, uv):
     a, b = sqrt(pv[::2]), 2.*pv[1::2]
     uv[:,0] = a * b
@@ -63,7 +66,7 @@ def qq_to_uv(pv, uv):
 class BaseLPF:
     def __init__(self, target, datasets, filters, nthreads=1, free_k=False, contamination=False, **kwargs):
         assert (not free_k) or (free_k != contamination), 'Cannot set both free_k and contamination on'
-        self.tm = MA(interpolate=True, klims=(0.05, 0.55), nk=512, nz=512)
+        self.tm = MA(interpolate=True, klims=(0.01, 0.75), nk=512, nz=512)
         self.target = target
         self.datasets = datasets
         self.filters = filters
@@ -72,6 +75,9 @@ class BaseLPF:
         self.nlc = datasets.size
         self.free_k = free_k
         self.contamination = contamination
+
+        self.ldsc = None
+        self.ldps = None
 
         if datasets is not None:
             self.datasets.mask_outliers(5)
@@ -85,6 +91,12 @@ class BaseLPF:
             self.pbida = concatenate([full(t.size, ds.pbid) for t,ds in zip(self.times, self.datasets)])
             self.lcida = concatenate([full(t.size, i) for i,t in enumerate(self.times)])
 
+            self.lcslices = []
+            sstart = 0
+            for i in range(self.nlc):
+                s = self.times[i].size
+                self.lcslices.append(s_[sstart:sstart + s])
+                sstart += s
 
         self.de = None
         self.sampler = None
@@ -116,9 +128,9 @@ class BaseLPF:
         #  3. Common radius ratio with possible contamination
         #
         if free_k:
-            pk2 = [PParameter('k2_{}'.format(pb), 'area_ratio', 'A_s', GM(0.1), (1e-8, inf)) for pb in 'g r i z'.split()]
+            pk2 = [PParameter('k2_{}'.format(pb), 'area_ratio', 'A_s', GM(0.1), (0.01**2, 0.55**2)) for pb in filters]
         else:
-            psystem.append(GParameter('k2', 'area_ratio', 'A_s', GM(0.1), (1e-8, inf)))
+            pk2 = [PParameter('k2', 'area_ratio', 'A_s', GM(0.1), (0.01**2, 0.55**2))]
 
         if contamination:
             psystem.extend([GParameter('k2_app', 'apparent_area_ratio', 'As', GM(0.1), bounds=(1e-8, inf)),
@@ -130,11 +142,9 @@ class BaseLPF:
              PParameter('q2_{:d}'.format(i), 'q2_coefficient', '', U(0, 1), bounds=(0, 1))]
             for i in range(npb)])
 
-
         self.ps = ps = ParameterSet()
         ps.add_global_block('system', psystem)
-        if free_k:
-            ps.add_passband_block('k2', 1, npb, pk2)
+        ps.add_passband_block('k2', 1, (npb if free_k else 1), pk2)
         ps.add_passband_block('ldc', 2, npb, pld)
         ps.freeze()
 
@@ -149,7 +159,6 @@ class BaseLPF:
             self._slk2 = [s_[ps.blocks[1].start + pbi : ps.blocks[1].start + (pbi + 1)] for pbi in self.datasets.pbids]
         else:
             self._slk2 = self.nlc*[s_[4:5]]
-            self.nlc*[s_[4:5]]
 
         start = ps.blocks[-1].start
         self._slld = [s_[start + 2 * pbi:start + 2 * (pbi + 1)] for pbi in self.datasets.pbids]
@@ -163,6 +172,9 @@ class BaseLPF:
 
         self._zpv = zeros(6)
         self._tuv = zeros((self.npb, 2))
+        self._zeros = zeros(self.npb)
+        self._ones = ones(self.npb)
+        self._bad_fluxes = [ones_like(t) for t in self.times]
 
 
     def mask_outliers(self, sigma=5, mf_width=10, means=None):
@@ -175,18 +187,22 @@ class BaseLPF:
     def create_pv_population(self, npop=50):
         pvp = self.ps.sample_from_prior(npop)
         for sl in self._slk2:
-            pvp[:,sl] = uniform(1e-8, 0.2**2, size=(npop, 1))
-        #for i in range(self.npb):
-        #    pvp[:,self._stbl+i] = normal(sap(self.fluxes[i], 95), 2e-3, size=npop)
-        ldsl = self.ps.blocks[1].slice
-        for i in range(pvp.shape[0]):
-            pid = argsort(pvp[i, ldsl][::2])[::-1]
-            pvp[i, ldsl][::2] = pvp[i, ldsl][::2][pid]
-            pvp[i, ldsl][1::2] = pvp[i, ldsl][1::2][pid]
+            pvp[:,sl] = uniform(0.01**2, 0.25**2, size=(npop, 1))
+        if self.ldps:
+            istart = self.ps.blocks[2].start
+            cms, ces = self.ldps.coeffs_tq()
+            for i, (cm, ce) in enumerate(zip(cms.flat, ces.flat)):
+                pvp[:, i + istart] = normal(cm, ce, size=pvp.shape[0])
+        else:
+            ldsl = self.ps.blocks[2].slice
+            for i in range(pvp.shape[0]):
+                pid = argsort(pvp[i, ldsl][::2])[::-1]
+                pvp[i, ldsl][::2] = pvp[i, ldsl][::2][pid]
+                pvp[i, ldsl][1::2] = pvp[i, ldsl][1::2][pid]
         if self.contamination:
-            pvp[:,5] = pvp[:,4]
-            cref = uniform(0, 1, size=npop)
-            pvp[:,4] = pvp[:,5] / (1. - cref)
+            pvp[:,7] = pvp[:,4]
+            cref = uniform(0, 0.99, size=npop)
+            pvp[:,7] = pvp[:,4] / (1. - cref)
         return pvp
 
     def baseline(self, pv):
@@ -201,28 +217,29 @@ class BaseLPF:
         """Base transit shape model"""
         zpv = unpack_orbit(pv, self._zpv)
         if isnan(zpv[2]):
-            fluxes = [ones_like(t) for t in self.times]
+            fluxes = self._bad_fluxes
         else:
+            _k = sqrt(pv[self.ps.blocks[1].slice]) if self.free_k else full(self.npb, sqrt(pv[4]))
             uv = qq_to_uv(pv[self.ps.blocks[2].slice], self._tuv)
-            fluxes = []
-            for i, t in enumerate(self.times):
-                _k = mt.sqrt(pv[self._slk2[i]])
-                fluxes.append(self.tm(z_circular(t, zpv), _k, uv[i:i + 1, :]).ravel())
+            z = z_circular(self.timea, zpv)
+            fluxes = eval_quad_ip_mp(z, self.pbida, _k, uv, self._zeros, self.tm.ed, self.tm.ld, self.tm.le, self.tm.kt, self.tm.zt)
+            fluxes = [fluxes[sl] for sl in self.lcslices]
         return fluxes
 
     def contaminated_transit_model(self, pv):
-        cnref = 1. - pv[5]/pv[4]
-        cnt = self.cm.contamination(cnref, pv[6], pv[7])
-        self._zpv = unpack_orbit(pv, self._zpv)
-        _k = sqrt(pv[4])
-        pbids = self.datasets.pbids
-        fluxes = []
-        for i, (t, s, pbi) in enumerate(zip(self.times, self._slld, pbids)):
-            q1, q2 = pv[s]
-            a, b = sqrt(q1), 2 * q2
-            _uv = array([a * b, a * (1. - b)]).T
-            fluxes.append(self.tm(z_circular(t, self._zpv), _k, _uv, c=cnt[pbi]).ravel())
+        cnref = 1. - pv[4]/pv[7]
+        cnt = self.cm.contamination(cnref, pv[5], pv[6])
+        zpv = unpack_orbit(pv, self._zpv)
+        if isnan(zpv[2]):
+            fluxes = self._bad_fluxes
+        else:
+            _k = full(self.npb, sqrt(pv[7]))
+            uv = qq_to_uv(pv[self.ps.blocks[2].slice], self._tuv)
+            z = z_circular(self.timea, zpv)
+            fluxes = eval_quad_ip_mp(z, self.pbida, _k, uv, cnt, self.tm.ed, self.tm.ld, self.tm.le, self.tm.kt, self.tm.zt)
+            fluxes = [fluxes[sl] for sl in self.lcslices]
         return fluxes
+
 
     def flux_model(self, pv):
         bls = self.baseline(pv)
@@ -232,6 +249,28 @@ class BaseLPF:
 
     def residuals(self, pv):
         return [fo - fm for fo, fm in zip(self.fluxes, self.flux_model(pv))]
+
+    def add_t14_prior(self, m, s):
+        def T14(pv):
+            a = as_from_rhop(pv[2], pv[1])
+            t14 = duration_eccentric(pv[1], sqrt(pv[4]), a, mt.acos(pv[3] / a), 0, 0, 1)
+            return norm.logpdf(t14, m, s)
+        self.lnpriors.append(T14)
+
+
+    def add_ldtk_prior(self, teff, logg, z, uncertainty_multiplier=3, pbs=('g', 'r', 'i', 'z')):
+        from ldtk import LDPSetCreator
+        from ldtk.filters import sdss_g, sdss_r, sdss_i, sdss_z
+        fs = {n: f for n, f in zip('g r i z'.split(), (sdss_g, sdss_r, sdss_i, sdss_z))}
+        filters = [fs[k] for k in pbs]
+        self.ldsc = LDPSetCreator(teff, logg, z, filters)
+        self.ldps = self.ldsc.create_profiles(1000)
+        self.ldps.resample_linear_z()
+        self.ldps.set_uncertainty_multiplier(uncertainty_multiplier)
+        def ldprior(pv):
+            return self.ldps.lnlike_tq(pv[self.ps.blocks[2].slice])
+        self.lnpriors.append(ldprior)
+
 
     def lnprior(self, pv):
         return self.ps.lnprior(pv)
@@ -258,9 +297,7 @@ class BaseLPF:
     def lnposterior(self, pv):
         if any(pv < self.ps.bounds[:, 0]) or any(pv > self.ps.bounds[:, 1]):
             return -inf
-        elif any(diff(sqrt(pv[self.ps.blocks[1].slice][::2])) > 0.):
-            return -inf
-        elif self.contamination and (pv[5] > pv[4]):
+        elif self.contamination and (pv[4] > pv[7]):
             return -inf
         else:
             return self.lnprior(pv) + self.lnlikelihood(pv) + self.lnprior_hooks(pv)
@@ -310,6 +347,12 @@ class NormalLSqLPF(BaseLPF):
         return model_fluxes
 
 
+    def lnlikelihood(self, pv):
+        try:
+            return super(NormalLSqLPF, self).lnlikelihood(pv)
+        except LinAlgError:
+            return -inf
+
 class StudentLSqLPF(NormalLSqLPF):
     """Log posterior function with least-squares baseline and Student T likelihood"""
 
@@ -331,7 +374,7 @@ class StudentLSqLPF(NormalLSqLPF):
 
 
 class GPLPF(BaseLPF):
-    def __init__(self, target, datasets, filters, nthreads=1, free_k=False, **kwargs):
+    def __init__(self, target, datasets, filters, nthreads=1, free_k=False, fit_wn=True, **kwargs):
         super().__init__(target, datasets, filters, nthreads, free_k, **kwargs)
 
         pbl = [LParameter('bl_{:d}'.format(i), 'baseline', '', N(1, 1e-2), bounds=(-inf,inf)) for i in range(self.nlc)]
@@ -350,7 +393,7 @@ class GPLPF(BaseLPF):
 
         self.gps = [GP(self._create_kernel(),
                        mean=0., fit_mean=False,
-                       white_noise=wn, fit_white_noise=True) for wn in self.logwnvar]
+                       white_noise=0.8*wn, fit_white_noise=fit_wn) for wn in self.logwnvar]
 
         # Freeze the GP hyperparameters marked as frozen in _create_kernel
         for gp in self.gps:

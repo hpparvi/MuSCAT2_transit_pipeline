@@ -3,7 +3,7 @@ import numpy as np
 import statsmodels.api as sm
 
 from numpy import (ones, full, sqrt, array, concatenate, diff, ones_like, floor, ceil, all, arange, digitize, zeros,
-                   nan, linspace)
+                   nan, linspace, isfinite)
 from numpy.polynomial.legendre import legvander
 from scipy.ndimage import median_filter as mf
 from astropy.stats import sigma_clip, mad_std
@@ -15,13 +15,34 @@ def find_period(time, flux, minp=1, maxp=10):
     power = ls.power(freq)
     return 1 / freq[argmax(power)], freq, power
 
+def downsample_time(time, vals, inttime=30.):
+    duration = 24 * 60 * 60 * time.ptp()
+    nbins = int(ceil(duration / inttime))
+    bins = arange(nbins)
+    edges = time[0] + bins * inttime / 24 / 60 / 60
+    bids = digitize(time, edges) - 1
+    bt, bv, be = full(nbins, nan), zeros(nbins), zeros(nbins)
+    for i, bid in enumerate(bins):
+        bmask = bid == bids
+        if bmask.sum() > 0:
+            bt[i] = time[bmask].mean()
+            bv[i] = vals[bmask].mean()
+            if bmask.sum() > 2:
+                be[i] = vals[bmask].std() / sqrt(bmask.sum())
+            else:
+                be[i] = nan
+    m = isfinite(be)
+    return bt[m], bv[m], be[m]
+
 class M2LightCurve:
-    def __init__(self, time, flux, error, covariates):
+    def __init__(self, pbid, time, flux, error, covariates, covnames):
         self._time = array(time)
         self._flux = array(flux)
         self._error = array(error)
         self._covariates = concatenate([ones([self._time.size, 1]), array(covariates)], 1)
+        self._covnames = ['intercept'] + list(covnames)
         self._mask = ones(time.size, np.bool)
+        self.pbid = pbid
 
         self.btime = self.time
         self.bflux = self.flux
@@ -121,16 +142,25 @@ class M2LightCurve:
             f = self.flux - mean
         self._mask[self._mask] = ~sigma_clip(f, sigma).mask
 
+    def mask_limits(self, limits):
+        mask = (self._flux > limits[0]) & (self._flux < limits[1])
+        self._mask &= mask
+
 
 class M2LCSet:
     def __init__(self, lcs):
         self._lcs = tuple(lcs)
+        self.size = len(lcs)
 
     def __getitem__(self, item):
         return self._lcs[item]
 
     def __iter__(self):
         return self._lcs.__iter__()
+
+    @property
+    def pbids(self):
+        return [lc.pbid for lc in self._lcs]
 
     @property
     def times(self):
@@ -164,7 +194,6 @@ class M2LCSet:
     def bwn(self):
         return [lc.bwn for lc in self._lcs]
 
-
     def mask_covariate_outliers(self, sigma=10, mf_width=15):
             [lc.mask_covariate_outliers(sigma, mf_width) for lc in self._lcs]
 
@@ -174,3 +203,5 @@ class M2LCSet:
         else:
             [lc.mask_outliers(sigma, mean=mean) for lc, mean in zip(self._lcs, means)]
 
+    def mask_limits(self, limits):
+        [lc.mask_limits(limits) for lc in self._lcs]

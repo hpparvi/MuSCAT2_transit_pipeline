@@ -1,3 +1,5 @@
+from glob import glob
+
 import numpy as np
 import pandas as pd
 import xarray as xa
@@ -5,9 +7,10 @@ import xarray as xa
 from pathlib import Path
 from time import strftime
 
+from corner import corner
 from tqdm import tqdm
 from matplotlib.pyplot import subplots, setp
-from numpy import array, arange, min, max, sqrt, inf, floor, diff, percentile, median, isin, zeros
+from numpy import array, arange, min, max, sqrt, inf, floor, diff, percentile, median, isin, zeros, full_like
 from numpy.random import permutation
 from astropy.stats import mad_std
 from astropy.table import Table
@@ -15,13 +18,11 @@ from astropy.io import fits as pf
 
 from muscat2ph.phdata import PhotometryData
 from muscat2ta.lc import M2LCSet, M2LightCurve
-from muscat2ta.lpf import StudentLSqLPF, GPLPF
+from muscat2ta.lpf import StudentLSqLPF, GPLPF, NormalLSqLPF
 
 class TransitAnalysis:
-    pbs = 'g r i z_s'.split()
-
-    def __init__(self, datadir, target, date, tid, cids, fends=(inf, inf, inf, inf), etime=30.,
-                 free_k=False, contamination=False, npop=100, teff=None, **kwargs):
+    def __init__(self, datadir, target, date, tid, cids, etime=30., mjd_start=-inf, mjd_end=inf, flux_lims=(-inf, inf),
+                 free_k=False, contamination=False, npop=100, teff=None, pbs=('g', 'r', 'i', 'z_s'), **kwargs):
         self.ddata = dd = Path(datadir)
         self.target = target
         self.date = date
@@ -32,10 +33,13 @@ class TransitAnalysis:
         self.teff = teff
         self.npop = npop
         self.etime = etime
+        self.models = None
+        self.pbs = pbs
+        self.flux_lims = flux_lims
 
-        self.phs = [PhotometryData(dd.joinpath('{}_{}_{}.nc'.format(target, date, pb)), tid, cids, fend=fend, objname=target,
-                                   **kwargs)
-                    for pb,fend in zip(self.pbs, fends)]
+        self.phs = [PhotometryData(dd.joinpath('{}_{}_{}.nc'.format(target, date, pb)), tid, cids, objname=target,
+                                   mjd_start=mjd_start, mjd_end=mjd_end, **kwargs)
+                    for pb in self.pbs]
         self._init_lcs()
 
         self.lm_pv = None
@@ -43,26 +47,57 @@ class TransitAnalysis:
 
 
     def _init_lcs(self):
-        self.lcs = M2LCSet([M2LightCurve(ph.bjd, ph.relative_flux, ph.relative_error, ph.aux) for ph in self.phs])
+        self.lcs = M2LCSet([M2LightCurve(pbi, ph.bjd, ph.relative_flux, ph.relative_error, ph.aux, array(ph.aux.quantity)) for pbi,ph in enumerate(self.phs)])
         self.lcs.mask_outliers()
         self.lcs.mask_covariate_outliers()
-
-        for ph, lc in zip(self.phs, self.lcs):
-            et = float(ph._aux.loc[:, 'exptime'].mean())
-            lc.downsample_time(self.etime)
+        self.lcs.mask_limits(self.flux_lims)
 
         try:
-            self.lmlpf = StudentLSqLPF(self.target, self.lcs, self.pbs, free_k=self.free_k, contamination=self.contamination, teff=self.teff)
+            for ph, lc in zip(self.phs, self.lcs):
+                et = float(ph._aux.loc[:, 'exptime'].mean())
+                lc.downsample_time(self.etime)
+        except ValueError:
+            print("Couldn't initialise the light curves")
+            return
+
+        try:
+            self.lmlpf = NormalLSqLPF(self.target, self.lcs, self.pbs, free_k=self.free_k, contamination=self.contamination, teff=self.teff)
             self.gplpf = GPLPF(self.target, self.lcs, self.pbs, free_k=self.free_k, contamination=self.contamination, teff=self.teff)
+            self.models = {'linear':self.lmlpf, 'gp':self.gplpf}
         except ValueError:
             print("Couldn't initialise the LPFs")
 
+    def optimize_comparison_stars(self, n_stars=1, start_id=0, end_id=10, start_apt=0, end_apt=None):
+        for ph in self.phs:
+            ph._rset.select_best(n_stars, start_id, end_id, start_apt, end_apt)
 
     def print_ptp_scatter(self):
         r1s = [res.std() for res in self.gplpf.residuals(self.gp_pv)]
         r2s = [(res - pre).std() for res, pre in zip(self.gplpf.residuals(self.gp_pv), self.gplpf.predict(self.gp_pv))]
         for r1, r2, pb in zip(r1s, r2s, 'g r i z'.split()):
             print('{} {:5.0f} ppm -> {:5.0f} ppm'.format(pb, 1e6 * r1, 1e6 * r2))
+
+    def set_prior(self, i, p):
+        for lpf in (self.lmlpf, self.gplpf):
+            lpf.ps[i].prior = p
+
+    def add_t14_prior(self, m, s):
+        for lpf in (self.lmlpf, self.gplpf):
+            lpf.add_t14_prior(m, s)
+
+    def add_ldtk_prior(self, teff, logg, z, uncertainty_multiplier=3, pbs=('g', 'r', 'i', 'z')):
+        from ldtk import LDPSetCreator
+        from ldtk.filters import sdss_g, sdss_r, sdss_i, sdss_z
+        fs = {n: f for n, f in zip('g r i z'.split(), (sdss_g, sdss_r, sdss_i, sdss_z))}
+        filters = [fs[k] for k in pbs]
+        self.ldsc = LDPSetCreator(teff, logg, z, filters)
+        self.ldps = self.ldsc.create_profiles(1000)
+        self.ldps.resample_linear_z()
+        self.ldps.set_uncertainty_multiplier(uncertainty_multiplier)
+        for lpf in (self.lmlpf, self.gplpf):
+            lpf.ldsc = self.ldsc
+            lpf.ldps = self.ldps
+            lpf.lnpriors.append(lambda pv:self.ldps.lnlike_tq(pv[lpf.ps.blocks[2].slice]))
 
 
     def detrend_polynomial(self, npol=20):
@@ -76,46 +111,62 @@ class TransitAnalysis:
         return time, fcorr, fsys, fbase
 
 
-    def optimize_linear_model(self, niter=100):
-        self.lmlpf.optimize_global(niter, self.npop, label='Optimizing linear model')
-        self.lm_pv = self.lmlpf.de.minimum_location
+    def optimize(self, model, niter=100, pop=None):
+        assert model in self.models.keys()
+        if model == 'linear':
+            self.lmlpf.optimize_global(niter, self.npop, pop, label='Optimizing linear model')
+            self.lm_pv = self.lmlpf.de.minimum_location
+        elif model == 'gp':
+            if pop is None and self.gplpf.de is None and self.lmlpf.de is not None:
+                pop = self.gplpf.create_pv_population(self.npop)
+                stop = self.lmlpf.ps.blocks[2].stop
+                pop[:,:stop] = self.lmlpf.de.population[:,:stop]
+            self.gplpf.optimize_global(niter, self.npop, pop, label='Optimizing GP model')
+            self.gp_pv = self.gplpf.de.minimum_location
 
-    def optimize_gp_model(self, niter=100):
-        self.gplpf.optimize_global(niter, self.npop, label='Optimizing GP model')
-        self.gp_pv = self.gplpf.de.minimum_location
 
-    def sample_gp_model(self, niter=100, thin=5):
-        self.gplpf.sample_mcmc(niter, thin=thin, label='Sampling GP model')
+    def sample(self, model, niter=100, thin=5, reset=False):
+        assert model in self.models.keys()
+        self.models[model].sample_mcmc(niter, thin=thin, label='Sampling linear model', reset=reset)
+
 
     def mask_flux_outliers(self, sigma=4):
         assert self.lm_pv is not None, "Need to run global optimization before calling outlier masking"
         self.lmlpf.mask_outliers(sigma=sigma, means=self.lmlpf.flux_model(self.lm_pv))
 
 
-    def learn_gp_hyperparameters(self, joint_fit=True, method='L-BFGS-B'):
-        assert self.lm_pv is not None, 'Must carry out linear model optimisation before GP hyperparameter optimisation'
+    def learn_gp_hyperparameters(self, pv=None, joint_fit=True, method='L-BFGS-B'):
+        pv = pv if pv is not None else self.lm_pv
+        assert pv is not None, 'Must carry out linear model optimisation before GP hyperparameter optimisation'
         if joint_fit:
-            self.gplpf.optimize_hps_jointly(self.lm_pv, method=method)
+            self.gplpf.optimize_hps_jointly(pv, method=method)
         else:
-            self.gplpf.optimize_hps(self.lm_pv, method=method)
+            self.gplpf.optimize_hps(pv, method=method)
 
-    def posterior_samples(self, nsteps=0, model='gp', include_ldc=False):
+    def posterior_samples(self, burn=0, thin=1, model='gp', include_ldc=False):
         assert model in ('linear', 'gp')
         lpf = self.lmlpf if model == 'linear' else self.gplpf
         ldstart = lpf._slld[0].start
-        fc = lpf.sampler.chain[:,-nsteps:,:].reshape([-1, lpf.de.n_par])
+        fc = lpf.sampler.chain[:,burn::thin,:].reshape([-1, lpf.de.n_par])
         if include_ldc:
             return pd.DataFrame(fc, columns=lpf.ps.names)
         else:
             return pd.DataFrame(fc[:,:ldstart], columns=lpf.ps.names[:ldstart])
 
-    def plot_mcmc_chains(self, pid=0, model='gp', alpha=0.1):
+    def plot_mcmc_chains(self, pid=0, model='gp', alpha=0.1, thin=1, ax=None):
         assert model in ('linear', 'gp')
         lpf = self.lmlpf if model == 'linear' else self.gplpf
-        fig, ax = subplots()
-        ax.plot(lpf.sampler.chain[:,:,pid].T, 'k', alpha=alpha)
+        fig, ax = (None, ax) if ax is not None else subplots()
+        ax.plot(lpf.sampler.chain[:,::thin,pid].T, 'k', alpha=alpha)
         fig.tight_layout()
         return fig
+
+    def plot_basic_posteriors(self, model='gp', burn=0, thin=1):
+        df = self.posterior_samples(burn, thin, model, False)
+        df['k'] = sqrt(df.k2)
+        df.drop(['k2'], axis=1, inplace=True)
+        return corner(df)
+
 
     def plot_light_curve(self, model='linear', method='de', detrend_obs=False, detrend_mod=True, include_mod=True,
                          figsize=(11, 6)):
@@ -223,24 +274,52 @@ class TransitAnalysis:
         return fig
 
 
+    @property
+    def savefile_name(self):
+        return '{}_{}_{}_{}_fit.nc'.format(self.target, self.ddata.absolute().name,
+                                    'nongray' if self.free_k else 'gray',
+                                    'blended' if self.contamination else 'noblend')
+
+    def load(self):
+        ds = xa.open_dataset(self.savefile_name).load()
+        ds.close()
+        return ds
+
     def save(self):
-        delm = xa.DataArray(self.lmlpf.de.population, dims='pvector lm_parameter'.split(),
-                            coords={'lm_parameter': self.lmlpf.ps.names})
-        degp = xa.DataArray(self.gplpf.de.population, dims='pvector gp_parameter'.split(),
-                            coords={'gp_parameter': self.gplpf.ps.names})
-        gphp = xa.DataArray(self.gplpf.gphps, dims='filter gp_hyperparameter'.split(),
-                            coords={'filter': 'g r i z'.split(),
-                                    'gp_hyperparameter': 'sky airmass xy_amplitude xy_scale entropy'.split()})
-        gpmc = xa.DataArray(self.gplpf.sampler.chain, dims='pvector step gp_parameter'.split(),
-                            coords={'gp_parameter': self.gplpf.ps.names},
-                            attrs={'ndim': self.gplpf.de.n_par, 'npop': self.gplpf.de.n_pop})
+        delm = None
+        if self.lmlpf.de:
+            delm = xa.DataArray(self.lmlpf.de.population, dims='pvector lm_parameter'.split(),
+                                coords={'lm_parameter': self.lmlpf.ps.names})
+
+        degp = None
+        if self.gplpf.de:
+            degp = xa.DataArray(self.gplpf.de.population, dims='pvector gp_parameter'.split(),
+                                coords={'gp_parameter': self.gplpf.ps.names})
+
+        gphp = None
+        if self.gplpf.gphps is not None:
+            gphp = xa.DataArray(self.gplpf.gphps, dims='filter gp_hyperparameter'.split(),
+                                coords={'filter': 'g r i z'.split(),
+                                        'gp_hyperparameter': 'log_var sky airmass xy_amplitude xy_scale entropy'.split()})
+
+        lmmc = None
+        if self.lmlpf.sampler is not None:
+            lmmc = xa.DataArray(self.lmlpf.sampler.chain, dims='pvector step lm_parameter'.split(),
+                                coords={'lm_parameter': self.lmlpf.ps.names},
+                                attrs={'ndim': self.lmlpf.de.n_par, 'npop': self.lmlpf.de.n_pop})
+
+        gpmc = None
+        if self.gplpf.sampler is not None:
+            gpmc = xa.DataArray(self.gplpf.sampler.chain, dims='pvector step gp_parameter'.split(),
+                                coords={'gp_parameter': self.gplpf.ps.names},
+                                attrs={'ndim': self.gplpf.de.n_par, 'npop': self.gplpf.de.n_pop})
+
         ds = xa.Dataset(data_vars={'de_population_lm': delm, 'de_population_gp': degp,
-                                   'gp_hyperparameters': gphp, 'gp_mcmc': gpmc},
+                                   'gp_hyperparameters': gphp, 'lm_mcmc': lmmc, 'gp_mcmc': gpmc},
                         attrs={'created': strftime('%Y-%m-%d %H:%M:%S'), 'obsnight':self.ddata.absolute().name,
                                'tid':self.tid, 'cids':self.cids, 'target':self.target})
-        ds.to_netcdf('{}_{}_{}_{}_fit.nc'.format(self.target, self.ddata.absolute().name,
-                                                 'nongray' if self.free_k else 'gray',
-                                                 'blended' if self.contamination else 'noblend'))
+
+        ds.to_netcdf(self.savefile_name)
 
 
     def save_fits(self, model='linear', npoly=10):
@@ -250,7 +329,7 @@ class TransitAnalysis:
         hdul = pf.HDUList(phdu)
 
         if model == 'linpoly':
-            times, fcorr, fsys, fbase = self.detrend_polynomial(20)
+            times, fcorr, fsys, fbase = self.detrend_polynomial(npoly)
             for i, pb in enumerate('g r i z'.split()):
                 df = Table(np.transpose([times[i], fcorr[i], fsys[i], fbase[i]]),
                            names='time flux trend model'.split(),
@@ -272,10 +351,57 @@ class TransitAnalysis:
             for i, pb in enumerate('g r i z'.split()):
                 df = Table(np.transpose([lpf.times[i], lpf.fluxes[i] - trends[i], trends[i], transit[i]]),
                            names='time flux trend model'.split(),
-                           meta={'extname': pb, 'filter': pb, 'trends': model})
+                           meta={'extname': pb, 'filter': pb, 'trends': model, 'wn':lpf.wn})
+                hdul.append(pf.BinTableHDU(df))
+
+            for i, pb in enumerate('g r i z'.split()):
+                df = Table(lpf.covariates[i], names=lpf.datasets[i]._covnames, meta={'extname': 'aux_'+pb})
                 hdul.append(pf.BinTableHDU(df))
 
             fname = '{}_{}_{}_{}_{}.fits'.format(self.target, self.date, model,
                                                  'nongray' if self.free_k else 'gray',
                                                  'blended' if self.contamination else 'noblend')
         hdul.writeto(fname, overwrite=True)
+
+
+class MultiTransitAnalysis(TransitAnalysis):
+    def __init__(self, datadir, target, ftemplate, free_k=False, contamination=False, teff=None, npop=100):
+        self.ddata = Path(datadir)
+        self.target = target
+        self.ftemplate = ftemplate
+        self.free_k = free_k
+        self.contamination = contamination
+        self.teff = teff
+        self.npop = npop
+        self.models = None
+        self.lm_pv = None
+        self.gp_pv = None
+        self._init_lcs()
+
+    def _init_lcs(self):
+        files = sorted(glob(self.ftemplate))
+        lcs = []
+        for fname in files:
+            with pf.open(fname) as f:
+                for i in range(4):
+                    d, h = f[i + 1].data, f[i + 1].header
+                    aux = pd.DataFrame(f[4 + i + 1].data)
+                    time, flux = d['time'], d['flux'] + d['trend']
+                    error = full_like(time, h['wn'])
+                    lcs.append(M2LightCurve(i, time, flux, error, aux.values[:, 1:], aux.columns[1:]))
+        self.lcs = M2LCSet(lcs)
+
+        try:
+            self.lmlpf = NormalLSqLPF(self.target, self.lcs, self.pbs, free_k=self.free_k,
+                                      contamination=self.contamination, teff=self.teff)
+            self.gplpf = GPLPF(self.target, self.lcs, self.pbs, free_k=self.free_k, contamination=self.contamination,
+                               teff=self.teff)
+            self.models = {'linear': self.lmlpf, 'gp': self.gplpf}
+        except ValueError:
+            print("Couldn't initialise the LPFs")
+
+    @property
+    def savefile_name(self):
+        return '{}_multi_{}_{}_fit.nc'.format(self.target,
+                                              'nongray' if self.free_k else 'gray',
+                                              'blended' if self.contamination else 'noblend')

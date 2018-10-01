@@ -4,8 +4,6 @@ from numpy import inf, array, zeros, unique, pi
 from numpy.random import normal, uniform
 import pandas as pd
 
-from numba import jit, float64 as fd
-
 class Prior:
     def __init__(self):
         raise NotImplementedError
