@@ -139,22 +139,21 @@ class COMCentroider(Centroider):
 
 class ImageFrame:
     def __init__(self, *nargs, **kwargs):
+        self._data = None
+        self._wcs = None
         raise NotImplementedError
 
-    def plot(self, data=None, ax=None, figsize=(6,6), title='', minp=10, maxp=100):
+    def plot(self, data=None, ax=None, figsize=(6,6), title='', minp=10, maxp=100, wcs=None):
         data = data if data is not None else self._data
+        wcs = wcs or self._wcs
+        fig = None if ax else figure(figsize=figsize)
         if not ax:
-            fig = figure(figsize=figsize)
-            if hasattr(self, '_wcs'):
-                if self._wcs :
-                    ax = subplot(projection=self._wcs)
-                    ax.grid()
-            else:
-                ax = subplot()
+            ax = subplot(projection=wcs) if wcs else subplot()
+            ax.grid()
         ax.imshow(data, cmap=cm.gray_r, origin='image',
                   norm=sn(data, stretch='log', min_percent=minp, max_percent=maxp))
         ax.set_title(title)
-        return ax
+        return fig, ax
 
 class MasterFrame(ImageFrame):
     def __init__(self, root, passband, name, force=False, verbose=True):
@@ -484,13 +483,29 @@ class ScienceFrame(ImageFrame):
                       norm=sn(d, stretch='linear', min_percent=minp, max_percent=maxp))
         fig.tight_layout()
 
-    def plot_apertures(self, ax, offset=9):
+    def plot_apertures(self, ax, offset=9, wcs=None):
+        if wcs:
+            cpix = self._ref_centroids_sky.to_pixel(wcs)
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
         if self._apertures_obj is not None:
-            [apt.plot(ax=ax, alpha=0.25) for apt in self._apertures_obj]
-            for istar, (x,y) in enumerate(self._apertures_obj[0].positions):
-                ax.text(x+offset, y+offset, istar)
+            if wcs:
+                apertures_obj = [CircularAperture(cpix, r) for r in self.aperture_radii]
+            else:
+                apertures_obj = self._apertures_obj
+            [apt.plot(ax=ax, alpha=0.25) for apt in apertures_obj]
+            for istar, (x,y) in enumerate(apertures_obj[0].positions):
+                if (xlim[0] <= x <= xlim[1]) and (ylim[0] <= y <= ylim[1]):
+                    yoffset = offset if y < ylim[1]-10 else -offset
+                    ax.text(x+offset, y+yoffset, istar)
         if self._apertures_sky is not None:
-            self._apertures_sky.plot(ax=ax, alpha=0.25)
+            if wcs:
+                apertures_sky = CircularAnnulus(cpix, self.aperture_radii[-1], self.aperture_radii[-1] + 15)
+            else:
+                apertures_sky = self._apertures_sky
+            apertures_sky.plot(ax=ax, alpha=0.25)
+
 
     def plot_raw(self, ax=None, figsize=(6,6), plot_apertures=True, minp=10, maxp=100):
         ax = super().plot(self.raw, ax=ax, figsize=figsize, title='Reduced image',
@@ -499,22 +514,56 @@ class ScienceFrame(ImageFrame):
             self.plot_apertures(ax)
         return ax
 
-    def plot_reduced(self, ax=None, figsize=(6,6), plot_apertures=True,  minp=10, maxp=100, flt=lambda a:a, **kwargs):
-        ax = super().plot(flt(self.reduced), ax=ax, figsize=figsize, title='Reduced image', minp=minp, maxp=maxp)
+
+    def plot_reduced(self, ax=None, figsize=(6,6), plot_apertures=True,  minp=10, maxp=100, flt=lambda a:a,
+                     transform=lambda im:(im.reduced, im._wcs),  **kwargs):
+
+        if 'subfield_radius' in kwargs.keys():
+            from astropy.nddata import Cutout2D
+            sc = kwargs.get('target', self._target_center)
+            assert isinstance(sc, SkyCoord)
+            assert self._wcs is not None
+            r = kwargs['subfield_radius']*u.arcmin
+            co = Cutout2D(self.reduced, sc, (r, r), mode='partial', fill_value=median(self.reduced), wcs=self._wcs)
+            data, wcs = co.data, co.wcs
+        else:
+            data, wcs = transform(self)
+        height, width = data.shape
+
+        fig, ax = super().plot(flt(data), ax=ax, figsize=figsize, title='Reduced image', minp=minp, maxp=maxp, wcs=wcs)
+        setp(ax, xlim=(0,width), ylim=(0,height))
+
         if plot_apertures:
-            self.plot_apertures(ax, **kwargs)
+            self.plot_apertures(ax, wcs=wcs)
+
+        # Plot the circle of inclusion
         if self._separation_cut is not None:
             from photutils import SkyCircularAperture
-            sa = SkyCircularAperture(self._target_center, self._separation_cut).to_pixel(self._wcs)
-            ax.plot(*self._target_center.to_pixel(self._wcs), marker='x', c='k', ms=15)
-            sa.plot(ax=ax)
+            sa = SkyCircularAperture(self._target_center, self._separation_cut).to_pixel(wcs)
+            ax.plot(*self._target_center.to_pixel(wcs), marker='x', c='k', ms=15)
+            sa.plot(ax=ax, color='0.4', ls=':', lw=2)
+            if sa.positions[0][0] + sa.r - 20 < width:
+                ax.text(sa.positions[0][0] + sa.r + 10, sa.positions[0][1],
+                        "r = {:3.1f}'".format(self._separation_cut.value), size='larger')
+
+        # Plot the margins
         if self._margins_cut:
-            ax.axvline(self.margin, c='k', ls='--')
-            ax.axvline(self.width - self.margin, c='k', ls='--')
-            ax.axhline(self.margin, c='k', ls='--')
-            ax.axhline(self.height - self.margin, c='k', ls='--')
-        setp(ax, xlim=(0,self.width), ylim=(0,self.height))
-        return ax
+            ax.axvline(self.margin, c='k', ls='--', alpha=0.5)
+            ax.axvline(self.width - self.margin, c='k', ls='--', alpha=0.5)
+            ax.axhline(self.margin, c='k', ls='--', alpha=0.5)
+            ax.axhline(self.height - self.margin, c='k', ls='--', alpha=0.5)
+
+        # Plot the image scale
+        if self._wcs:
+            xlims = ax.get_xlim()
+            py = 0.96 * ax.get_ylim()[1]
+            x0, x1 = 0.3 * xlims[1], 0.7 * xlims[1]
+            scale = SkyCoord.from_pixel(x0, py, wcs).separation(SkyCoord.from_pixel(x1, py, wcs))
+            ax.annotate('', xy=(x0, py), xytext=(x1, py), arrowprops=dict(arrowstyle='|-|', lw=1.5, color='k'))
+            ax.text(width/2, py - 7.5, "{:3.1f}'".format(scale.arcmin), va='top', ha='center', size='larger')
+
+        return fig, ax
+
 
     def plot_reduction(self, figsize=(11,12)):
         fig, axs = subplots(2,2, figsize=figsize, sharex=True, sharey=True)

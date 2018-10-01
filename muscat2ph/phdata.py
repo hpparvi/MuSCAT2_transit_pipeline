@@ -1,12 +1,15 @@
 import xarray as xa
+import seaborn as sb
 from astropy.coordinates import SkyCoord, FK5
 from matplotlib.mlab import normpdf
+from matplotlib.pyplot import subplots, setp
 
-from numpy import inf, sqrt, dot, exp, linspace, log, zeros, array, arange, meshgrid, ones, r_, isin
+from numpy import inf, sqrt, dot, exp, linspace, log, zeros, array, arange, meshgrid, ones, r_, isin, ceil
 import patsy
 from numpy.linalg import lstsq
 from photutils import CircularAperture
 from scipy.interpolate import interp1d
+from scipy.stats import norm
 from astropy.time import Time
 from astropy import coordinates as coord, units as u
 from astropy.stats import mad_std
@@ -28,13 +31,13 @@ class ReferenceStarSet:
         self.caps = []
         self.ptps = []
 
-    def select_best(self, min_apt=0, max_apt=4, max_cid=5, n=1):
+    def select_best(self, n_stars=1, start_id=0, end_id=5, start_apt=0, end_apt=None, model=None):
         N = lambda a: a / a.median('mjd')
 
         self.tap, self.cids, self.caps, self.ptps = None, [], [], []
-        cids = arange(max_cid)
-        apts = arange(min_apt, max_apt)
-        for i in tqdm(range(n), desc='Optimising comparison stars'):
+        cids = arange(start_id, end_id)
+        apts = arange(start_apt, end_apt or self.ph.napt)
+        for i in tqdm(range(n_stars), desc='Optimising comparison stars'):
             cids = cids[isin(cids, self.cids + [self.tid], invert=True)]
             sc = xa.DataArray(zeros([cids.size, apts.size, apts.size]),
                               dims='cstar tapt capt'.split(),
@@ -43,6 +46,8 @@ class ReferenceStarSet:
             for icid, cid in enumerate(cids):
                 for iaid, aid in enumerate(apts):
                     ft = self.ph.flux[:, self.tid, aid]
+                    if model is not None:
+                        ft = ft / model
                     fc = self.reference_flux + self.ph.flux.loc[:, cid][:, apts]
                     sc[icid, iaid, :] = (self.ptp_scatter(ft / fc, 1) / sqrt(2)
                                          + self.ptp_scatter(ft / fc, 2) / sqrt(6)
@@ -79,12 +84,13 @@ class ReferenceStarSet:
 
 
 class PhotometryData:
-    def __init__(self, fname, tid, cids, fstart=0, fend=inf, objname=None, **kwargs):
+    def __init__(self, fname, tid, cids, objname=None, objskycoords=None, **kwargs):
         with xa.open_dataset(fname) as ds:
             self._ds = ds.load()
         self._flux = self._ds.flux
         self._mjd = Time(self._ds.aux.loc[:,'mjd'], format='mjd', scale='utc', location=lapalma)
         self.objname = objname
+        self.objskycoords = objskycoords
 
         self._aux = self._ds.aux
         self._cnt = self._ds.centroid
@@ -96,26 +102,41 @@ class PhotometryData:
 
         self.tid = tid
         self.cids = cids
-        self.fstart = max(0, fstart)
-        self.fend = min(self.nframes, fend)
-        self.tstart = kwargs.get('tstart', -inf)
-        self.tend = kwargs.get('tend', inf)
+        self.mjd_start = kwargs.get('mjd_start', None) or kwargs.get('tstart', -inf)
+        self.mjd_end = kwargs.get('mjd_end', None) or kwargs.get('tend', inf)
         self.iapt = -1
         self.apt = self._flux.aperture[self.iapt]
         self.lin_formula = 'mjd + sky + xshift + yshift + entropy + airmass'
 
+        try:
+            self.centroids_sky = SkyCoord(array(self._ds.centroids_sky), frame=FK5, unit=(u.deg, u.deg))
+            self.distances_arcmin = self.centroids_sky[tid].separation(self.centroids_sky).arcmin
+            if not self.objskycoords:
+                self.objskycoords = self.centroids_sky[tid]
+        except:
+            self.centroids_sky = None
+            self.distances_arcmin = None
+
+        if not self.objskycoords:
+            try:
+                obj = Simbad.query_object(self.objname)
+                self.objskycoords = SkyCoord(obj['RA'][0], obj['DEC'][0], frame=FK5, unit=(u.hourangle, u.deg))
+            except:
+                print('Could not set the target sky coordinates')
+
         self._fmask = ones(self.nframes, 'bool')
-        self._fmask[:self.fstart] = 0
-        self._fmask[self.fend:] = 0
-        self._fmask[self._mjd.value < self.tstart] = 0
-        self._fmask[self._mjd.value > self.tend] = 0
+        self._fmask[self._mjd.value < self.mjd_start] = 0
+        self._fmask[self._mjd.value > self.mjd_end] = 0
         self._fmask &= self._flux.notnull().any(['star','aperture'])
         self._fmask = array(self._fmask)
 
         self._entropy_table = None
         self._calculate_effective_fwhm()
         self._rset = ReferenceStarSet(self)
-        self._rset.select_best(n=4)
+        self._rset.tid = tid
+        self._rset.tap = 2
+        self._rset.cids = cids
+        self._rset.caps = len(cids)*[2]
 
 
     def _calculate_effective_fwhm(self):
@@ -136,7 +157,7 @@ class PhotometryData:
             x, y = meshgrid(arange(mb.shape[0]), arange(mb.shape[1]))
             r = sqrt((x - ar)**2 + (y - ar)**2)
             sigmas = fwhms / 2.355
-            self._entropy_table[i, :] = [entropy(normpdf(r, 0, sigma)[mb]) for sigma in sigmas]
+            self._entropy_table[i, :] = [entropy(norm.pdf(r, 0, sigma)[mb]) for sigma in sigmas]
 
         self._fwhm = self._ds.obj_entropy.copy()
         self._fwhm.name = 'fwhm'
@@ -174,9 +195,7 @@ class PhotometryData:
 
     @property
     def bjd(self):
-        obj = Simbad.query_object(self.objname)
-        sc = SkyCoord(obj['RA'][0], obj['DEC'][0], frame=FK5, unit=(u.hourangle, u.deg))
-        bjd = self.mjd.tdb + self.mjd.light_travel_time(sc)
+        bjd = self.mjd.tdb + self.mjd.light_travel_time(self.objskycoords)
         return bjd.jd
 
     @property
@@ -197,11 +216,11 @@ class PhotometryData:
 
     @property
     def xshift(self):
-        return (self._cnt[self._fmask, r_[self.tid, self.cids], 0] - self._cnt[self.fstart,r_[self.tid, self.cids],0]).mean('star')
+        return (self._cnt[self._fmask, r_[self.tid, self.cids], 0] - self._cnt[self._fmask,r_[self.tid, self.cids],0][0]).mean('star')
 
     @property
     def yshift(self):
-        return (self._cnt[self._fmask, r_[self.tid, self.cids], 1] - self._cnt[self.fstart,r_[self.tid, self.cids],1]).mean('star')
+        return (self._cnt[self._fmask, r_[self.tid, self.cids], 1] - self._cnt[self._fmask,r_[self.tid, self.cids],1][0]).mean('star')
 
     @property
     def relative_flux(self):
@@ -246,3 +265,16 @@ class PhotometryData:
         self.flux[:, iobj, iapt].plot(marker='.', linestyle='')
         if plot_excluded:
             self._flux[:, iobj, iapt].plot(alpha=0.25, c='k', marker='.', linestyle='')
+
+    def plot_raw(self, nstars, ylim=(0.85, 1.15), ncols=4):
+        nrows = int(ceil(nstars / ncols))
+        fig, axs = subplots(nrows, ncols, figsize=(11,11), sharex=True, sharey=True)
+        nflux = self.flux / self.flux.median('mjd')
+        aids = abs(nflux.diff('mjd')).median('mjd').argmin('aperture')
+        for i,(ax,apt) in enumerate(zip(axs.flat, aids[:nstars])):
+            ax.plot(self.mjd.value, nflux[:,i,apt], 'k')
+            ax.text(0.05, 0.05, int(apt), transform=ax.transAxes, size='small')
+        setp(axs, ylim=ylim)
+        sb.despine(fig)
+        fig.tight_layout()
+        return fig
