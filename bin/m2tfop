@@ -1,0 +1,138 @@
+#!/usr/bin/env python
+import numpy as np
+import matplotlib.pyplot as pl
+import statsmodels.api as sm
+import astropy.units as u
+
+from argparse import ArgumentParser
+from pathlib import Path
+
+from tqdm import tqdm
+from astropy.coordinates import SkyCoord, FK5
+from numpy import sqrt, arange, zeros, full, digitize, nan, ceil, isfinite, array, linspace, percentile, round, argsort, \
+    floor
+from matplotlib.backends.backend_pdf import PdfPages
+from numpy.polynomial.legendre import legfit, legvander
+from astropy.stats import sigma_clip
+from numba import njit
+
+from muscat2ph.phdata import PhotometryData
+
+@njit("Tuple((f8[:],f8[:],f8[:],f8[:,:]))(f8[:],f8[:],f8[:,:],f8)")
+def downsample_time(time, flux, covariates, inttime=30.):
+    duration = 24. * 60. * 60. * (time.max() - time.min())
+    nbins = int(ceil(duration / inttime))
+    bins = arange(nbins)
+    edges = time[0] + bins * inttime / 24 / 60 / 60
+    bids = digitize(time, edges) - 1
+    bt, bf, be, bc = full(nbins, nan), zeros(nbins), zeros(nbins), zeros((nbins, covariates.shape[1]))
+    for i, bid in enumerate(bins):
+        bmask = bid == bids
+        if bmask.sum() > 0:
+            bt[i] = time[bmask].mean()
+            bf[i] = flux[bmask].mean()
+            if bmask.sum() > 2:
+                be[i] = flux[bmask].std() / sqrt(bmask.sum())
+            else:
+                be[i] = nan
+                # bc[i,:] = covariates[bmask].mean(0)
+    m = isfinite(bt)
+    return bt[m], bf[m], be[m], bc[m]
+
+
+def plot_raw(ax, ph, sid, tid, aid=-1, btime=300.):
+    time = ph.mjd.value
+    flux = ph.flux[:, sid, aid] / ph.flux[:, tid, aid].median()
+    t0 = floor(time[0])
+
+    sc = SkyCoord(array(ph._ds.centroids_sky), frame=FK5, unit=(u.deg, u.deg))
+    sep = sc[0].separation(sc).arcmin
+
+    # Fit a baseline and use it in sigma clipping
+    x = linspace(-1, 1, flux.size)
+    m = sm.RLM(array(flux), legvander(x, 10))
+    r = m.fit(maxiter=100)
+    flux_baseline = r.predict()
+    flux_clipped = sigma_clip(flux - flux_baseline) + flux_baseline
+    mask = ~flux_clipped.mask
+    p = percentile(flux_clipped, [5, 50, 95])
+    bt, bf, be, bc = downsample_time(time[mask], flux_clipped.data[mask], array(ph.aux)[mask], btime)
+    ax.plot(time-t0, flux_clipped, marker='.', ls='', alpha=0.1)
+    ax.plot(bt-t0, bf, 'k', drawstyle='steps-mid')
+    ax.text(0.98, 0.05, "Star {:d}, separation {:4.2f}'".format(sid, sep[sid]), ha='right', transform=ax.transAxes)
+    pl.setp(ax, yticks=round(p, 3), xlim=time[[0, -1]]-t0)
+
+
+if __name__ == '__main__':
+    ap = ArgumentParser()
+    ap.add_argument('target', type=str)
+    ap.add_argument('date', type=str)
+    ap.add_argument('datadir', type=Path)
+    ap.add_argument('tid', type=int)
+    ap.add_argument('cids', type=int, nargs='+')
+    ap.add_argument('--bintime', type=float, default=300.)
+    args = ap.parse_args()
+
+    root = args.datadir.joinpath(args.target, args.date)
+
+    basename = "{}_{}".format(args.target, args.date)
+    phs = [PhotometryData(root.joinpath('{}_{}.nc'.format(basename, pb)), args.tid, args.cids, objname=args.target)
+           for pb in 'g r i z_s'.split()]
+    for ph in phs[1:]:
+        phs[0]._flux += array(ph.flux)
+    ph = phs[0]
+    dist = sqrt(((ph._ds.centroids_pix - ph._ds.centroids_pix[0]) ** 2).sum('centroid_pix'))
+    sids = argsort(array(dist))
+
+    n_stars = sids.size
+    stars_per_page = 12
+    n_pages = int(ceil(n_stars / stars_per_page))
+
+    istar = 0
+    with tqdm(total=n_stars, desc='Plotting raw fluxes') as pb:
+        for ipage in range(n_pages):
+            fig, axs = pl.subplots(4, 3, figsize=(16 * 0.75, 9 * 0.75), sharex=True)
+            for iax, ax in enumerate(axs.flat):
+                if istar < n_stars:
+                    plot_raw(ax, ph, sids[istar], args.tid)
+                    pb.update(1)
+                else:
+                    pl.setp(ax, visible=False)
+                istar += 1
+            pl.setp(axs, title='')
+            pl.setp(axs[:-1, :], xlabel='')
+            pl.setp(axs[:, 0], ylabel='F / F$_0$')
+            pl.setp(axs[:, 1], ylabel='')
+            fig.suptitle("{} {}".format(ph.objname, args.date))
+            fig.tight_layout()
+            fig.subplots_adjust(hspace=0, top=0.95)
+            fig.savefig("{}_{:02d}.png".format(basename, ipage))
+            pl.close(fig)
+
+    for passband in 'g r i z_s'.split():
+        basename = "{}_{}_{}".format(args.target, args.date, passband)
+        ph = PhotometryData(root.joinpath(basename+'.nc'), args.tid, args.cids, objname=args.target)
+        dist = sqrt(((ph._ds.centroids_pix - ph._ds.centroids_pix[0]) ** 2).sum('centroid_pix'))
+        sids = argsort(array(dist))
+
+        istar = 0
+        with tqdm(total=n_stars, desc='Plotting raw fluxes') as pb:
+            for ipage in range(n_pages):
+                fig, axs = pl.subplots(4, 3, figsize=(16 * 0.75, 9 * 0.75), sharex=True)
+                for iax, ax in enumerate(axs.flat):
+                    if istar < n_stars:
+                        plot_raw(ax, ph, sids[istar], args.tid)
+                        pb.update(1)
+                    else:
+                        pl.setp(ax, visible=False)
+                    istar += 1
+                pl.setp(axs, title='')
+                pl.setp(axs[:-1, :], xlabel='')
+                pl.setp(axs[:, 0], ylabel='F / F$_0$')
+                pl.setp(axs[:, 1], ylabel='')
+                fig.suptitle("{} {} {}".format(ph.objname, args.date, passband))
+                fig.tight_layout()
+                fig.subplots_adjust(hspace=0, top=0.95)
+                fig.savefig("{}_{:02d}.png".format(basename, ipage))
+                pl.close(fig)
+
