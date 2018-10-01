@@ -169,16 +169,28 @@ if __name__ == '__main__':
 
             # Masterframe plot with apertures
             # -------------------------------
-            fig1 = pl.figure(figsize=(7,7))
+            fig1 = pl.figure(figsize=(9,9))
             if im._wcs:
                 ax1 = fig1.add_subplot(111, projection=im._wcs)
                 ax1.grid()
             else:
                 ax1 = fig1.add_subplot(111)
-            ax1 = im.plot_reduced(minp=90, offset=10, ax=ax1)
-            ax1.set_title('Reference frame - {} {}'.format(object, args.passband))
+            _, ax1 = im.plot_reduced(minp=90, offset=10, ax=ax1)
+            ax1.set_title('Reference frame - {} {}'.format(object, pb))
             fig1.tight_layout()
             fig1.savefig(str(rdir.joinpath('{}_{}_{}.png'.format(object, root.absolute().name, pb))))
+
+            if args.tfop and im._target_center is not None:
+                for r in [5,2]:
+                    fig = pl.figure(figsize=(9, 9))
+                    ax = fig.add_subplot(111, projection=im._wcs)
+                    ax.grid()
+                    im.plot_reduced(ax=ax, minp=90, offset=10, subfield_radius=r)
+                    ax.set_title("Reference frame - {} {} {:d}'".format(object, pb, r))
+                    pl.setp(ax, ylabel='Dec', xlabel='RA')
+                    fig.tight_layout()
+                    fig.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
+                    fig.savefig(str(rdir.joinpath('{}_{}_{}_{:d}am.png'.format(object, root.absolute().name, pb, r))))
 
             # Datacube creation
             # -----------------
