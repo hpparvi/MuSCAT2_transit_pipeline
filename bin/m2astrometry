@@ -104,19 +104,22 @@ if __name__ == '__main__':
     ap.add_argument('--end-frame', type=int, default=inf)
     args = ap.parse_args()
 
-    passbands = 'g r i z_s'.split()
-
-    curdir = Path('.').absolute()
-    objdir = args.root.joinpath('obj')
-
-    if objdir.exists():
-        targets = list(objdir.glob('*'))
-        for tdir in targets:
-            chdir(tdir.absolute())
-            for pb in passbands:
-                datadir = tdir.joinpath(pb)
-                if datadir.exists():
-                    process_datadir(datadir, tdir, args.file_prefix, args.file_postfix, args.start_frame, args.end_frame)
-        chdir(curdir)
+    if args.directory is not None:
+        process_datadir(args.directory, args.directory, args.file_prefix, args.file_postfix, args.start_frame, args.end_frame)
     else:
-        print('Error: Could not find "obj" directory.')
+        passbands = 'g r i z_s'.split()
+
+        curdir = Path('.').absolute()
+        objdir = args.root.joinpath('obj')
+
+        if objdir.exists():
+            targets = list(objdir.glob('*'))
+            for tdir in targets:
+                chdir(tdir.absolute())
+                for pb in passbands:
+                    datadir = tdir.joinpath(pb)
+                    if datadir.exists():
+                        process_datadir(datadir, tdir, args.file_prefix, args.file_postfix, args.start_frame, args.end_frame)
+            chdir(curdir)
+        else:
+            print('Error: Could not find "obj" directory.')
