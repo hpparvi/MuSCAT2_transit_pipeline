@@ -10,6 +10,7 @@ import matplotlib.pyplot as pl
 
 from corner import corner
 from muscat2ta.transitanalysis import TransitAnalysis
+from muscat2ta.lpf import BaseLPF
 from muscat2ta.lc import find_period
 
 if __name__ == '__main__':
@@ -21,37 +22,35 @@ if __name__ == '__main__':
     ap.add_argument('cids', type=int, nargs='+')
     ap.add_argument('--detrend-only', action='store_true', default=False)
     ap.add_argument('--npoly', type=int, default=10)
-    ap.add_argument('--free-k', action='store_true', default=False)
-    ap.add_argument('--fit-contamination', action='store_true', default=False)
-    ap.add_argument('--teff', type=float, default=None)
     ap.add_argument('--exptime', type=float, default=30.)
     ap.add_argument('--plot-dir', type=Path, default='.')
     ap.add_argument('--npop', default=100, type=int)
     ap.add_argument('--niter-od', default=30, type=int)
     ap.add_argument('--niter-de', default=500, type=int)
-    ap.add_argument('--niter-mc', default=500, type=int)
+    ap.add_argument('--mc-nburn', default=500, type=int)
+    ap.add_argument('--mc-niter', default=500, type=int)
+    ap.add_argument('--mc-thin', default=5, type=int)
     ap.add_argument('--npasses', default=2, type=int)
+    ap.add_argument('--model', default=BaseLPF.models[0], choices=BaseLPF.models)
     args = ap.parse_args()
 
     ta = TransitAnalysis(args.datadir, args.target, args.date, args.tid, args.cids, etime=args.exptime,
-                         free_k=args.free_k, contamination=args.fit_contamination, teff=args.teff)
+                         model=args.model)
 
-    kterm = 'nongray' if args.free_k else 'gray'
-    cterm = 'blended' if args.fit_contamination else 'noblend'
-
-    basename = '{}_{}_{}_{}'.format(args.target, args.datadir.absolute().name, kterm, cterm)
+    basename = '{}_{}_{}'.format(args.target, args.datadir.absolute().name, args.model)
 
     if args.detrend_only:
         ta.save_fits('linpoly', npoly=args.npoly)
     else:
         with PdfPages('{}.pdf'.format(basename)) as pdf:
-            ta.optimize_linear_model(args.niter_de)
+            ta.optimize('linear', args.niter_de)
             ta.save_fits('linear')
             ta.learn_gp_hyperparameters()
-            ta.optimize_gp_model(args.niter_de)
+            ta.optimize('gp', args.niter_de)
             ta.save_fits('gp')
-            ta.sample_gp_model(args.niter_mc, 5)
-            ta.print_ptp_scatter()
+            ta.sample('gp', args.mc_burn, thin=args.mc_thin)
+            ta.sample('gp', args.mc_niter, thin=args.mc_thin, reset=True)
+            #ta.print_ptp_scatter()
             ta.save()
 
             pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
@@ -61,28 +60,17 @@ if __name__ == '__main__':
             pdf.savefig(ta.plot_noise('bins'))
 
             df = ta.posterior_samples()
-            k2labels = 'k2_g k2_r k2_i k2_z'.split() if ta.gplpf.free_k else ['k2']
-            for l in k2labels:
-                df[l.replace('k2','k')] = sqrt(df[l])
-                df.drop(l, axis=1, inplace=True)
+            if args.model == 'pb_independent_k':
+                df['k'] = sqrt(df.k2)
+                df.drop('k2', axis=1, inplace=True)
+            elif args.model == 'pb_dependent_k':
+                k2labels = 'k2_g k2_r k2_i k2_z'.split()
+                for l in k2labels:
+                    df[l.replace('k2','k')] = sqrt(df[l])
+                    df.drop(l, axis=1, inplace=True)
+            elif args.model == 'physical_contamination':
+                df['cnt'] = 1. - df.k2_app / df.k2_true
+                df['k_true'] = sqrt(df['k2_true'])
+                df['k_app'] = sqrt(df['k2_app'])
 
             pdf.savefig(corner(df))
-
-            #fig, axs = pl.subplots(2, 2, figsize=(11, 6), sharex=True, sharey=True)
-            #for i, gpf in enumerate(ta.gpfs):
-            #    prediction = gpf.gp.predict(gpf.residuals, gpf.covariates, return_cov=False, kernel=gpf.kernels[2])
-            #    axs.flat[i].tripcolor(gpf.covariates[:, 2], gpf.covariates[:, 3], prediction)
-            #fig.tight_layout()
-            #pdf.savefig(fig)
-
-            #fig, axs = pl.subplots(2, 2, figsize=(11, 6), sharex=True, sharey=True)
-            #for i in range(4):
-            #    _, freq1, power1 = find_period(ta.gpfs[i].time, ta.gpfs[i].residuals)
-            #    _, freq2, power2 = find_period(ta.gpfs[i].time, ta.gpfs[i].residuals - ta.gp_predictions[i])
-                # axs.flat[i].plot(1/freq1*60*24, power1/power1.max(), 'k', alpha=0.5)
-                # axs.flat[i].plot(1/freq2*60*24, power2/power1.max(), '.')
-            #    axs.flat[i].plot(1 / freq1 * 60 * 24, power1, 'k', alpha=0.5)
-            #    axs.flat[i].plot(1 / freq2 * 60 * 24, power2, '.')
-            # setp(axs, xlim=(1,6))
-            #fig.tight_layout()
-            #pdf.savefig(fig)
