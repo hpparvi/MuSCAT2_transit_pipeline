@@ -3,7 +3,7 @@ import math as mt
 from os.path import join, split
 
 from numpy import (inf, sqrt, ones, hstack, zeros_like, median, floor, concatenate, dot, diff, log, ones_like,
-                   percentile, clip, argsort, any, array, s_, zeros, arccos, nan, isnan, full, pi, sum)
+                   percentile, clip, argsort, any, array, s_, zeros, arccos, nan, isnan, full, pi, sum, repeat, arange)
 from numpy.random import uniform, normal
 from numpy.linalg import lstsq, LinAlgError
 from numba import njit
@@ -20,6 +20,7 @@ from pytransit import MandelAgol as MA
 from pytransit.mandelagol_py import eval_quad_ip_mp
 from pytransit.orbits_py import z_circular, duration_eccentric
 from pytransit.param.parameter import *
+from pytransit.param.parameter import PParameter, GParameter, LParameter
 from pytransit.param.parameter import UniformPrior as U, NormalPrior as N, GammaPrior as GM
 from pytransit.contamination import SMContamination, apparent_radius_ratio, true_radius_ratio
 from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
@@ -63,23 +64,30 @@ def qq_to_uv(pv, uv):
     uv[:,1] = a * (1. - b)
     return uv
 
+
 class BaseLPF:
-    def __init__(self, target, datasets, filters, nthreads=1, free_k=False, contamination=False, **kwargs):
-        assert (not free_k) or (free_k != contamination), 'Cannot set both free_k and contamination on'
+
+    models = "pb_independent_k pb_dependent_k pb_dependent_contamination physical_contamination".split()
+
+    def __init__(self, target, datasets, filters, model='pb_independent_k', **kwargs):
+        assert (model in self.models), 'Model must be one of:\n\t' + ', '.join(self.models)
+        if 'free_k' in kwargs.keys() or 'contamination' in kwargs.keys():
+            warnings.warn(
+                DeprecationWarning('free_k and contamination are deprecated. Please set the model instead.'))
+        self.model = model
         self.tm = MA(interpolate=True, klims=(0.01, 0.75), nk=512, nz=512)
         self.target = target
         self.datasets = datasets
         self.filters = filters
-        self.nthr = nthreads
         self.npb = npb = len(filters)
-        self.nlc = datasets.size
-        self.free_k = free_k
-        self.contamination = contamination
 
+        self.de = None
+        self.sampler = None
         self.ldsc = None
         self.ldps = None
 
         if datasets is not None:
+            self.nlc = datasets.size
             self.datasets.mask_outliers(5)
             self.times = self.datasets.btimes
             self.fluxes = self.datasets.bfluxes
@@ -88,8 +96,8 @@ class BaseLPF:
             self.timea = concatenate(self.times)
             self.ofluxa = concatenate(self.fluxes)
             self.mfluxa = zeros_like(self.ofluxa)
-            self.pbida = concatenate([full(t.size, ds.pbid) for t,ds in zip(self.times, self.datasets)])
-            self.lcida = concatenate([full(t.size, i) for i,t in enumerate(self.times)])
+            self.pbida = concatenate([full(t.size, ds.pbid) for t, ds in zip(self.times, self.datasets)])
+            self.lcida = concatenate([full(t.size, i) for i, t in enumerate(self.times)])
 
             self.lcslices = []
             sstart = 0
@@ -98,78 +106,103 @@ class BaseLPF:
                 self.lcslices.append(s_[sstart:sstart + s])
                 sstart += s
 
-        self.de = None
-        self.sampler = None
-
         # Read the planet parameters from the OEC
         # ---------------------------------------
         self.planet = exocat.searchPlanet(target)
         p = self.planet.P if self.planet else 5.
-        t0 = datasets[0].time.mean() if datasets is not None else None
-        tce = datasets[0].time.ptp() / 10 if datasets is not None else None
+        t0 = datasets[0].time.mean() if datasets is not None else 0.0
+        tce = datasets[0].time.ptp() / 10 if datasets is not None else 1e-5
 
         # Set up the instrument and contamination model
         # --------------------------------------------
         self.instrument = Instrument('MuSCAT2', [sdss_g, sdss_r, sdss_i, sdss_z])
-        self.cm  = SMContamination(self.instrument, "i'")
+        self.cm = SMContamination(self.instrument, "i'")
 
-        # Set up the parametrisation and priors
-        # -------------------------------------
+        # Initialise the lnprior hook list
+        # --------------------------------
+        self.lnpriors = []
+
+        # Setup parametrisation
+        # =====================
+
+        # Basic system parameters
+        # -----------------------
+        self.ps = ps = ParameterSet()
         psystem = [
             GParameter('tc', 'zero_epoch', 'd', N(t0, tce), (-inf, inf)),
             GParameter('pr', 'period', 'd', N(p, 1e-5), (0, inf)),
             GParameter('rho', 'stellar_density', 'g/cm^3', U(0.1, 25.0), (0, inf)),
             GParameter('b', 'impact_parameter', 'R_s', U(0.0, 1.0), (0, 1))]
+        ps.add_global_block('system', psystem)
 
-        # We have three possible scenarios for the radius ratio parametrisation
+        # Radius ratio and contamination
+        # ------------------------------
+        # We have four scenarios for the radius ratio and contamination
         #
         #  1. Separate radius ratio for each passband (nongray atmosphere)
         #  2. Common radius ratio for each passband (gray atmosphere)
         #  3. Common radius ratio with possible contamination
+        #  4. Common radius ratio with physically based contamination
         #
-        if free_k:
-            pk2 = [PParameter('k2_{}'.format(pb), 'area_ratio', 'A_s', GM(0.1), (0.01**2, 0.55**2)) for pb in filters]
-        else:
-            pk2 = [PParameter('k2', 'area_ratio', 'A_s', GM(0.1), (0.01**2, 0.55**2))]
+        if model == 'pb_dependent_k':
+            pk2 = [PParameter('k2_{}'.format(pb), 'area_ratio', 'A_s', GM(0.1), (0.01 ** 2, 0.55 ** 2)) for pb in
+                   filters]
+            ps.add_passband_block('k2', 1, npb, pk2)
+            self._pid_k2 = arange(ps.blocks[-1].start, ps.blocks[-1].stop)
+            self._start_k2 = ps.blocks[-1].start
+            self._sl_k2 = ps.blocks[-1].slice
+            self._pid_cn = None
+        elif model == 'pb_independent_k':
+            pk2 = [PParameter('k2', 'area_ratio', 'A_s', GM(0.1), (0.01 ** 2, 0.55 ** 2))]
+            ps.add_passband_block('k2', 1, 1, pk2)
+            self._pid_k2 = repeat(ps.blocks[-1].start, npb)
+            self._start_k2 = ps.blocks[-1].start
+            self._sl_k2 = ps.blocks[-1].slice
+            self._pid_cn = None
+        elif model == 'pb_dependent_contamination':
+            pk2 = [PParameter('k2', 'area_ratio', 'A_s', GM(0.1), (0.01 ** 2, 0.55 ** 2))]
+            pcn = [PParameter('cnt_{}'.format(pb), 'contamination', '', U(0., 1.), (0., 1.)) for pb in filters]
+            ps.add_passband_block('k2', 1, 1, pk2)
+            self._pid_k2 = repeat(ps.blocks[-1].start, npb)
+            self._start_k2 = ps.blocks[-1].start
+            self._sl_k2 = ps.blocks[-1].slice
+            ps.add_passband_block('contamination', 1, npb, pcn)
+            self._pid_cn = arange(ps.blocks[-1].start, ps.blocks[-1].stop)
+        elif model == 'physical_contamination':
+            pk2 = [PParameter('k2_app', 'apparent_area_ratio', 'A_s', GM(0.1), (0.01 ** 2, 0.55 ** 2))]
+            pcn = [GParameter('k2_true', 'true_area_ratio', 'As', GM(0.1), bounds=(1e-8, inf)),
+                   GParameter('teff_h', 'host_teff', 'K', U(2500, 12000), bounds=(2500, 12000)),
+                   GParameter('teff_c', 'contaminant_teff', 'K', U(2500, 12000), bounds=(2500, 12000))]
+            ps.add_passband_block('k2', 1, 1, pk2)
+            self._pid_k2 = repeat(ps.blocks[-1].start, npb)
+            self._start_k2 = ps.blocks[-1].start
+            self._sl_k2 = ps.blocks[-1].slice
+            ps.add_global_block('contamination', pcn)
+            self._pid_cn = arange(ps.blocks[-1].start, ps.blocks[-1].stop)
+            self.lnpriors.append(lambda pv: 0.0 if pv[4] < pv[5] else -inf)
 
-        if contamination:
-            psystem.extend([GParameter('k2_app', 'apparent_area_ratio', 'As', GM(0.1), bounds=(1e-8, inf)),
-                            GParameter('teff_h', 'host_teff', 'K',        U(2500, 12000), bounds=(2500, 12000)),
-                            GParameter('teff_c', 'contaminant_teff', 'K', U(2500, 12000), bounds=(2500, 12000))])
-
+        # Limb darkening
+        # --------------
         pld = concatenate([
             [PParameter('q1_{:d}'.format(i), 'q1_coefficient', '', U(0, 1), bounds=(0, 1)),
              PParameter('q2_{:d}'.format(i), 'q2_coefficient', '', U(0, 1), bounds=(0, 1))]
             for i in range(npb)])
-
-        self.ps = ps = ParameterSet()
-        ps.add_global_block('system', psystem)
-        ps.add_passband_block('k2', 1, (npb if free_k else 1), pk2)
         ps.add_passband_block('ldc', 2, npb, pld)
+        self._sl_ld = ps.blocks[-1].slice
+        self._start_ld = ps.blocks[-1].start
         ps.freeze()
 
-        if kwargs.get('teff', None) is not None:
-            self.teff_prior = N(kwargs['teff'], 50)
-        else:
-            self.teff_prior = U(2500, 12000)
+        # Set the radius ratio and contamination model
+        # --------------------------------------------
+        if model in self.models[:2]:
+            self.transit_model = self.uncontaminated_transit_model
+        elif model == 'pb_dependent_contamination':
+            self.transit_model = self.contaminated_transit_model_free
+        elif model == 'physical_contamination':
+            self.transit_model = self.contaminated_transit_model_phys
 
-        # Define the parameter slices
-        # ---------------------------
-        if free_k:
-            self._slk2 = [s_[ps.blocks[1].start + pbi : ps.blocks[1].start + (pbi + 1)] for pbi in self.datasets.pbids]
-        else:
-            self._slk2 = self.nlc*[s_[4:5]]
-
-        start = ps.blocks[-1].start
-        self._slld = [s_[start + 2 * pbi:start + 2 * (pbi + 1)] for pbi in self.datasets.pbids]
-
-        # Setup basic parametrisation
-        # ---------------------------
-        #self.par = BCP()
-
-        self.transit_model = self.contaminated_transit_model if contamination else self.uncontaminated_transit_model
-        self.lnpriors = []
-
+        # Initialise the temporary arrays
+        # -------------------------------
         self._zpv = zeros(6)
         self._tuv = zeros((self.npb, 2))
         self._zeros = zeros(self.npb)
@@ -184,25 +217,26 @@ class BaseLPF:
         self.covariates = self.datasets.covariates
         self.wn = [median(wn) for wn in self.datasets.wn]
 
+
     def create_pv_population(self, npop=50):
         pvp = self.ps.sample_from_prior(npop)
-        for sl in self._slk2:
+        for sl in self.ps.blocks[1].slices:
             pvp[:,sl] = uniform(0.01**2, 0.25**2, size=(npop, 1))
         if self.ldps:
-            istart = self.ps.blocks[2].start
+            istart = self._start_ld
             cms, ces = self.ldps.coeffs_tq()
             for i, (cm, ce) in enumerate(zip(cms.flat, ces.flat)):
                 pvp[:, i + istart] = normal(cm, ce, size=pvp.shape[0])
         else:
-            ldsl = self.ps.blocks[2].slice
+            ldsl = self._sl_ld
             for i in range(pvp.shape[0]):
                 pid = argsort(pvp[i, ldsl][::2])[::-1]
                 pvp[i, ldsl][::2] = pvp[i, ldsl][::2][pid]
                 pvp[i, ldsl][1::2] = pvp[i, ldsl][1::2][pid]
-        if self.contamination:
-            pvp[:,7] = pvp[:,4]
+        if self.model == 'pb_dependent_contamination':
+            pvp[:,5] = pvp[:,4]
             cref = uniform(0, 0.99, size=npop)
-            pvp[:,7] = pvp[:,4] / (1. - cref)
+            pvp[:,5] = pvp[:,4] / (1. - cref)
         return pvp
 
     def baseline(self, pv):
@@ -214,32 +248,46 @@ class BaseLPF:
         return zeros(self.nlc)
 
     def uncontaminated_transit_model(self, pv):
-        """Base transit shape model"""
         zpv = unpack_orbit(pv, self._zpv)
         if isnan(zpv[2]):
             fluxes = self._bad_fluxes
         else:
-            _k = sqrt(pv[self.ps.blocks[1].slice]) if self.free_k else full(self.npb, sqrt(pv[4]))
-            uv = qq_to_uv(pv[self.ps.blocks[2].slice], self._tuv)
+            _k = sqrt(pv[self._pid_k2])
+            uv = qq_to_uv(pv[self._sl_ld], self._tuv)
             z = z_circular(self.timea, zpv)
-            fluxes = eval_quad_ip_mp(z, self.pbida, _k, uv, self._zeros, self.tm.ed, self.tm.ld, self.tm.le, self.tm.kt, self.tm.zt)
+            fluxes = eval_quad_ip_mp(z, self.pbida, _k, uv, self._zeros, self.tm.ed, self.tm.ld, self.tm.le, self.tm.kt,
+                                     self.tm.zt)
             fluxes = [fluxes[sl] for sl in self.lcslices]
         return fluxes
 
-    def contaminated_transit_model(self, pv):
-        cnref = 1. - pv[4]/pv[7]
-        cnt = self.cm.contamination(cnref, pv[5], pv[6])
+    def contaminated_transit_model_free(self, pv):
+        cnt = pv[self._pid_cn]
         zpv = unpack_orbit(pv, self._zpv)
         if isnan(zpv[2]):
             fluxes = self._bad_fluxes
         else:
-            _k = full(self.npb, sqrt(pv[7]))
-            uv = qq_to_uv(pv[self.ps.blocks[2].slice], self._tuv)
+            _k = full(self.npb, sqrt(pv[4]))
+            uv = qq_to_uv(pv[self._sl_ld], self._tuv)
             z = z_circular(self.timea, zpv)
-            fluxes = eval_quad_ip_mp(z, self.pbida, _k, uv, cnt, self.tm.ed, self.tm.ld, self.tm.le, self.tm.kt, self.tm.zt)
+            fluxes = eval_quad_ip_mp(z, self.pbida, _k, uv, cnt, self.tm.ed, self.tm.ld, self.tm.le, self.tm.kt,
+                                     self.tm.zt)
             fluxes = [fluxes[sl] for sl in self.lcslices]
         return fluxes
 
+    def contaminated_transit_model_phys(self, pv):
+        cnref = 1. - pv[4] / pv[5]
+        cnt = self.cm.contamination(cnref, pv[6], pv[7])
+        zpv = unpack_orbit(pv, self._zpv)
+        if isnan(zpv[2]):
+            fluxes = self._bad_fluxes
+        else:
+            _k = full(self.npb, sqrt(pv[5]))
+            uv = qq_to_uv(pv[self._sl_ld], self._tuv)
+            z = z_circular(self.timea, zpv)
+            fluxes = eval_quad_ip_mp(z, self.pbida, _k, uv, cnt, self.tm.ed, self.tm.ld, self.tm.le, self.tm.kt,
+                                     self.tm.zt)
+            fluxes = [fluxes[sl] for sl in self.lcslices]
+        return fluxes
 
     def flux_model(self, pv):
         bls = self.baseline(pv)
@@ -268,20 +316,12 @@ class BaseLPF:
         self.ldps.resample_linear_z()
         self.ldps.set_uncertainty_multiplier(uncertainty_multiplier)
         def ldprior(pv):
-            return self.ldps.lnlike_tq(pv[self.ps.blocks[2].slice])
+            return self.ldps.lnlike_tq(pv[self._sl_ld])
         self.lnpriors.append(ldprior)
 
 
     def lnprior(self, pv):
         return self.ps.lnprior(pv)
-
-    def lnprior_ext(self, pv):
-        """Additional constraints."""
-        if self.contamination:
-            c = 1. - pv[5]/pv[4]
-            return self.teff_prior.logpdf((1-c)*pv[6] + c*pv[7])
-        else:
-            return 0.
 
     def lnprior_hooks(self, pv):
         """Additional constraints."""
@@ -296,8 +336,6 @@ class BaseLPF:
 
     def lnposterior(self, pv):
         if any(pv < self.ps.bounds[:, 0]) or any(pv > self.ps.bounds[:, 1]):
-            return -inf
-        elif self.contamination and (pv[4] > pv[7]):
             return -inf
         else:
             return self.lnprior(pv) + self.lnlikelihood(pv) + self.lnprior_hooks(pv)
@@ -356,8 +394,8 @@ class NormalLSqLPF(BaseLPF):
 class StudentLSqLPF(NormalLSqLPF):
     """Log posterior function with least-squares baseline and Student T likelihood"""
 
-    def __init__(self, target, datasets, filters, nthreads=1, free_k=False, contamination=False, **kwargs):
-        super().__init__(target, datasets, filters, nthreads, free_k, contamination, **kwargs)
+    def __init__(self, target, datasets, filters, model='pb_independent_k', **kwargs):
+        super().__init__(target, datasets, filters, model, **kwargs)
         self.ps.thaw()
         perr = [LParameter('et_{:d}'.format(i), 'error_df', '', U(1e-6, 1), bounds=(1e-6, 1)) for i in range(self.npb)]
         self.ps.add_lightcurve_block('error', 1, self.npb, perr)
@@ -374,8 +412,8 @@ class StudentLSqLPF(NormalLSqLPF):
 
 
 class GPLPF(BaseLPF):
-    def __init__(self, target, datasets, filters, nthreads=1, free_k=False, fit_wn=True, **kwargs):
-        super().__init__(target, datasets, filters, nthreads, free_k, **kwargs)
+    def __init__(self, target, datasets, filters, model='pb_independent_k', fit_wn=True, **kwargs):
+        super().__init__(target, datasets, filters, model, **kwargs)
 
         pbl = [LParameter('bl_{:d}'.format(i), 'baseline', '', N(1, 1e-2), bounds=(-inf,inf)) for i in range(self.nlc)]
         self.ps.thaw()

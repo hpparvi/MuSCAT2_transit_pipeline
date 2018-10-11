@@ -22,20 +22,19 @@ from muscat2ta.lpf import StudentLSqLPF, GPLPF, NormalLSqLPF
 
 class TransitAnalysis:
     def __init__(self, datadir, target, date, tid, cids, etime=30., mjd_start=-inf, mjd_end=inf, flux_lims=(-inf, inf),
-                 free_k=False, contamination=False, npop=100, teff=None, pbs=('g', 'r', 'i', 'z_s'), **kwargs):
+                 model='pb_independent_k', npop=100, pbs=('g', 'r', 'i', 'z_s'), fit_wn=True, **kwargs):
         self.ddata = dd = Path(datadir)
         self.target = target
         self.date = date
         self.tid = tid
         self.cids = cids
-        self.free_k = free_k
-        self.contamination = contamination
-        self.teff = teff
+        self.model = model
         self.npop = npop
         self.etime = etime
         self.models = None
         self.pbs = pbs
         self.flux_lims = flux_lims
+        self.fit_wn = fit_wn
 
         self.phs = [PhotometryData(dd.joinpath('{}_{}_{}.nc'.format(target, date, pb)), tid, cids, objname=target,
                                    mjd_start=mjd_start, mjd_end=mjd_end, **kwargs)
@@ -61,11 +60,12 @@ class TransitAnalysis:
             return
 
         try:
-            self.lmlpf = NormalLSqLPF(self.target, self.lcs, self.pbs, free_k=self.free_k, contamination=self.contamination, teff=self.teff)
-            self.gplpf = GPLPF(self.target, self.lcs, self.pbs, free_k=self.free_k, contamination=self.contamination, teff=self.teff)
+            self.lmlpf = NormalLSqLPF(self.target, self.lcs, self.pbs, model=self.model)
+            self.gplpf = GPLPF(self.target, self.lcs, self.pbs, model=self.model, fit_wn=self.fit_wn)
             self.models = {'linear':self.lmlpf, 'gp':self.gplpf}
         except ValueError:
             print("Couldn't initialise the LPFs")
+
 
     def optimize_comparison_stars(self, n_stars=1, start_id=0, end_id=10, start_apt=0, end_apt=None):
         for ph in self.phs:
@@ -97,7 +97,7 @@ class TransitAnalysis:
         for lpf in (self.lmlpf, self.gplpf):
             lpf.ldsc = self.ldsc
             lpf.ldps = self.ldps
-            lpf.lnpriors.append(lambda pv:self.ldps.lnlike_tq(pv[lpf.ps.blocks[2].slice]))
+            lpf.lnpriors.append(lambda pv:self.ldps.lnlike_tq(pv[lpf._sl_ld]))
 
 
     def detrend_polynomial(self, npol=20):
@@ -276,9 +276,7 @@ class TransitAnalysis:
 
     @property
     def savefile_name(self):
-        return '{}_{}_{}_{}_fit.nc'.format(self.target, self.ddata.absolute().name,
-                                    'nongray' if self.free_k else 'gray',
-                                    'blended' if self.contamination else 'noblend')
+        return '{}_{}_{}_fit.nc'.format(self.target, self.ddata.absolute().name, self.model)
 
     def load(self):
         ds = xa.open_dataset(self.savefile_name).load()
@@ -298,9 +296,14 @@ class TransitAnalysis:
 
         gphp = None
         if self.gplpf.gphps is not None:
+            if self.fit_wn:
+                gphpls = 'log_var sky airmass xy_amplitude xy_scale entropy'.split()
+            else:
+                gphpls = 'sky airmass xy_amplitude xy_scale entropy'.split()
+
             gphp = xa.DataArray(self.gplpf.gphps, dims='filter gp_hyperparameter'.split(),
                                 coords={'filter': 'g r i z'.split(),
-                                        'gp_hyperparameter': 'log_var sky airmass xy_amplitude xy_scale entropy'.split()})
+                                        'gp_hyperparameter':gphpls})
 
         lmmc = None
         if self.lmlpf.sampler is not None:
@@ -341,10 +344,12 @@ class TransitAnalysis:
                 lpf = self.lmlpf
                 pv = self.lm_pv
                 trends = lpf.trends(pv)
+                cnames = lpf.datasets[0]._covnames
             else:
                 lpf = self.gplpf
                 pv = self.gp_pv
                 trends = lpf.predict(pv)
+                cnames = lpf.datasets[0]._covnames[2:]
 
             transit = lpf.transit_model(pv)
 
@@ -355,23 +360,21 @@ class TransitAnalysis:
                 hdul.append(pf.BinTableHDU(df))
 
             for i, pb in enumerate('g r i z'.split()):
-                df = Table(lpf.covariates[i], names=lpf.datasets[i]._covnames, meta={'extname': 'aux_'+pb})
+                df = Table(lpf.covariates[i], names=cnames, meta={'extname': 'aux_' + pb})
                 hdul.append(pf.BinTableHDU(df))
 
-            fname = '{}_{}_{}_{}_{}.fits'.format(self.target, self.date, model,
-                                                 'nongray' if self.free_k else 'gray',
-                                                 'blended' if self.contamination else 'noblend')
+            fname = '{}_{}_{}_{}.fits'.format(self.target, self.date, model, self.model)
         hdul.writeto(fname, overwrite=True)
 
 
 class MultiTransitAnalysis(TransitAnalysis):
-    def __init__(self, datadir, target, ftemplate, free_k=False, contamination=False, teff=None, npop=100):
+    def __init__(self, datadir, target, ftemplate, model='pb_independent_k', npop=100, pbs=('g', 'r', 'i', 'z_s'), fit_wn=True):
         self.ddata = Path(datadir)
         self.target = target
         self.ftemplate = ftemplate
-        self.free_k = free_k
-        self.contamination = contamination
-        self.teff = teff
+        self.pbs = pbs
+        self.fit_wn = fit_wn
+        self.model = model
         self.npop = npop
         self.models = None
         self.lm_pv = None
@@ -392,16 +395,92 @@ class MultiTransitAnalysis(TransitAnalysis):
         self.lcs = M2LCSet(lcs)
 
         try:
-            self.lmlpf = NormalLSqLPF(self.target, self.lcs, self.pbs, free_k=self.free_k,
-                                      contamination=self.contamination, teff=self.teff)
-            self.gplpf = GPLPF(self.target, self.lcs, self.pbs, free_k=self.free_k, contamination=self.contamination,
-                               teff=self.teff)
+            self.lmlpf = NormalLSqLPF(self.target, self.lcs, self.pbs, model=self.model)
+            self.gplpf = GPLPF(self.target, self.lcs, self.pbs, model=self.model, fit_wn=self.fit_wn)
             self.models = {'linear': self.lmlpf, 'gp': self.gplpf}
         except ValueError:
             print("Couldn't initialise the LPFs")
 
     @property
     def savefile_name(self):
-        return '{}_multi_{}_{}_fit.nc'.format(self.target,
-                                              'nongray' if self.free_k else 'gray',
-                                              'blended' if self.contamination else 'noblend')
+        return '{}_multi_{}_fit.nc'.format(self.target, self.model)
+
+    def save(self):
+        delm = None
+        if self.lmlpf.de:
+            delm = xa.DataArray(self.lmlpf.de.population, dims='pvector lm_parameter'.split(),
+                                coords={'lm_parameter': self.lmlpf.ps.names})
+
+        degp = None
+        if self.gplpf.de:
+            degp = xa.DataArray(self.gplpf.de.population, dims='pvector gp_parameter'.split(),
+                                coords={'gp_parameter': self.gplpf.ps.names})
+
+        gphp = None
+        if self.gplpf.gphps is not None:
+            if self.fit_wn:
+                gphpls = 'log_var sky airmass xy_amplitude xy_scale entropy'.split()
+            else:
+                gphpls = 'sky airmass xy_amplitude xy_scale entropy'.split()
+
+            gphp = xa.DataArray(self.gplpf.gphps, dims='light_curve gp_hyperparameter'.split(),
+                                coords={'light_curve': range(self.gplpf.nlc),
+                                        'gp_hyperparameter': gphpls})
+
+        lmmc = None
+        if self.lmlpf.sampler is not None:
+            lmmc = xa.DataArray(self.lmlpf.sampler.chain, dims='pvector step lm_parameter'.split(),
+                                coords={'lm_parameter': self.lmlpf.ps.names},
+                                attrs={'ndim': self.lmlpf.de.n_par, 'npop': self.lmlpf.de.n_pop})
+
+        gpmc = None
+        if self.gplpf.sampler is not None:
+            gpmc = xa.DataArray(self.gplpf.sampler.chain, dims='pvector step gp_parameter'.split(),
+                                coords={'gp_parameter': self.gplpf.ps.names},
+                                attrs={'ndim': self.gplpf.de.n_par, 'npop': self.gplpf.de.n_pop})
+
+        ds = xa.Dataset(data_vars={'de_population_lm': delm, 'de_population_gp': degp,
+                                   'gp_hyperparameters': gphp, 'lm_mcmc': lmmc, 'gp_mcmc': gpmc},
+                        attrs={'created': strftime('%Y-%m-%d %H:%M:%S'), 'obsnight': self.ddata.absolute().name,
+                               'target': self.target})
+
+        ds.to_netcdf(self.savefile_name)
+
+
+    def plot_light_curve(self, model='linear', method='de', detrend_obs=False, detrend_mod=True,
+                         include_mod=True, figsize=(11, 6), xwidth=None):
+        assert model in ('linear', 'gp')
+        assert method in ('de', 'mcmc')
+
+        lpf = self.lmlpf if model == 'linear' else self.gplpf
+        posterior_limits = None
+        pv = lpf.de.minimum_location
+
+        npb = len(self.pbs)
+        nlc = self.lcs.size
+        nni = nlc // npb
+
+        if model == 'linear':
+            baseline = lpf.baseline(pv)
+            trends = lpf.trends(pv)
+            fluxes_obs = [lpf.fluxes[i] - trends[i] for i in range(nlc)]
+            fluxes_trm = lpf.transit_model(pv)
+            fluxes_mod = lpf.transit_model(pv) if detrend_mod else lpf.flux_model(pv)
+        else:
+            baseline = lpf.predict(pv)
+            fluxes_obs = [lpf.fluxes[i] - baseline[i] for i in range(4)] if detrend_obs else lpf.fluxes
+            fluxes_trm = lpf.transit_model(pv)
+            fluxes_mod = lpf.flux_model(pv)
+
+        xwidth = xwidth or max([t.ptp() for t in self.lcs.times])
+        tn = array([(t.mean() - pv[0]) / pv[1] for t in self.lcs.times]).round()
+        tc = pv[0] + tn * pv[1]
+
+        fig, axs = subplots(npb, nni, figsize=figsize, sharex='col', sharey=True)
+        for iax, ax in enumerate(axs.T.flat):
+            ax.plot(lpf.times[iax], fluxes_obs[iax], '.', alpha=0.2)
+            ax.plot(lpf.times[iax], fluxes_mod[iax], 'k')
+            setp(ax, xlim=(tc[iax] - 0.5 * xwidth, tc[iax] + 0.5 * xwidth))
+
+        fig.tight_layout()
+
