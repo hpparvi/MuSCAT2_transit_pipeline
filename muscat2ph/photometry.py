@@ -408,7 +408,10 @@ class ScienceFrame(ImageFrame):
             self.margin = margin
         imsize = self._data.shape[0]
         mask = all((self._ref_centroids_pix > margin) & ((self._ref_centroids_pix < imsize - margin)), 1)
-        self.set_reference_stars(self._ref_centroids_pix[mask], self._ref_centroids_sky[mask])
+        if self._ref_centroids_sky is not None:
+            self.set_reference_stars(self._ref_centroids_pix[mask], self._ref_centroids_sky[mask])
+        else:
+            self.set_reference_stars(self._ref_centroids_pix[mask], None)    
         self._margins_cut = True
 
 
