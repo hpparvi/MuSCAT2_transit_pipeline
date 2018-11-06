@@ -330,8 +330,6 @@ class ScienceFrame(ImageFrame):
             self._ref_centroids_sky = SkyCoord(array(csky), frame=FK5, unit=u.deg)
             if self._wcs is not None:
                 self._ref_centroids_pix = array(self._ref_centroids_sky.to_pixel(self._wcs)).T
-        #else:
-        #    self._ref_centroids_sky = full_like(self._ref_centroids_pix, nan)
         self._cur_centroids_pix = cpix = self._ref_centroids_pix.copy()
         self._apertures_obj = [CircularAperture(cpix, r) for r in self.aperture_radii]
         self._apertures_sky = CircularAnnulus(cpix, self.aperture_radii[-1], self.aperture_radii[-1] + wsky)
