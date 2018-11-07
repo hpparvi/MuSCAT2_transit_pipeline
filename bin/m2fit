@@ -11,7 +11,6 @@ import matplotlib.pyplot as pl
 from corner import corner
 from muscat2ta.transitanalysis import TransitAnalysis
 from muscat2ta.lpf import BaseLPF
-from muscat2ta.lc import find_period
 
 if __name__ == '__main__':
     ap = ArgumentParser()
