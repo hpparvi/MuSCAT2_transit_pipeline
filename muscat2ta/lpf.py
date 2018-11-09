@@ -207,7 +207,11 @@ class BaseLPF:
         self._tuv = zeros((self.npb, 2))
         self._zeros = zeros(self.npb)
         self._ones = ones(self.npb)
-        self._bad_fluxes = [ones_like(t) for t in self.times]
+
+        if datasets is not None:
+            self._bad_fluxes = [ones_like(t) for t in self.times]
+        else:
+            self._bad_fluxes = None
 
 
     def mask_outliers(self, sigma=5, mf_width=10, means=None):
