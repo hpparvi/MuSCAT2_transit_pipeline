@@ -167,6 +167,10 @@ if __name__ == '__main__':
 
             im.load_reference_stars(stars_file)
 
+            cc = COMCentroider(im, None, aperture_radius=15)
+            cc.select_stars(20)
+            cc.calculate_and_apply()
+
             # Masterframe plot with apertures
             # -------------------------------
             fig1 = pl.figure(figsize=(9,9))
