@@ -10,7 +10,8 @@ from time import strftime
 from corner import corner
 from tqdm import tqdm
 from matplotlib.pyplot import subplots, setp
-from numpy import array, arange, min, max, sqrt, inf, floor, diff, percentile, median, isin, zeros, full_like
+from numpy import array, arange, min, max, sqrt, inf, floor, diff, percentile, median, isin, zeros, full_like, \
+    concatenate, zeros_like, full, ones_like, s_
 from numpy.random import permutation
 from astropy.stats import mad_std
 from astropy.table import Table
@@ -70,6 +71,37 @@ class TransitAnalysis:
     def optimize_comparison_stars(self, n_stars=1, start_id=0, end_id=10, start_apt=0, end_apt=None):
         for ph in self.phs:
             ph._rset.select_best(n_stars, start_id, end_id, start_apt, end_apt)
+
+
+    def sigma_clip(self, pv=None, sigma=3):
+        from astropy.stats import sigma_clip
+        pv = pv if pv is not None else self.lm_pv
+        fm = self.lmlpf.flux_model(pv)
+
+        masks = []
+        for i in range(self.lmlpf.nlc):
+            masks.append(~sigma_clip(self.lmlpf.fluxes[i] - fm[i], sigma=sigma).mask)
+
+        for lpf in (self.lmlpf, self.gplpf):
+            for i in range(lpf.nlc):
+                lpf.fluxes[i] = lpf.fluxes[i][masks[i]]
+                lpf.times[i] = lpf.times[i][masks[i]]
+                lpf.covariates[i] = lpf.covariates[i][masks[i]]
+                lpf.timea = concatenate(lpf.times)
+                lpf.ofluxa = concatenate(lpf.fluxes)
+                lpf.mfluxa = zeros_like(lpf.ofluxa)
+                lpf.pbida = concatenate([full(t.size, ds.pbid) for t, ds in zip(lpf.times, lpf.datasets)])
+                lpf.lcida = concatenate([full(t.size, i) for i, t in enumerate(lpf.times)])
+                lpf._bad_fluxes = [ones_like(t) for t in lpf.times]
+
+            lpf.lcslices = []
+            sstart = 0
+            for i in range(lpf.nlc):
+                s = lpf.times[i].size
+                lpf.lcslices.append(s_[sstart:sstart + s])
+                sstart += s
+        self.gplpf.compute_gps()
+
 
     def print_ptp_scatter(self):
         r1s = [res.std() for res in self.gplpf.residuals(self.gp_pv)]
@@ -169,7 +201,7 @@ class TransitAnalysis:
 
 
     def plot_light_curve(self, model='linear', method='de', detrend_obs=False, detrend_mod=True, include_mod=True,
-                         figsize=(11, 6)):
+                         figsize=(11, 6), figshape=(2,2)):
         assert model in ('linear', 'gp')
         assert method in ('de', 'mcmc')
 
@@ -190,16 +222,16 @@ class TransitAnalysis:
         if model == 'linear':
             baseline = lpf.baseline(pv)
             trends = lpf.trends(pv)
-            fluxes_obs = [lpf.fluxes[i] / baseline[i] - trends[i] for i in range(4)] if detrend_obs else [f/b for f,b in zip(lpf.fluxes, baseline)]
+            fluxes_obs = [lpf.fluxes[i] / baseline[i] - trends[i] for i in range(lpf.npb)] if detrend_obs else [f/b for f,b in zip(lpf.fluxes, baseline)]
             fluxes_trm = lpf.transit_model(pv)
             fluxes_mod = lpf.transit_model(pv) if detrend_mod else lpf.flux_model(pv)
         else:
             baseline = lpf.predict(pv)
-            fluxes_obs = [lpf.fluxes[i] - baseline[i] for i in range(4)] if detrend_obs else lpf.fluxes
+            fluxes_obs = [lpf.fluxes[i] - baseline[i] for i in range(lpf.npb)] if detrend_obs else lpf.fluxes
             fluxes_trm = lpf.transit_model(pv)
             fluxes_mod = lpf.flux_model(pv)
 
-        fig, axs = subplots(2, 2, figsize=figsize, sharex=True, sharey=True)
+        fig, axs = subplots(*figshape, figsize=figsize, sharex=True, sharey=True)
         for i, (ax, time) in enumerate(zip(axs.flat, lpf.times)):
 
             # Plot the observations
@@ -302,7 +334,7 @@ class TransitAnalysis:
                 gphpls = 'sky airmass xy_amplitude xy_scale entropy'.split()
 
             gphp = xa.DataArray(self.gplpf.gphps, dims='filter gp_hyperparameter'.split(),
-                                coords={'filter': 'g r i z'.split(),
+                                coords={'filter': self.pbs,
                                         'gp_hyperparameter':gphpls})
 
         lmmc = None
@@ -333,7 +365,7 @@ class TransitAnalysis:
 
         if model == 'linpoly':
             times, fcorr, fsys, fbase = self.detrend_polynomial(npoly)
-            for i, pb in enumerate('g r i z'.split()):
+            for i, pb in enumerate(self.pbs):
                 df = Table(np.transpose([times[i], fcorr[i], fsys[i], fbase[i]]),
                            names='time flux trend model'.split(),
                            meta={'extname': pb, 'filter': pb, 'trends': model})
@@ -353,13 +385,13 @@ class TransitAnalysis:
 
             transit = lpf.transit_model(pv)
 
-            for i, pb in enumerate('g r i z'.split()):
+            for i, pb in enumerate(self.pbs):
                 df = Table(np.transpose([lpf.times[i], lpf.fluxes[i] - trends[i], trends[i], transit[i]]),
                            names='time flux trend model'.split(),
                            meta={'extname': pb, 'filter': pb, 'trends': model, 'wn':lpf.wn})
                 hdul.append(pf.BinTableHDU(df))
 
-            for i, pb in enumerate('g r i z'.split()):
+            for i, pb in enumerate(self.pbs):
                 df = Table(lpf.covariates[i], names=cnames, meta={'extname': 'aux_' + pb})
                 hdul.append(pf.BinTableHDU(df))
 
