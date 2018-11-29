@@ -122,7 +122,11 @@ if __name__ == '__main__':
     # Do the photometry for all the targets
     # -------------------------------------
     for object in objects:
-        all_files = {pb : sorted(list(root.joinpath('obj', object, pb).glob('MCT2?_*.fits'))) for pb in pbs}
+        all_files = {}
+        for pb in pbs:
+            ddir = root.joinpath('obj', object, pb)
+            if ddir.exists():
+                all_files[pb] = sorted(list(ddir.glob('MCT2?_*.fits')))
         if args.with_wcs_only:
             all_files = {pb : list(filter(lambda f: f.with_suffix('.wcs').exists(), all_files[pb])) for pb in all_files.keys()}
 
@@ -144,6 +148,8 @@ if __name__ == '__main__':
 
         stars_file = rdir.joinpath('{}_stars.fits'.format(object))
         for ipb, pb in enumerate(pbs):
+            if pb not in all_files:
+                continue
             files = all_files[pb]
             istart = max(0, args.start_frame)
             iend = min(args.end_frame, len(files))
