@@ -36,6 +36,8 @@ class TransitAnalysis:
         self.pbs = pbs
         self.flux_lims = flux_lims
         self.fit_wn = fit_wn
+        self.use_oec = kwargs.get('use_oec', True)
+        self.period = kwargs.get('period', 5.0)
 
         self.phs = [PhotometryData(dd.joinpath('{}_{}_{}.nc'.format(target, date, pb)), tid, cids, objname=target,
                                    mjd_start=mjd_start, mjd_end=mjd_end, **kwargs)
@@ -61,8 +63,8 @@ class TransitAnalysis:
             return
 
         try:
-            self.lmlpf = NormalLSqLPF(self.target, self.lcs, self.pbs, model=self.model)
-            self.gplpf = GPLPF(self.target, self.lcs, self.pbs, model=self.model, fit_wn=self.fit_wn)
+            self.lmlpf = NormalLSqLPF(self.target, self.lcs, self.pbs, model=self.model, use_oec=self.use_oec, period=self.period)
+            self.gplpf = GPLPF(self.target, self.lcs, self.pbs, model=self.model, fit_wn=self.fit_wn, use_oec=self.use_oec, period=self.period)
             self.models = {'linear':self.lmlpf, 'gp':self.gplpf}
         except ValueError:
             print("Couldn't initialise the LPFs")
@@ -116,6 +118,10 @@ class TransitAnalysis:
     def add_t14_prior(self, m, s):
         for lpf in (self.lmlpf, self.gplpf):
             lpf.add_t14_prior(m, s)
+
+    def add_as_prior(self, m, s):
+        for lpf in (self.lmlpf, self.gplpf):
+            lpf.add_as_prior(m, s)
 
     def add_ldtk_prior(self, teff, logg, z, uncertainty_multiplier=3, pbs=('g', 'r', 'i', 'z')):
         from ldtk import LDPSetCreator
@@ -334,7 +340,7 @@ class TransitAnalysis:
                 gphpls = 'sky airmass xy_amplitude xy_scale entropy'.split()
 
             gphp = xa.DataArray(self.gplpf.gphps, dims='filter gp_hyperparameter'.split(),
-                                coords={'filter': self.pbs,
+                                coords={'filter': array(self.pbs),
                                         'gp_hyperparameter':gphpls})
 
         lmmc = None

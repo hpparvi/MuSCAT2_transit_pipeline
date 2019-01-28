@@ -70,6 +70,7 @@ if __name__ == '__main__':
     ap.add_argument('datadir', type=Path)
     ap.add_argument('tid', type=int)
     ap.add_argument('cids', type=int, nargs='+')
+    ap.add_argument('--passbands', type=str, nargs='+')
     ap.add_argument('--bintime', type=float, default=300.)
     args = ap.parse_args()
 
@@ -77,8 +78,10 @@ if __name__ == '__main__':
 
     basename = "{}_{}".format(args.target, args.date)
     phs = [PhotometryData(root.joinpath('{}_{}.nc'.format(basename, pb)), args.tid, args.cids, objname=args.target)
-           for pb in 'g r i z_s'.split()]
+           for pb in args.passbands]
+    phs[0]._rset.select_best(3)
     for ph in phs[1:]:
+        ph._rset = phs[0]._rset
         phs[0]._flux += array(ph.flux)
     ph = phs[0]
     dist = sqrt(((ph._ds.centroids_pix - ph._ds.centroids_pix[0]) ** 2).sum('centroid_pix'))
@@ -109,7 +112,7 @@ if __name__ == '__main__':
             fig.savefig("{}_{:02d}.png".format(basename, ipage))
             pl.close(fig)
 
-    for passband in 'g r i z_s'.split():
+    for passband in args.passbands:
         basename = "{}_{}_{}".format(args.target, args.date, passband)
         ph = PhotometryData(root.joinpath(basename+'.nc'), args.tid, args.cids, objname=args.target)
         dist = sqrt(((ph._ds.centroids_pix - ph._ds.centroids_pix[0]) ** 2).sum('centroid_pix'))

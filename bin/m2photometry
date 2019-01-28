@@ -1,25 +1,40 @@
 #!/usr/bin/env python
-import warnings
 
-from warnings import simplefilter, catch_warnings
+#  MuSCAT2 photometry and transit analysis pipeline
+#  Copyright (C) 2019  Hannu Parviainen
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 from argparse import ArgumentParser
-from multiprocessing import Pool
-from pathlib import Path
-from os import makedirs
 from datetime import datetime, timedelta
+from multiprocessing import Pool
+from os import makedirs
+from pathlib import Path
+from warnings import simplefilter, catch_warnings
+
+import astropy.units as u
+import xarray as xa
+from astropy.coordinates import SkyCoord, FK5
+from astropy.io import fits as pf
+from astropy.wcs.wcs import NoConvergence
+from astroquery.simbad import Simbad
+from numpy import zeros, inf, array, fromstring, c_, nan, full_like
+from tqdm import tqdm
 
 import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as pl
-import xarray as xa
-from numpy import median, zeros, inf, array, fromstring, c_, nan, full_like
-from tqdm import tqdm
-from astropy.io import fits as pf
-from astropy.wcs.wcs import NoConvergence
-from astropy.coordinates import SkyCoord, FK5
-from astroquery.simbad import Simbad
-import astropy.units as u
-
 
 from muscat2ph.photometry import ScienceFrame, COMCentroider
 
@@ -75,18 +90,15 @@ if __name__ == '__main__':
     ap.add_argument('--target-pix-coords', type=str, default=None)
     ap.add_argument('--result-dir', type=Path, default=None)
     ap.add_argument('--max-stars', type=int, default=15)
-    ap.add_argument('--edge-limit', type=float, default=30)
     ap.add_argument('--start-frame', type=int, default=0)
     ap.add_argument('--end-frame', type=int, default=inf)
     ap.add_argument('--with-wcs-only', action='store_true', default=False)
     ap.add_argument('--plot-only', action='store_false', dest='do_photometry', default=True)
     ap.add_argument('--n-processes', type=int, default=5)
     ap.add_argument('--chunksize', type=int, default=5)
+    ap.add_argument('--border-margin', type=int, default=30)
     ap.add_argument('--save-stars', action='store_true', default=False)
     ap.add_argument('--create-dc', action='store_true', default=False)
-    ap.add_argument('--tfop', action='store_true', default=False)
-    ap.add_argument('--border-margin', type=int, default=30)
-    ap.add_argument('--apply-separation-cut', action='store_true', default=False)
     ap.add_argument('--separation-cut-distance', type=float, default=2.0)
     args = ap.parse_args()
 
@@ -94,15 +106,6 @@ if __name__ == '__main__':
     pbs = [args.passband] if args.passband != 'all' else 'r g i z_s'.split()
     target_sky_coords = None
     target_pix_coords = None
-
-    # Set up the defaults
-    # -------------------
-    if args.tfop:
-        apertures = (4, 8, 12, 16, 20)
-        max_stars = 200
-    else:
-        apertures  = (6, 8, 12, 16, 20, 24, 30, 40, 50, 60)
-        max_stars = args.max_stars
 
     objects = [args.object] if args.object else [o.name for o in list(root.joinpath('obj').glob('*'))]
 
@@ -122,6 +125,18 @@ if __name__ == '__main__':
     # Do the photometry for all the targets
     # -------------------------------------
     for object in objects:
+
+        if 'toi' in object.lower():
+            print("Reducing a TFOP target {}.".format(object))
+            apertures = (4, 8, 12, 16, 20)
+            max_stars = 200
+            TFOP = True
+        else:
+            print("Reducing {}.".format(object))
+            apertures = (6, 8, 12, 16, 20, 24, 30, 40, 50, 60)
+            max_stars = args.max_stars
+            TFOP = False
+
         all_files = {}
         for pb in pbs:
             ddir = root.joinpath('obj', object, pb)
@@ -162,45 +177,45 @@ if __name__ == '__main__':
             # Find, cut, save, and load the stars
             # -----------------------------------
             if (args.save_stars and ipb==0) or not stars_file.exists():
-                if args.tfop:
-                    im.find_stars_dao(maxn=150)
-                else:
-                    im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords)
-                im.cut_margin(args.border_margin)
-                if args.tfop or args.apply_separation_cut:
-                    im.cut_separation(target_sky_coords, args.separation_cut_distance)
+                im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords)
                 im.save_reference_stars(stars_file)
-
             im.load_reference_stars(stars_file)
+
+            im.cut_margin(args.border_margin)
+            if TFOP or args.apply_separation_cut:
+                im.cut_separation(target_sky_coords, args.separation_cut_distance)
+                im.remove_doubles(target_sky_coords, 0.1)
 
             cc = COMCentroider(im, None, aperture_radius=15)
             cc.select_stars(20)
             cc.calculate_and_apply()
 
-            # Masterframe plot with apertures
-            # -------------------------------
-            fig1 = pl.figure(figsize=(9,9))
+            # Field plot with apertures
+            # -------------------------
             if im._wcs:
-                ax1 = fig1.add_subplot(111, projection=im._wcs)
-                ax1.grid()
+                for r in (None,5,2):
+                    fig_field = pl.figure(figsize=(9, 9))
+                    ax_field = fig_field.add_subplot(111, projection=im._wcs)
+                    ax_field.grid()
+                    im.plot_reduced(minp=90, offset=10, ax=ax_field, subfield_radius=r)
+                    ax_field.set_title("Reference frame - {} {}'".format(object, pb))
+                    pl.setp(ax_field, ylabel='Dec', xlabel='RA')
+                    fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
+                    if r:
+                        fig_field.savefig(str(rdir.joinpath('{}_{}_{}_{:d}am.png'.format(object, root.absolute().name, pb, r))))
+                    else:
+                        fig_field.savefig(str(rdir.joinpath('{}_{}_{}.png'.format(object, root.absolute().name, pb))))
             else:
-                ax1 = fig1.add_subplot(111)
-            _, ax1 = im.plot_reduced(minp=90, offset=10, ax=ax1)
-            ax1.set_title('Reference frame - {} {}'.format(object, pb))
-            fig1.tight_layout()
-            fig1.savefig(str(rdir.joinpath('{}_{}_{}.png'.format(object, root.absolute().name, pb))))
+                fig_field, ax_field = pl.subplots(figsize=(9, 9))
+                im.plot_reduced(minp=90, offset=10, ax=ax_field)
+                ax_field.set_title('Reference frame - {} {}'.format(object, pb))
+                pl.setp(ax_field, ylabel='Y [pix]', xlabel='X [pix]')
+                fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
+                fig_field.savefig(str(rdir.joinpath('{}_{}_{}.png'.format(object, root.absolute().name, pb))))
 
-            if args.tfop and im._target_center is not None:
-                for r in [5,2]:
-                    fig = pl.figure(figsize=(9, 9))
-                    ax = fig.add_subplot(111, projection=im._wcs)
-                    ax.grid()
-                    im.plot_reduced(ax=ax, minp=90, offset=10, subfield_radius=r)
-                    ax.set_title("Reference frame - {} {} {:d}'".format(object, pb, r))
-                    pl.setp(ax, ylabel='Dec', xlabel='RA')
-                    fig.tight_layout()
-                    fig.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
-                    fig.savefig(str(rdir.joinpath('{}_{}_{}_{:d}am.png'.format(object, root.absolute().name, pb, r))))
+            fig_psf, _ = im.plot_psf(figsize=(9, 4.5))
+            fig_psf.tight_layout()
+            fig_psf.savefig(str(rdir.joinpath('{}_{}_{}_psf.png'.format(object, root.absolute().name, pb))))
 
             # Datacube creation
             # -----------------

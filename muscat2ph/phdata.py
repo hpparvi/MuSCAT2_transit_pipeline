@@ -266,9 +266,9 @@ class PhotometryData:
         if plot_excluded:
             self._flux[:, iobj, iapt].plot(alpha=0.25, c='k', marker='.', linestyle='')
 
-    def plot_raw(self, nstars, ylim=(0.85, 1.15), ncols=4):
+    def plot_raw(self, nstars, ylim=(0.85, 1.15), ncols=4, figsize=(11,11)):
         nrows = int(ceil(nstars / ncols))
-        fig, axs = subplots(nrows, ncols, figsize=(11,11), sharex=True, sharey=True)
+        fig, axs = subplots(nrows, ncols, figsize=figsize, sharex=True, sharey=True)
         nflux = self.flux / self.flux.median('mjd')
         aids = abs(nflux.diff('mjd')).median('mjd').argmin('aperture')
         for i,(ax,apt) in enumerate(zip(axs.flat, aids[:nstars])):

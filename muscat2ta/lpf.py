@@ -29,13 +29,8 @@ from pytransit.utils.orbits import as_from_rhop
 
 from pyde import DiffEvol
 
-import exodata
 
 warnings.filterwarnings("ignore", category=UserWarning)
-
-with warnings.catch_warnings():
-    warnings.simplefilter('ignore')
-    exocat = exodata.OECDatabase(join(split(__file__)[0], '../ext/oec/systems/'))
 
 from scipy.stats import t as tdist
 
@@ -80,6 +75,8 @@ class BaseLPF:
         self.datasets = datasets
         self.filters = filters
         self.npb = npb = len(filters)
+        self.use_oec = kwargs.get('use_oec', True)
+        self.planet = None
 
         self.de = None
         self.sampler = None
@@ -108,8 +105,14 @@ class BaseLPF:
 
         # Read the planet parameters from the OEC
         # ---------------------------------------
-        self.planet = exocat.searchPlanet(target)
-        p = self.planet.P if self.planet else 5.
+        if self.use_oec:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                import exodata
+                exocat = exodata.OECDatabase(join(split(__file__)[0], '../ext/oec/systems/'))
+            self.planet = exocat.searchPlanet(target)
+
+        p = self.planet.P if self.planet else kwargs.get('period', 5.)
         t0 = datasets[0].time.mean() if datasets is not None else 0.0
         tce = datasets[0].time.ptp() / 10 if datasets is not None else 1e-5
 
@@ -309,6 +312,11 @@ class BaseLPF:
             return norm.logpdf(t14, m, s)
         self.lnpriors.append(T14)
 
+    def add_as_prior(self, m, s):
+        def as_prior(pv):
+            a = as_from_rhop(pv[2], pv[1])
+            return norm.logpdf(a, m, s)
+        self.lnpriors.append(as_prior)
 
     def add_ldtk_prior(self, teff, logg, z, uncertainty_multiplier=3, pbs=('g', 'r', 'i', 'z')):
         from ldtk import LDPSetCreator
