@@ -1,22 +1,38 @@
 #!/usr/bin/env python
-import numpy as np
-import matplotlib.pyplot as pl
-import statsmodels.api as sm
-import astropy.units as u
+
+#  MuSCAT2 photometry and transit analysis pipeline
+#  Copyright (C) 2019  Hannu Parviainen
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from argparse import ArgumentParser
 from pathlib import Path
 
-from tqdm import tqdm
+import astropy.units as u
+import matplotlib.pyplot as pl
+import statsmodels.api as sm
 from astropy.coordinates import SkyCoord, FK5
-from numpy import sqrt, arange, zeros, full, digitize, nan, ceil, isfinite, array, linspace, percentile, round, argsort, \
-    floor
-from matplotlib.backends.backend_pdf import PdfPages
-from numpy.polynomial.legendre import legfit, legvander
 from astropy.stats import sigma_clip
 from numba import njit
+from numpy import sqrt, arange, zeros, full, digitize, nan, ceil, isfinite, array, linspace, percentile, round, argsort, \
+    floor
+from numpy.polynomial.legendre import legvander
+from tqdm import tqdm
+from matplotlib.backends.backend_pdf import PdfPages
 
 from muscat2ph.phdata import PhotometryData
+
 
 @njit("Tuple((f8[:],f8[:],f8[:],f8[:,:]))(f8[:],f8[:],f8[:,:],f8)")
 def downsample_time(time, flux, covariates, inttime=30.):
@@ -46,7 +62,7 @@ def plot_raw(ax, ph, sid, tid, aid=-1, btime=300.):
     t0 = floor(time[0])
 
     sc = SkyCoord(array(ph._ds.centroids_sky), frame=FK5, unit=(u.deg, u.deg))
-    sep = sc[0].separation(sc).arcmin
+    sep = sc[tid].separation(sc).arcmin
 
     # Fit a baseline and use it in sigma clipping
     x = linspace(-1, 1, flux.size)
@@ -68,60 +84,39 @@ if __name__ == '__main__':
     ap.add_argument('target', type=str)
     ap.add_argument('date', type=str)
     ap.add_argument('datadir', type=Path)
-    ap.add_argument('tid', type=int)
-    ap.add_argument('cids', type=int, nargs='+')
-    ap.add_argument('--passbands', type=str, nargs='+')
+    ap.add_argument('--tid', type=int, default=0)
+    ap.add_argument('--passbands', type=str, nargs='+', default=('g', 'r', 'i', 'z_s'))
+    ap.add_argument('--exptime', type=float, default=30.)
     ap.add_argument('--bintime', type=float, default=300.)
+    ap.add_argument('--stars-per-page', type=int, default=12)
+    ap.add_argument('--fit', action='store_true', default=False)
     args = ap.parse_args()
 
-    root = args.datadir.joinpath(args.target, args.date)
-
+    root = args.datadir
     basename = "{}_{}".format(args.target, args.date)
-    phs = [PhotometryData(root.joinpath('{}_{}.nc'.format(basename, pb)), args.tid, args.cids, objname=args.target)
+
+    phs = [PhotometryData(root.joinpath('{}_{}.nc'.format(basename, pb)), args.tid, [1,2,3], objname=args.target)
            for pb in args.passbands]
     phs[0]._rset.select_best(3)
     for ph in phs[1:]:
         ph._rset = phs[0]._rset
-        phs[0]._flux += array(ph.flux)
-    ph = phs[0]
-    dist = sqrt(((ph._ds.centroids_pix - ph._ds.centroids_pix[0]) ** 2).sum('centroid_pix'))
+
+    dist = sqrt(((phs[0]._ds.centroids_pix - phs[0]._ds.centroids_pix[args.tid])**2).sum('centroid_pix'))
     sids = argsort(array(dist))
-
     n_stars = sids.size
-    stars_per_page = 12
-    n_pages = int(ceil(n_stars / stars_per_page))
+    n_pages = int(ceil(n_stars / args.stars_per_page))
+    n_cols = 3
+    n_rows = int(ceil(args.stars_per_page /n_cols))
 
-    istar = 0
-    with tqdm(total=n_stars, desc='Plotting raw fluxes') as pb:
-        for ipage in range(n_pages):
-            fig, axs = pl.subplots(4, 3, figsize=(16 * 0.75, 9 * 0.75), sharex=True)
-            for iax, ax in enumerate(axs.flat):
-                if istar < n_stars:
-                    plot_raw(ax, ph, sids[istar], args.tid)
-                    pb.update(1)
-                else:
-                    pl.setp(ax, visible=False)
-                istar += 1
-            pl.setp(axs, title='')
-            pl.setp(axs[:-1, :], xlabel='')
-            pl.setp(axs[:, 0], ylabel='F / F$_0$')
-            pl.setp(axs[:, 1], ylabel='')
-            fig.suptitle("{} {}".format(ph.objname, args.date))
-            fig.tight_layout()
-            fig.subplots_adjust(hspace=0, top=0.95)
-            fig.savefig("{}_{:02d}.png".format(basename, ipage))
-            pl.close(fig)
-
-    for passband in args.passbands:
+    # Plot the raw fluxes for each passband
+    # -------------------------------------
+    for ph, passband in zip(phs, args.passbands):
         basename = "{}_{}_{}".format(args.target, args.date, passband)
-        ph = PhotometryData(root.joinpath(basename+'.nc'), args.tid, args.cids, objname=args.target)
-        dist = sqrt(((ph._ds.centroids_pix - ph._ds.centroids_pix[0]) ** 2).sum('centroid_pix'))
-        sids = argsort(array(dist))
 
         istar = 0
-        with tqdm(total=n_stars, desc='Plotting raw fluxes') as pb:
+        with tqdm(total=n_stars, desc='Plotting raw fluxes for {}'.format(passband)) as pb:
             for ipage in range(n_pages):
-                fig, axs = pl.subplots(4, 3, figsize=(16 * 0.75, 9 * 0.75), sharex=True)
+                fig, axs = pl.subplots(n_rows, n_cols, figsize=(16 * 0.75, 9 * 0.75), sharex=True)
                 for iax, ax in enumerate(axs.flat):
                     if istar < n_stars:
                         plot_raw(ax, ph, sids[istar], args.tid)
@@ -139,3 +134,11 @@ if __name__ == '__main__':
                 fig.savefig("{}_{:02d}.png".format(basename, ipage))
                 pl.close(fig)
 
+    if args.fit:
+        from muscat2ta.transitanalysis import TransitAnalysis
+        ta = TransitAnalysis(args.datadir, args.target, args.date, args.tid, [0], etime=args.exptime,
+                             model='pb_independent_k', pbs=args.passbands)
+        ta.optimize_comparison_stars(3, start_id=3)
+        for ph in ta.phs[1:]:
+            ph._rset = ta.phs[0]._rset
+        ta._init_lcs()
