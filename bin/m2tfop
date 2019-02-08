@@ -22,11 +22,12 @@ from pathlib import Path
 import astropy.units as u
 import matplotlib.pyplot as pl
 import statsmodels.api as sm
+import pandas as pd
 from astropy.coordinates import SkyCoord, FK5
 from astropy.stats import sigma_clip
 from numba import njit
 from numpy import sqrt, arange, zeros, full, digitize, nan, ceil, isfinite, array, linspace, percentile, round, argsort, \
-    floor
+    floor, atleast_2d, concatenate
 from numpy.polynomial.legendre import legvander
 from tqdm import tqdm
 from matplotlib.backends.backend_pdf import PdfPages
@@ -57,7 +58,7 @@ def downsample_time(time, flux, covariates, inttime=30.):
 
 
 def plot_raw(ax, ph, sid, tid, aid=-1, btime=300.):
-    time = ph.mjd.value
+    time = ph.bjd
     flux = ph.flux[:, sid, aid] / ph.flux[:, tid, aid].median()
     t0 = floor(time[0])
 
@@ -81,14 +82,17 @@ def plot_raw(ax, ph, sid, tid, aid=-1, btime=300.):
 
 if __name__ == '__main__':
     ap = ArgumentParser()
-    ap.add_argument('target', type=str)
-    ap.add_argument('date', type=str)
-    ap.add_argument('datadir', type=Path)
-    ap.add_argument('--tid', type=int, default=0)
+    ap.add_argument('target', type=str, help='Target name')
+    ap.add_argument('tic', type=str, default=None, help='TIC and planet numbers as TIC?????????-??')
+    ap.add_argument('date', type=str, help='Observation night as YYMMDD')
+    ap.add_argument('datadir', type=Path, help='Light curve directory')
+    ap.add_argument('--tid', type=int, default=0, help='Target ID')
     ap.add_argument('--passbands', type=str, nargs='+', default=('g', 'r', 'i', 'z_s'))
     ap.add_argument('--exptime', type=float, default=30.)
     ap.add_argument('--bintime', type=float, default=300.)
     ap.add_argument('--stars-per-page', type=int, default=12)
+    ap.add_argument('--ref-star-start', type=int, default=1)
+    ap.add_argument('--ref-star-end', type=int, default=7)
     ap.add_argument('--fit', action='store_true', default=False)
     args = ap.parse_args()
 
@@ -97,9 +101,11 @@ if __name__ == '__main__':
 
     phs = [PhotometryData(root.joinpath('{}_{}.nc'.format(basename, pb)), args.tid, [1,2,3], objname=args.target)
            for pb in args.passbands]
-    phs[0]._rset.select_best(3)
+    phs[0]._rset.select_best(3, start_id=args.ref_star_start, end_id=args.ref_star_end)
     for ph in phs[1:]:
-        ph._rset = phs[0]._rset
+        ph._rset.tap = phs[0]._rset.tap
+        ph._rset.cids = phs[0]._rset.cids
+        ph._rset.caps = phs[0]._rset.caps
 
     dist = sqrt(((phs[0]._ds.centroids_pix - phs[0]._ds.centroids_pix[args.tid])**2).sum('centroid_pix'))
     sids = argsort(array(dist))
@@ -108,31 +114,84 @@ if __name__ == '__main__':
     n_cols = 3
     n_rows = int(ceil(args.stars_per_page /n_cols))
 
-    # Plot the raw fluxes for each passband
-    # -------------------------------------
-    for ph, passband in zip(phs, args.passbands):
-        basename = "{}_{}_{}".format(args.target, args.date, passband)
+    targetname = 'TIC{}'.format(args.tic)
 
-        istar = 0
-        with tqdm(total=n_stars, desc='Plotting raw fluxes for {}'.format(passband)) as pb:
-            for ipage in range(n_pages):
-                fig, axs = pl.subplots(n_rows, n_cols, figsize=(16 * 0.75, 9 * 0.75), sharex=True)
-                for iax, ax in enumerate(axs.flat):
-                    if istar < n_stars:
-                        plot_raw(ax, ph, sids[istar], args.tid)
-                        pb.update(1)
-                    else:
-                        pl.setp(ax, visible=False)
-                    istar += 1
-                pl.setp(axs, title='')
-                pl.setp(axs[:-1, :], xlabel='')
-                pl.setp(axs[:, 0], ylabel='F / F$_0$')
-                pl.setp(axs[:, 1], ylabel='')
-                fig.suptitle("{} {} {}".format(ph.objname, args.date, passband))
-                fig.tight_layout()
-                fig.subplots_adjust(hspace=0, top=0.95)
-                fig.savefig("{}_{:02d}.png".format(basename, ipage))
-                pl.close(fig)
+    for ph, passband in zip(phs, args.passbands):
+
+        # Export the data in the stoopid csv format
+        # -----------------------------------------
+        data = concatenate([atleast_2d(ph.bjd).T,
+                            array(ph.flux[:, :, ph._rset.tap]),
+                            array(ph.aux[:, 1:])], axis=1)
+        df = pd.DataFrame(data,
+                          columns=['BJD_TDB'] + [f'flux_star_{i}' for i in range(ph.flux.shape[1])] + ['sky', 'airmass',
+                                                                                                   'xshift', 'yshift',
+                                                                                                   'sky_entropy'])
+        df.to_csv('{}_20{}_MuSCAT2_{}_measurements.tbl'.format(targetname, args.date, passband), index=False, sep=" ")
+
+        # Plot the raw fluxes for each passband
+        # -------------------------------------
+        plotname = "{}_20{}_MuSCAT2_{}_lightcurve.pdf".format(targetname, args.date, passband)
+
+        time = ph.bjd
+        t0 = floor(ph.bjd[0])
+
+        with PdfPages(plotname) as pdf:
+
+            # Raw flux plots
+            # --------------
+            istar = 0
+            with tqdm(total=n_stars, desc='Plotting raw fluxes for {}'.format(passband)) as pb:
+                for ipage in range(n_pages):
+                    fig, axs = pl.subplots(n_rows, n_cols, figsize=(16 * 0.75, 9 * 0.75), sharex=True)
+                    for iax, ax in enumerate(axs.flat):
+                        if istar < n_stars:
+                            plot_raw(ax, ph, sids[istar], args.tid)
+                            pb.update(1)
+                        else:
+                            pl.setp(ax, visible=False)
+                        istar += 1
+                    pl.setp(axs, title='')
+                    pl.setp(axs[:-1, :], xlabel='')
+                    pl.setp(axs[:, 0], ylabel='F / F$_0$')
+                    pl.setp(axs[:, 1], ylabel='')
+                    pl.setp(axs[-1, :], xlabel='Time - {:7.0f} [BJD]'.format(t0))
+                    fig.suptitle("{} 20{} MuSCAT2 {} raw fluxes".format(targetname, args.date, passband))
+                    fig.tight_layout()
+                    fig.subplots_adjust(hspace=0, top=0.9)
+                    pdf.savefig(fig)
+                    pl.close(fig)
+
+            # Covariate plots
+            # ---------------
+            fig, axs = pl.subplots(2, 2, figsize=(16 * 0.75, 9 * 0.75), sharex=True)
+            aux = ph.aux
+            cols = 'Sky, Airmass, X Shift [pix], Y Shift [pix], Aperture entropy'.split(',')
+            for i in range(4):
+                ax = axs.flat[i]
+                ax.plot(time-t0, aux[:, i + 1], 'k')
+                pl.setp(ax, ylabel=cols[i])
+            pl.setp(axs, xlim=time[[0,-1]]-t0)
+            pl.setp(axs[-1,:], xlabel='Time - {:7.0f} [BJD]'.format(t0))
+            fig.suptitle('{}  20{} MuSCAT2 {} covariates'.format(targetname, args.date, passband))
+            fig.tight_layout()
+            fig.subplots_adjust(hspace=0, top=0.9)
+            pdf.savefig(fig)
+            pl.close(fig)
+
+            # Relative flux plot
+            # ------------------
+            fig, ax = pl.subplots(figsize=(16 * 0.75, 9 * 0.75))
+            ax.plot(time-t0, ph.relative_flux, 'k.')
+            pl.setp(ax, xlabel='Time - {:7.0f} [BJD]'.format(t0), ylabel='Normalised flux', xlim=time[[0,-1]]-t0,
+                    label='Normalised relative flux')
+            fig.suptitle('{}  20{} MuSCAT2 {} relative light curve'.format(targetname, args.date, passband))
+            fig.tight_layout()
+            fig.subplots_adjust(hspace=0, top=0.9)
+            pdf.savefig(fig)
+            pl.close(fig)
+
+
 
     if args.fit:
         from muscat2ta.transitanalysis import TransitAnalysis
