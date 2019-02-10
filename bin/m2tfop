@@ -33,7 +33,7 @@ from tqdm import tqdm
 from matplotlib.backends.backend_pdf import PdfPages
 
 from muscat2ph.phdata import PhotometryData
-
+from pytransit.param.parameter import NormalPrior as N
 
 @njit("Tuple((f8[:],f8[:],f8[:],f8[:,:]))(f8[:],f8[:],f8[:,:],f8)")
 def downsample_time(time, flux, covariates, inttime=30.):
@@ -94,6 +94,7 @@ if __name__ == '__main__':
     ap.add_argument('--ref-star-start', type=int, default=1)
     ap.add_argument('--ref-star-end', type=int, default=7)
     ap.add_argument('--fit', action='store_true', default=False)
+    ap.add_argument('--period', type=float, default=None)
     args = ap.parse_args()
 
     root = args.datadir
@@ -197,7 +198,12 @@ if __name__ == '__main__':
         from muscat2ta.transitanalysis import TransitAnalysis
         ta = TransitAnalysis(args.datadir, args.target, args.date, args.tid, [0], etime=args.exptime,
                              model='pb_independent_k', pbs=args.passbands)
-        ta.optimize_comparison_stars(3, start_id=3)
-        for ph in ta.phs[1:]:
-            ph._rset = ta.phs[0]._rset
+        ta.optimize_comparison_stars(3, start_id=args.ref_star_start)
         ta._init_lcs()
+        if args.period:
+            ta.set_prior(1, N(args.period, 1e-5))
+        ta.optimize('linear', 500)
+        f = ta.plot_light_curve(detrend_obs=True, figshape=(1, 3), figsize=(11, 3));
+        pl.setp(f.axes, ylim=(0.8, 1.15))
+        f.tight_layout()
+        f.savefig("{}_20{}_MuSCAT2_fit.pdf".format(targetname, args.date))

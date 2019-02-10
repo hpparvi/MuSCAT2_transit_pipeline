@@ -131,7 +131,7 @@ class M2LightCurve:
         for i in cids:
             v = self._covariates[mask, i]
             mv = mf(v, mf_width)
-            mmv = sigma_clip(v - mv, sigma, iters=10)
+            mmv = sigma_clip(v - mv, sigma, maxiters=10)
             mask[mask] &= ~mmv.mask
         self._mask &= mask
 

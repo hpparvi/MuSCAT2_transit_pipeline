@@ -29,7 +29,6 @@ from pytransit.utils.orbits import as_from_rhop
 
 from pyde import DiffEvol
 
-
 warnings.filterwarnings("ignore", category=UserWarning)
 
 from scipy.stats import t as tdist
