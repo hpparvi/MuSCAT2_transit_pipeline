@@ -1,49 +1,49 @@
 #!/usr/bin/env python
 
-import warnings
+#  MuSCAT2 photometry and transit analysis pipeline
+#  Copyright (C) 2019  Hannu Parviainen
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 import logging
 import re
-import numpy as np
-import pandas as pd
-
-from os import remove, chdir
-from itertools import repeat
-from numpy import nan, inf, array
-from multiprocessing import Pool
-from subprocess import run, PIPE, TimeoutExpired
-from pathlib import Path
 from argparse import ArgumentParser
+from multiprocessing import Pool
+from os import remove, chdir
+from pathlib import Path
+from subprocess import run, PIPE, TimeoutExpired
 
+import pandas as pd
 from astropy.io import fits as pf
-from astropy.utils.exceptions import AstropyWarning
-from astropy.coordinates import SkyCoord
-import astropy.units as u
-from astroquery.simbad import Simbad
-
+from numpy import nan, inf
 from tqdm import tqdm
+
+from muscat2ph.catalog import get_m2_coords
 
 TMPEXTS = ".match .axy .rdls .solved -indx.xyls .corr".split()
 MAX_TIMEOUT = 60
 
+
 def run_astrometry(filename, overwrite=True):
-    pradec = Path('radec.csv')
-    if pradec.exists():
-        with open(pradec, 'r') as f:
-            radec = f.readline()
-        ra, dec = list(map(lambda s: s.strip().replace(' ', ':'), radec.split(',')))
-    else:
-        h = pf.getheader(filename)
-        ra, dec = h['ra'], h['dec']
+    object = pf.getval(filename, 'object').lower()
+    sc = get_m2_coords(object)
+
+    logging.info(" Solving {} {} - RA: {:6.3f} DEC: {:6.3f}".format(filename.stem, object, sc.ra.deg, sc.dec.deg))
 
     astcall = ["solve-field", "--overwrite", "--no-plots", "--scale-low=0.3", "--scale-high=0.7", "--scale-units=app",
-               "--new-fits=none", "--fits-image"]
-
-    if ra and dec:
-        astcall.extend(["--ra=%s"%ra, "--dec=%s"%dec, "--radius=2"])
-        logging.info("%s -- Found RA and Dec from the header (%s, %s)", filename.stem, ra, dec)
-    else:
-        logging.info("%s -- No RA and Dec info in the header", filename.stem)
-    astcall.append(str(filename))
+               "--new-fits=none", "--fits-image", "--ra={}".format(sc.ra.deg), "--dec={}".format(sc.dec.deg), "--radius=2",
+               str(filename)]
 
     try:
         r = run(astcall, stdout=PIPE, stderr=PIPE, timeout=MAX_TIMEOUT)
@@ -60,8 +60,10 @@ def run_astrometry(filename, overwrite=True):
     try:
         center = list(map(float, re.findall('Field center: \(RA,Dec\) = \((.*),(.*)\)', rout)[0]))
         rotation = float(re.findall('Field rotation .* is (.*?) .*', rout)[0])
+        logging.info(" Solved  {} {} - RA: {:6.3f} DEC: {:6.3f} Rotation: {:6.3f}".format(filename.stem, object, center[0], center[1], rotation))
         return str(filename), center[0], center[1], rotation
     except IndexError:
+        logging.info(" Failed to solve {} {}".format(filename.stem, object))
         return str(filename), nan, nan, nan
 
 
@@ -74,11 +76,6 @@ def process_datadir(datadir, logdir, file_prefix, file_postfix, start_frame, end
 
     target = str(f.parts[-3])
     pb = str(f.parts[-2])
-
-    obj = Simbad.query_object(pf.getval(f, 'object'))
-    if obj is not None:
-        with open('radec.csv', 'w') as radec:
-            radec.write('{}, {}\n'.format(obj['RA'][0], obj['DEC'][0]))
 
     logging.basicConfig(filename=logdir.joinpath('00_m2astrometry_{}_{}.log'.format(target, pb)),
                         filemode='w', level=logging.DEBUG)
