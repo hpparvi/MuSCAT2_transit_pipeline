@@ -102,6 +102,7 @@ if __name__ == '__main__':
     ap.add_argument('--save-stars', action='store_true', default=False)
     ap.add_argument('--create-dc', action='store_true', default=False)
     ap.add_argument('--separation-cut-distance', type=float, default=2.0)
+    ap.add_argument('--tfop', action='store_true', default=False)
     args = ap.parse_args()
 
     root = Path(args.datadir)
@@ -128,7 +129,7 @@ if __name__ == '__main__':
     # -------------------------------------
     for object in objects:
 
-        if 'toi' in object.lower():
+        if args.tfop or 'toi' in object.lower():
             print("Reducing a TFOP target {}.".format(object))
             apertures = (4, 8, 12, 16, 20)
             max_stars = 200
@@ -194,6 +195,7 @@ if __name__ == '__main__':
 
             # Field plot with apertures
             # -------------------------
+            obsdate = root.absolute().name
             if im._wcs:
                 for r in (None,5,2):
                     fig_field = pl.figure(figsize=(9, 9))
@@ -204,20 +206,20 @@ if __name__ == '__main__':
                     pl.setp(ax_field, ylabel='Dec', xlabel='RA')
                     fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
                     if r:
-                        fig_field.savefig(str(rdir.joinpath('{}_{}_{}_{:d}am.png'.format(object, root.absolute().name, pb, r))))
+                        fig_field.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_field_{:d}am.png'.format(object, obsdate, pb, r))))
                     else:
-                        fig_field.savefig(str(rdir.joinpath('{}_{}_{}.png'.format(object, root.absolute().name, pb))))
+                        fig_field.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_field.png'.format(object, obsdate, pb))))
             else:
                 fig_field, ax_field = pl.subplots(figsize=(9, 9))
                 im.plot_reduced(minp=90, offset=10, ax=ax_field)
                 ax_field.set_title('Reference frame - {} {}'.format(object, pb))
                 pl.setp(ax_field, ylabel='Y [pix]', xlabel='X [pix]')
                 fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
-                fig_field.savefig(str(rdir.joinpath('{}_{}_{}.png'.format(object, root.absolute().name, pb))))
+                fig_field.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_field.png'.format(object, obsdate, pb))))
 
             fig_psf, _ = im.plot_psf(figsize=(9, 4.5))
             fig_psf.tight_layout()
-            fig_psf.savefig(str(rdir.joinpath('{}_{}_{}_psf.png'.format(object, root.absolute().name, pb))))
+            fig_psf.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_seeing_profile.png'.format(object, obsdate, pb))))
 
             # Datacube creation
             # -----------------
@@ -225,7 +227,7 @@ if __name__ == '__main__':
                 with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file, apertures)) as pool:
                     dc = array(list(tqdm(pool.imap(create_datacube, files, chunksize=args.chunksize), total=len(files))))
                     hdu = pf.PrimaryHDU(dc)
-                    hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, root.absolute().name, pb))), overwrite=True)
+                    hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, obsdate, pb))), overwrite=True)
 
             # Photometry
             # ----------
@@ -259,4 +261,4 @@ if __name__ == '__main__':
 
                 ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos,
                                      aux=aux, centroids_pix=cpix, centroids_sky=csky))
-                ds.to_netcdf(str(rdir.joinpath('{}_{}_{}.nc'.format(object, root.absolute().name, pb))))
+                ds.to_netcdf(str(rdir.joinpath('{}_{}_{}.nc'.format(object, obsdate, pb))))
