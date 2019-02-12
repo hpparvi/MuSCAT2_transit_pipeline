@@ -1,25 +1,39 @@
+#  MuSCAT2 photometry and transit analysis pipeline
+#  Copyright (C) 2019  Hannu Parviainen
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 from glob import glob
+from pathlib import Path
+from time import strftime
 
 import numpy as np
 import pandas as pd
 import xarray as xa
-
-from pathlib import Path
-from time import strftime
-
-from corner import corner
-from tqdm import tqdm
-from matplotlib.pyplot import subplots, setp
-from numpy import array, arange, min, max, sqrt, inf, floor, diff, percentile, median, isin, zeros, full_like, \
-    concatenate, zeros_like, full, ones_like, s_
-from numpy.random import permutation
+from astropy.io import fits as pf
 from astropy.stats import mad_std
 from astropy.table import Table
-from astropy.io import fits as pf
+from corner import corner
+from matplotlib.pyplot import subplots, setp
+from numpy import array, arange, min, max, sqrt, inf, floor, diff, percentile, median, full_like, \
+    concatenate, zeros_like, full, ones_like, s_
+from numpy.random import permutation
 
 from muscat2ph.phdata import PhotometryData
 from muscat2ta.lc import M2LCSet, M2LightCurve
-from muscat2ta.lpf import StudentLSqLPF, GPLPF, NormalLSqLPF
+from muscat2ta.lpf import GPLPF, NormalLSqLPF
+
 
 class TransitAnalysis:
     def __init__(self, datadir, target, date, tid, cids, etime=30., mjd_start=-inf, mjd_end=inf, flux_lims=(-inf, inf),

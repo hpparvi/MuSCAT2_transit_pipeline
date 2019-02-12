@@ -1,12 +1,29 @@
+#  MuSCAT2 photometry and transit analysis pipeline
+#  Copyright (C) 2019  Hannu Parviainen
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 import math as m
+
 import numpy as np
 import statsmodels.api as sm
-
+from astropy.stats import sigma_clip, mad_std
 from numpy import (ones, full, sqrt, array, concatenate, diff, ones_like, floor, ceil, all, arange, digitize, zeros,
                    nan, linspace, isfinite)
 from numpy.polynomial.legendre import legvander
 from scipy.ndimage import median_filter as mf
-from astropy.stats import sigma_clip, mad_std
+
 
 def find_period(time, flux, minp=1, maxp=10):
     min2day = 1 / 60 / 24

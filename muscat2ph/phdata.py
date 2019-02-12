@@ -1,7 +1,6 @@
 import xarray as xa
 import seaborn as sb
 from astropy.coordinates import SkyCoord, FK5
-from matplotlib.mlab import normpdf
 from matplotlib.pyplot import subplots, setp
 
 from numpy import inf, sqrt, dot, exp, linspace, log, zeros, array, arange, meshgrid, ones, r_, isin, ceil
@@ -13,7 +12,6 @@ from scipy.stats import norm
 from astropy.time import Time
 from astropy import coordinates as coord, units as u
 from astropy.stats import mad_std
-from astroquery.simbad import Simbad
 from tqdm import tqdm
 
 lapalma = coord.EarthLocation.from_geodetic(-17.8799*u.deg, 28.758*u.deg, 2327*u.m)

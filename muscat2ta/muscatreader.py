@@ -1,9 +1,25 @@
+#  MuSCAT2 photometry and transit analysis pipeline
+#  Copyright (C) 2019  Hannu Parviainen
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 import re
 from glob import glob
 from os.path import join
 
 import pandas as pd
-import xarray as xa
+from matplotlib.pyplot import errorbar, plot
 from numpy import median, sqrt, diff, inf, unique, argmin
 
 
@@ -55,6 +71,7 @@ class MuSCATReader:
         wn = list(map(estimate_white_noise, df[fluxes].values.T))
         return (df[fluxes[argmin(wn)]].values.astype('d'),
                 df[ferrs[argmin(wn)]].values.astype('d'),
+                min(wn))
                 min(wn))
 
     def select_light_curve(self, dfs):

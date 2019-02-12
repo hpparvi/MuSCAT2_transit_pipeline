@@ -1,33 +1,44 @@
-import warnings
+#  MuSCAT2 photometry and transit analysis pipeline
+#  Copyright (C) 2019  Hannu Parviainen
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 import math as mt
+import warnings
 from os.path import join, split
 
-from numpy import (inf, sqrt, ones, hstack, zeros_like, median, floor, concatenate, dot, diff, log, ones_like,
-                   percentile, clip, argsort, any, array, s_, zeros, arccos, nan, isnan, full, pi, sum, repeat, arange)
-from numpy.random import uniform, normal
-from numpy.linalg import lstsq, LinAlgError
-from numba import njit
-from scipy.optimize import minimize
-from scipy.stats import norm
-from tqdm import tqdm
-
 from emcee import EnsembleSampler
-
 from george import GP
-from george.kernels import ExpKernel as EK, ExpSquaredKernel as ESK, ConstantKernel as CK, Matern32Kernel as M32
-
+from george.kernels import ExpSquaredKernel as ESK, ConstantKernel as CK
+from numba import njit
+from numpy import (ones, zeros_like, median, concatenate, dot, ones_like,
+                   clip, argsort, any, s_, arccos, nan, isnan, full, sum, repeat, arange)
+from numpy.linalg import lstsq, LinAlgError
+from pyde import DiffEvol
 from pytransit import MandelAgol as MA
+from pytransit.contamination import SMContamination
+from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
+from pytransit.contamination.instrument import Instrument
 from pytransit.mandelagol_py import eval_quad_ip_mp
 from pytransit.orbits_py import z_circular, duration_eccentric
 from pytransit.param.parameter import *
 from pytransit.param.parameter import PParameter, GParameter, LParameter
 from pytransit.param.parameter import UniformPrior as U, NormalPrior as N, GammaPrior as GM
-from pytransit.contamination import SMContamination, apparent_radius_ratio, true_radius_ratio
-from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
-from pytransit.contamination.instrument import Instrument
 from pytransit.utils.orbits import as_from_rhop
-
-from pyde import DiffEvol
+from scipy.optimize import minimize
+from scipy.stats import norm
+from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
