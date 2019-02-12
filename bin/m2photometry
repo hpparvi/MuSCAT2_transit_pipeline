@@ -21,24 +21,19 @@ from datetime import datetime, timedelta
 from multiprocessing import Pool
 from os import makedirs
 from pathlib import Path
-from warnings import simplefilter, catch_warnings
 
-import astropy.units as u
 import xarray as xa
-from astropy.coordinates import SkyCoord, FK5
 from astropy.io import fits as pf
 from astropy.wcs.wcs import NoConvergence
-from astroquery.simbad import Simbad
-from numpy import zeros, inf, array, fromstring, c_, nan, full_like
+from numpy import zeros, inf, array, c_, nan, full_like
 from tqdm import tqdm
-
-from pdb import bdb
 
 import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as pl
 
 from muscat2ph.photometry import ScienceFrame, COMCentroider
+from muscat2ph.catalog import get_m2_coords
 
 passbands = 'g r i z_s'.split()
 
@@ -71,25 +66,12 @@ def create_datacube(filename):
     return im.get_aperture(5)
 
 
-def get_sky_coordinates(names):
-    assert isinstance(['ds'], (str, list, tuple))
-    names = (names,) if isinstance(names, str) else names
-    with catch_warnings():
-        simplefilter('ignore', UserWarning)
-        for name in names:
-            obj = Simbad.query_object(name)
-            if obj:
-                return SkyCoord(obj['RA'][0], obj['DEC'][0], frame=FK5, unit=(u.hourangle, u.deg))
-
-
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('datadir', type=str)
     ap.add_argument('--object', type=str, default=None)
     ap.add_argument('--passband', choices='g r i z_s all'.split(), default='all')
     ap.add_argument('--target-catalog-name', type=str, default=None)
-    ap.add_argument('--target-sky-coords', type=str, default=None)
-    ap.add_argument('--target-pix-coords', type=str, default=None)
     ap.add_argument('--result-dir', type=Path, default=None)
     ap.add_argument('--max-stars', type=int, default=15)
     ap.add_argument('--start-frame', type=int, default=0)
@@ -112,24 +94,12 @@ if __name__ == '__main__':
 
     objects = [args.object] if args.object else [o.name for o in list(root.joinpath('obj').glob('*'))]
 
-    # Get the sky and pixel coordinates for the target if a single target is defined
-    # ------------------------------------------------------------------------------
-    if args.object:
-        if args.target_sky_coords is not None:
-            target_sky_coords = SkyCoord(args.target_sky_coords, frame=FK5, unit=(u.hourangle, u.deg))
-        else:
-            target_sky_coords = get_sky_coordinates([args.target_catalog_name, args.object])
-        if target_sky_coords is None and args.target_pix_coords:
-            try:
-                target_pix_coords = fromstring(args.target_pix_coords, sep=',')
-            except TypeError:
-                pass
-
     # Do the photometry for all the targets
     # -------------------------------------
     for object in objects:
+        target_sky_coords = get_m2_coords(object)
 
-        if args.tfop or 'toi' in object.lower():
+        if args.tfop or 'toi' in object.lower() or 'tic' in object.lower():
             print("Reducing a TFOP target {}.".format(object))
             apertures = (4, 8, 12, 16, 20)
             max_stars = 200
