@@ -30,7 +30,7 @@ from pytransit import MandelAgol as MA
 from pytransit.contamination import SMContamination
 from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
 from pytransit.contamination.instrument import Instrument
-from pytransit.mandelagol_py import eval_quad_ip_mp
+from pytransit.ma_quadratic_nb import eval_quad_ip_mp
 from pytransit.orbits_py import z_circular, duration_eccentric
 from pytransit.param.parameter import *
 from pytransit.param.parameter import PParameter, GParameter, LParameter
