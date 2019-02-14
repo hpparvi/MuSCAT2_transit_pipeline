@@ -31,11 +31,10 @@ from pytransit.contamination import SMContamination
 from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
 from pytransit.contamination.instrument import Instrument
 from pytransit.ma_quadratic_nb import eval_quad_ip_mp
-from pytransit.orbits_py import z_circular, duration_eccentric
+from pytransit.orbits_py import z_circular, duration_eccentric, as_from_rhop
 from pytransit.param.parameter import *
 from pytransit.param.parameter import PParameter, GParameter, LParameter
 from pytransit.param.parameter import UniformPrior as U, NormalPrior as N, GammaPrior as GM
-from pytransit.utils.orbits import as_from_rhop
 from scipy.optimize import minimize
 from scipy.stats import norm
 from tqdm import tqdm
