@@ -83,6 +83,7 @@ if __name__ == '__main__':
     ap.add_argument('--border-margin', type=int, default=30)
     ap.add_argument('--save-stars', action='store_true', default=False)
     ap.add_argument('--create-dc', action='store_true', default=False)
+    ap.add_argument('--apply-separation-cut', action='store_true', default=False)
     ap.add_argument('--separation-cut-distance', type=float, default=2.0)
     ap.add_argument('--tfop', action='store_true', default=False)
     args = ap.parse_args()
