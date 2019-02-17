@@ -86,6 +86,7 @@ if __name__ == '__main__':
     ap.add_argument('--apply-separation-cut', action='store_true', default=False)
     ap.add_argument('--separation-cut-distance', type=float, default=2.0)
     ap.add_argument('--tfop', action='store_true', default=False)
+    ap.add_argument('--no-tfop', action='store_true', default=False)
     args = ap.parse_args()
 
     root = Path(args.datadir)
@@ -100,7 +101,7 @@ if __name__ == '__main__':
     for object in objects:
         target_sky_coords = get_m2_coords(object)
 
-        if args.tfop or 'toi' in object.lower() or 'tic' in object.lower():
+        if not args.no_tfop and (args.tfop or 'toi' in object.lower() or 'tic' in object.lower()):
             print("Reducing a TFOP target {}.".format(object))
             apertures = (4, 8, 12, 16, 20)
             max_stars = 200
@@ -157,8 +158,10 @@ if __name__ == '__main__':
                     im.cut_separation(target_sky_coords, args.separation_cut_distance)
                     im.remove_doubles(target_sky_coords, 0.1)
                 im.save_reference_stars(stars_file)
+
             im.load_reference_stars(stars_file)
-            im.cut_separation(target_sky_coords, args.separation_cut_distance)
+            if TFOP or args.apply_separation_cut:
+                im.cut_separation(target_sky_coords, args.separation_cut_distance)
             
             cc = COMCentroider(im, None, aperture_radius=15)
             cc.select_stars(20)
