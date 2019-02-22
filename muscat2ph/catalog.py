@@ -16,13 +16,18 @@
 
 from difflib import get_close_matches
 from pathlib import Path
+from collections import namedtuple
 
 import astropy.units as u
 import pandas as pd
 from astropy.coordinates import SkyCoord
+from numpy.ma import remainder
 from pkg_resources import resource_filename
 
+TOI = namedtuple('TOI', 'tic toi tmag ra dec epoch period duration depth'.split())
+
 m2_catalog_file = Path(resource_filename('muscat2ph', '../data/m2_catalog.csv')).resolve()
+toi_catalog_file = Path(resource_filename('muscat2ph', '../data/toi_catalog.csv')).resolve()
 
 def read_m2_catalog():
     with open(m2_catalog_file, 'r') as f:
@@ -41,8 +46,56 @@ def read_m2_catalog():
             targets.append(items[1:])
         return pd.DataFrame(targets, index=ids, columns=names[1:])
 
+def get_toi(toi):
+    df = pd.read_csv(toi_catalog_file, sep=',')
+    dtoi = df[df.TOI == toi]
+    zero_epoch = dtoi[[' Epoch (BJD)', 'Epoch (BJD) err']].values[0]
+    period = dtoi[['Period (days)', 'Period (days) err']].values[0]
+    duration = dtoi[['Duration (hours)', 'Duration (hours) err']].values[0]
+    depth = dtoi[['Depth (ppm)', 'Depth (ppm) err']].values[0]
+    return TOI(*dtoi['TIC ID, TOI, Tess Mag, RA, Dec'.split(', ')], epoch=zero_epoch, period=period, duration=duration, depth=depth)
+
+
+def get_toi_or_tic(toi_or_tic):
+    df = pd.read_csv(toi_catalog_file, sep=',')
+
+    if abs(remainder(toi_or_tic, 1)) < 1e-5:
+        tic = int(toi_or_tic)
+        toi = TOI(*(df[df['TIC ID'] == tic]['TIC ID, TOI, Tess Mag, RA, Dec,  Epoch (BJD), Period (days), Duration (hours), Depth (ppm)'.split(', ')].values[0]))
+    else:
+        toi = toi_or_tic
+        toi = TOI(*(df[df.TOI == toi]['TIC ID, TOI, Tess Mag, RA, Dec,  Epoch (BJD), Period (days), Duration (hours), Depth (ppm)'.split(', ')].values[0]))
+    return toi
+
 def get_m2_coords(name):
+    """
+    Returns the sky coordinates of a target based on the internal MuSCAT2 target catalog.
+
+    Parameters
+    ----------
+    name
+
+    Returns
+    -------
+    Astropy SkyCoord object
+    """
     cat = read_m2_catalog()
     name = get_close_matches(name.lower(), cat.name, 1)[0]
     target = cat[cat.name==name]
     return SkyCoord(float(target.ra), float(target.dec), frame='fk5', unit=(u.deg, u.deg))
+
+
+def get_toi_or_tic_coords(toi_or_tic):
+    """
+    Returns the sky coordinates of a TOI based on the TOI catalog.
+
+    Parameters
+    ----------
+    toi
+
+    Returns
+    -------
+    Astropy SkyCoord object
+    """
+    toi = get_toi_or_tic(toi_or_tic)
+    return SkyCoord(toi.ra, toi.dec, frame='fk5', unit=(u.hourangle, u.deg))

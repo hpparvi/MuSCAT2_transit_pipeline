@@ -18,6 +18,7 @@
 
 from argparse import ArgumentParser
 from pathlib import Path
+from warnings import catch_warnings, simplefilter
 
 import astropy.units as u
 import matplotlib.pyplot as pl
@@ -27,11 +28,12 @@ from astropy.coordinates import SkyCoord, FK5
 from astropy.stats import sigma_clip
 from numba import njit
 from numpy import sqrt, arange, zeros, full, digitize, nan, ceil, isfinite, array, linspace, percentile, round, argsort, \
-    floor, atleast_2d, concatenate
+    floor, atleast_2d, concatenate, inf
 from numpy.polynomial.legendre import legvander
 from tqdm import tqdm
 from matplotlib.backends.backend_pdf import PdfPages
 
+from muscat2ph.catalog import get_m2_coords, get_toi
 from muscat2ph.phdata import PhotometryData
 from pytransit.param.parameter import NormalPrior as N
 
@@ -62,8 +64,10 @@ def plot_raw(ax, ph, sid, tid, aid=-1, btime=300.):
     flux = ph.flux[:, sid, aid] / ph.flux[:, tid, aid].median()
     t0 = floor(time[0])
 
-    sc = SkyCoord(array(ph._ds.centroids_sky), frame=FK5, unit=(u.deg, u.deg))
-    sep = sc[tid].separation(sc).arcmin
+    with catch_warnings():
+        simplefilter('ignore', RuntimeWarning)
+        sc = SkyCoord(array(ph._ds.centroids_sky), frame=FK5, unit=(u.deg, u.deg))
+        sep = sc[tid].separation(sc).arcmin
 
     # Fit a baseline and use it in sigma clipping
     x = linspace(-1, 1, flux.size)
@@ -83,7 +87,7 @@ def plot_raw(ax, ph, sid, tid, aid=-1, btime=300.):
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('target', type=str, help='Target name')
-    ap.add_argument('tic', type=str, default=None, help='TIC and planet numbers as TIC?????????-??')
+    ap.add_argument('--tic', type=str, default=None, help='TIC and planet numbers as TIC?????????-??')
     ap.add_argument('date', type=str, help='Observation night as YYMMDD')
     ap.add_argument('datadir', type=Path, help='Light curve directory')
     ap.add_argument('--tid', type=int, default=0, help='Target ID')
@@ -95,13 +99,20 @@ if __name__ == '__main__':
     ap.add_argument('--ref-star-end', type=int, default=7)
     ap.add_argument('--fit', action='store_true', default=False)
     ap.add_argument('--period', type=float, default=None)
+    ap.add_argument('--tdur', type=float, default=None)
+    ap.add_argument('--mjd-start', type=float, default=-inf)
+    ap.add_argument('--mjd-end', type=float, default=inf)
     args = ap.parse_args()
 
     root = args.datadir
     basename = "{}_{}".format(args.target, args.date)
+    coords = get_m2_coords(args.target)
 
-    phs = [PhotometryData(root.joinpath('{}_{}.nc'.format(basename, pb)), args.tid, [1,2,3], objname=args.target)
-           for pb in args.passbands]
+    with catch_warnings():
+        simplefilter('ignore', RuntimeWarning)
+        phs = [PhotometryData(root.joinpath('{}_{}.nc'.format(basename, pb)), args.tid, [1,2,3], objname=args.target,
+                              mjd_start=args.mjd_start, mjd_end=args.mjd_end, objskycoords=coords)
+               for pb in args.passbands]
     phs[0]._rset.select_best(3, start_id=args.ref_star_start, end_id=args.ref_star_end)
     for ph in phs[1:]:
         ph._rset.tap = phs[0]._rset.tap
@@ -115,7 +126,14 @@ if __name__ == '__main__':
     n_cols = 3
     n_rows = int(ceil(args.stars_per_page /n_cols))
 
-    targetname = 'TIC{}'.format(args.tic)
+    if args.tic is None:
+        toi = args.target.lower()
+        tic = "{:d}-{}".format(get_toi(float(toi.strip('toi'))).tic, toi.split('.')[1])
+    else:
+        tic = args.tic
+
+    targetname = 'TIC{}'.format(tic)
+
 
     for ph, passband in zip(phs, args.passbands):
 
@@ -197,11 +215,13 @@ if __name__ == '__main__':
     if args.fit:
         from muscat2ta.transitanalysis import TransitAnalysis
         ta = TransitAnalysis(args.datadir, args.target, args.date, args.tid, [0], etime=args.exptime,
-                             model='pb_independent_k', pbs=args.passbands)
-        ta.optimize_comparison_stars(3, start_id=args.ref_star_start)
+                             model='pb_independent_k', pbs=args.passbands, mjd_start=args.mjd_start, mjd_end=args.mjd_end)
+        ta.optimize_comparison_stars(3, start_id=args.ref_star_start, end_id=args.ref_star_end)
         ta._init_lcs()
         if args.period:
             ta.set_prior(1, N(args.period, 1e-5))
+        if args.tdur:
+            ta.add_t14_prior(args.tdur, 1e-4)
         ta.optimize('linear', 500)
         f = ta.plot_light_curve(detrend_obs=True, figshape=(1, 3), figsize=(11, 3));
         pl.setp(f.axes, ylim=(0.8, 1.15))
