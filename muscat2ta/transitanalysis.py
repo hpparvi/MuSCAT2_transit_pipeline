@@ -17,6 +17,7 @@
 from glob import glob
 from pathlib import Path
 from time import strftime
+from warnings import catch_warnings, simplefilter
 
 import numpy as np
 import pandas as pd
@@ -26,12 +27,13 @@ from astropy.stats import mad_std
 from astropy.table import Table
 from corner import corner
 from matplotlib.pyplot import subplots, setp
-from numpy import array, arange, min, max, sqrt, inf, floor, diff, percentile, median, full_like, \
-    concatenate, zeros_like, full, ones_like, s_
+from numpy import (array, arange, min, max, sqrt, inf, floor, diff, percentile, median, full_like, concatenate,
+                   zeros_like, full, ones_like, s_, zeros)
 from numpy.random import permutation
 
+from muscat2ph.catalog import get_m2_coords
 from muscat2ph.phdata import PhotometryData
-from muscat2ta.lc import M2LCSet, M2LightCurve
+from muscat2ta.lc import M2LCSet, M2LightCurve, downsample_time
 from muscat2ta.lpf import GPLPF, NormalLSqLPF
 
 
@@ -40,6 +42,7 @@ class TransitAnalysis:
                  model='pb_independent_k', npop=100, pbs=('g', 'r', 'i', 'z_s'), fit_wn=True, **kwargs):
         self.ddata = dd = Path(datadir)
         self.target = target
+        self.coords = get_m2_coords(target)
         self.date = date
         self.tid = tid
         self.cids = cids
@@ -50,12 +53,14 @@ class TransitAnalysis:
         self.pbs = pbs
         self.flux_lims = flux_lims
         self.fit_wn = fit_wn
-        self.use_oec = kwargs.get('use_oec', True)
+        self.use_oec = kwargs.get('use_oec', False)
         self.period = kwargs.get('period', 5.0)
 
-        self.phs = [PhotometryData(dd.joinpath('{}_{}_{}.nc'.format(target, date, pb)), tid, cids, objname=target,
-                                   mjd_start=mjd_start, mjd_end=mjd_end, **kwargs)
-                    for pb in self.pbs]
+        with catch_warnings():
+            simplefilter('ignore', RuntimeWarning)
+            self.phs = [PhotometryData(dd.joinpath('{}_{}_{}.nc'.format(target, date, pb)), tid, cids, objname=target,
+                                       objskycoords=self.coords, mjd_start=mjd_start, mjd_end=mjd_end, **kwargs)
+                        for pb in self.pbs]
         self._init_lcs()
 
         self.lm_pv = None
@@ -219,6 +224,41 @@ class TransitAnalysis:
         df.drop(['k2'], axis=1, inplace=True)
         return corner(df)
 
+    def plot_polyfit(self, npol=4, figsize=(11, 6)):
+        fig, axs = subplots(2, 3, figsize=figsize, sharex=True, sharey='row')
+        for ilc, lc in enumerate(self.lcs):
+            time, fcorr, fsys, fbase = lc.detrend_poly(npol)
+            t0 = time.min()
+            time = 24 * (time - t0)
+            axs[0, ilc].plot(time, lc.flux)
+            axs[0, ilc].plot(time, fbase + fsys, 'k')
+            axs[1, ilc].plot(time, fcorr)
+            axs[0, ilc].set_title(
+                f"{1e3 * diff(lc.flux).std() / sqrt(2):3.2f} ppt -> {1e3 * diff(fcorr).std() / sqrt(2):3.2f} ppt")
+        fig.tight_layout()
+
+    def plot_binned(self, exptime: float = 300., tdepth: float = None, ylim=None, npoly: int = 1, figsize: tuple = (11, 3)):
+        fig, axs = subplots(1, 4, figsize=figsize, sharey=True, gridspec_kw={'wspace': 0})
+        trange = self.lcs[0].time[[0, -1]]
+        tcs, fcs = [], []
+        for lc, ax in zip(self.lcs, axs):
+            t, fc, fs, fb = lc.detrend_poly(npoly)
+            tcs.extend(t)
+            fcs.extend(fc)
+            tb, fb, eb = downsample_time(t, fc, exptime, trange)
+            ax.errorbar(tb, fb, eb, drawstyle='steps-mid')
+        tb, fb, eb = downsample_time(array(tcs), array(fcs), exptime, trange)
+        axs[3].errorbar(tb, fb, eb, drawstyle='steps-mid', c='k')
+
+        if tdepth:
+            for ax in axs:
+                ax.axhline(1, lw=1, c='k')
+                ax.axhline(1 - tdepth * 1e-6, lw=1, c='k')
+
+        if ylim is not None:
+            setp(axs, ylim=ylim)
+        fig.tight_layout()
+        return fig
 
     def plot_light_curve(self, model='linear', method='de', detrend_obs=False, detrend_mod=True, include_mod=True,
                          figsize=(11, 6), figshape=(2,2)):
@@ -377,7 +417,7 @@ class TransitAnalysis:
         ds.to_netcdf(self.savefile_name)
 
 
-    def save_fits(self, model='linear', npoly=10):
+    def save_fits(self, model='linear', npoly=10, vignet=None):
         assert model in ('linear', 'gp', 'linpoly')
         phdu = pf.PrimaryHDU()
         phdu.header.update(target=self.target, night=self.date)
@@ -386,9 +426,14 @@ class TransitAnalysis:
         if model == 'linpoly':
             times, fcorr, fsys, fbase = self.detrend_polynomial(npoly)
             for i, pb in enumerate(self.pbs):
-                df = Table(np.transpose([times[i], fcorr[i], fsys[i], fbase[i]]),
-                           names='time flux trend model'.split(),
-                           meta={'extname': pb, 'filter': pb, 'trends': model})
+                quality = zeros(times[i].size, "uint")
+                if vignet is not None:
+                    m = vignet(times[i])
+                    quality[m] = 1
+                df = Table(np.transpose([times[i], fcorr[i], fsys[i], fbase[i], quality]),
+                           names='time flux trend model quality'.split(),
+                           dtype=['d', 'd', 'd', 'd', 'uint'],
+                           meta={'extname': pb, 'filter': pb, 'trends': model, 'time_fmt': 'bjd'})
                 hdul.append(pf.BinTableHDU(df))
             fname = '{}_{}_{}.fits'.format(self.target, self.date, model)
         else:
