@@ -17,34 +17,58 @@
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from argparse import ArgumentParser
+from os import getenv
 from pathlib import Path
 from warnings import catch_warnings, simplefilter
 
 import astropy.units as u
+import astropy.io.fits as pf
 import matplotlib.pyplot as pl
-import statsmodels.api as sm
 import pandas as pd
-from astropy.coordinates import SkyCoord, FK5
-from astropy.stats import sigma_clip
-from numba import njit
-from numpy import sqrt, arange, zeros, full, digitize, nan, ceil, isfinite, array, linspace, percentile, round, argsort, \
-    floor, atleast_2d, concatenate, inf
-from numpy.polynomial.legendre import legvander
-from tqdm import tqdm
-from matplotlib.backends.backend_pdf import PdfPages
 
+from astropy.coordinates import SkyCoord, FK5
+from astropy.stats import mad_std
+from matplotlib.backends.backend_pdf import PdfPages
 from muscat2ph.catalog import get_m2_coords, get_toi
 from muscat2ph.phdata import PhotometryData
+from numba import njit
+from numpy import sqrt, arange, zeros, full, digitize, nan, ceil, isfinite, array, percentile, round, argsort, \
+    floor, atleast_2d, concatenate, inf, median, clip, nanmedian, diff, pi, mean, sin, atleast_1d, \
+    newaxis, where
+from numpy.polynomial.legendre import legvander
+from numpy.random import normal
 from pytransit.param.parameter import NormalPrior as N
+from sklearn import preprocessing, linear_model
+from tqdm import tqdm
 
-@njit("Tuple((f8[:],f8[:],f8[:],f8[:,:]))(f8[:],f8[:],f8[:,:],f8)")
-def downsample_time(time, flux, covariates, inttime=30.):
+
+def tmodel(time, depth, tc, p, width):
+    tc = atleast_1d(tc)
+    p = atleast_1d(p)
+    tn = round((time.mean() - tc.mean()) / p.mean())
+    time = time[newaxis, :] - (tc[:, newaxis] + tn * p[:, newaxis])
+    return where(abs(time) <= 0.5*width/24, 1.0-depth, 1.0)
+
+
+@njit
+def as_from_dkp(d, p, k):
+    """Assumes b=0"""
+    return sqrt((1.0+k)**2) / sin(pi*d/p)
+
+def true_depth(observed_depth, fratio):
+    return (observed_depth * (1 + fratio)) / fratio
+
+def true_radius_ratio(observed_depth, fratio):
+    return sqrt(true_depth(observed_depth, fratio))
+
+@njit
+def downsample_time(time, flux, inttime=30.):
     duration = 24. * 60. * 60. * (time.max() - time.min())
     nbins = int(ceil(duration / inttime))
     bins = arange(nbins)
     edges = time[0] + bins * inttime / 24 / 60 / 60
     bids = digitize(time, edges) - 1
-    bt, bf, be, bc = full(nbins, nan), zeros(nbins), zeros(nbins), zeros((nbins, covariates.shape[1]))
+    bt, bf, be = full(nbins, nan), zeros(nbins), zeros(nbins)
     for i, bid in enumerate(bins):
         bmask = bid == bids
         if bmask.sum() > 0:
@@ -54,71 +78,191 @@ def downsample_time(time, flux, covariates, inttime=30.):
                 be[i] = flux[bmask].std() / sqrt(bmask.sum())
             else:
                 be[i] = nan
-                # bc[i,:] = covariates[bmask].mean(0)
     m = isfinite(bt)
-    return bt[m], bf[m], be[m], bc[m]
+    return bt[m], bf[m], be[m]
 
 
-def plot_raw(ax, ph, sid, tid, aid=-1, btime=300.):
+def plot_raw(ax, ph, sid, tid, toi, aid=-1, btime=300., nsamples=500):
+    """Plot the raw flux of star `sid` normalized to the median of star `tid`."""
+    flux = array(ph.flux[:, sid, aid] / ph.flux[:, tid, aid].median())
     time = ph.bjd
-    flux = ph.flux[:, sid, aid] / ph.flux[:, tid, aid].median()
     t0 = floor(time[0])
 
+    m = isfinite(time) & isfinite(flux)
+    time, flux = time[m], flux[m]
+    fratio = median(flux)
+    flux /= fratio
+
+    # Calculate the separations
+    # -------------------------
     with catch_warnings():
         simplefilter('ignore', RuntimeWarning)
         sc = SkyCoord(array(ph._ds.centroids_sky), frame=FK5, unit=(u.deg, u.deg))
         sep = sc[tid].separation(sc).arcmin
 
-    # Fit a baseline and use it in sigma clipping
-    x = linspace(-1, 1, flux.size)
-    m = sm.RLM(array(flux), legvander(x, 10))
-    r = m.fit(maxiter=100)
-    flux_baseline = r.predict()
-    flux_clipped = sigma_clip(flux - flux_baseline) + flux_baseline
-    mask = ~flux_clipped.mask
-    p = percentile(flux_clipped, [5, 50, 95])
-    bt, bf, be, bc = downsample_time(time[mask], flux_clipped.data[mask], array(ph.aux)[mask], btime)
-    ax.plot(time-t0, flux_clipped, marker='.', ls='', alpha=0.1)
-    ax.plot(bt-t0, bf, 'k', drawstyle='steps-mid')
-    ax.text(0.98, 0.05, "Star {:d}, separation {:4.2f}'".format(sid, sep[sid]), ha='right', transform=ax.transAxes)
-    pl.setp(ax, yticks=round(p, 3), xlim=time[[0, -1]]-t0)
+    # Flux median and std for y limits and outlier marking
+    # ----------------------------------------------------
+    m = nanmedian(flux)
+    s = mad_std(flux[isfinite(flux)])
+
+    # Mark outliers
+    # -------------
+    mask = abs(flux - m) > 5 * s
+    outliers = clip(flux[mask], m - 5.75 * s, m + 4.75 * s)
+
+    ax.plot(time - t0, flux, marker='.', ls='', alpha=0.1)
+    ax.plot(time[mask] - t0, outliers, 'k', ls='', marker=6, ms=10)
+
+    # Binned light curve
+    # ------------------
+    bt, bf, be = downsample_time(time, flux, btime)
+    ax.plot(bt - t0, bf, 'k', drawstyle='steps-mid')
+
+    # Model
+    # -----
+    if fratio > toi.depth[0]*1e-6:
+        if sid == tid:
+            _k2 = toi.depth[0]*1e-6
+        else:
+            _k2 = true_depth(toi.depth[0]*1e-6, fratio)
+        _tc  =  normal(*toi.epoch, size=nsamples)
+        _p =  normal(*toi.period, size=nsamples)
+        _d = toi.duration[0]
+
+        fmodel = tmodel(time, _k2, _tc, _p, _d) - 4*s
+
+        fmlims = percentile(fmodel, [50, 16, 84, 0.5, 99.5], 0)
+        ax.plot(time - t0, fmlims[0], 'k', ls='-', alpha=0.5)
+
+    # Transit centre, ingress, and egress
+    # -----------------------------------
+    tn = round((mean(ph.bjd)-toi.epoch[0]) / toi.period[0])
+    center = normal(*toi.epoch, size=nsamples) + tn * normal(*toi.period, size=nsamples) - t0
+    ax.axvspan(*percentile(center, [16,84]), alpha=0.15)
+    ax.axvline(median(center), lw=1)
+
+    ingress = center - 0.5*normal(*toi.duration/24, size=nsamples)
+    ax.axvspan(*percentile(ingress, [16,84]), alpha=0.25, ymin=0.97, ymax=1.)
+    ax.axvline(median(ingress), ymin=0.97, ymax=1., lw=1)
+
+    egress = center + 0.5*normal(*toi.duration/24, size=nsamples)
+    ax.axvspan(*percentile(egress, [16,84]), alpha=0.25, ymin=0.97, ymax=1.)
+    ax.axvline(median(egress), ymin=0.97, ymax=1., lw=1)
+
+    ax.text(0.02, 1.01, f"Star {sid:d}, separation {sep[sid]:4.2f}'", size='small', ha='left', va='bottom', transform=ax.transAxes)
+    ax.text(0.98, 1.01, f"F$_\star$/F$_0$ {fratio:4.3f}", size='small', ha='right', va='bottom', transform=ax.transAxes)
+    pl.setp(ax, yticks=[], xlim=time[[0, -1]] - t0, ylim=(m - 6 * s, m + 4 * s))
+
+
+
+def detrend(ph, tid, cids, min_aperture, max_aperture, npol=0):
+    cids = list(cids)
+    exptime = float(ph._aux[:, 1].mean())
+    fcorr, fraw, ftrend, smin = None, None, None, inf
+    for iapt in range(min_aperture, max_aperture):
+        rflux = ph.flux[:, cids, iapt].sum('star').values
+        rflux /= median(rflux)
+        flux = ph.flux[:, tid, iapt].values / rflux / exptime
+
+        x = (ph.bjd - ph.bjd[0]) / diff(ph.bjd[[0, -1]]) * 2 - 1
+        pol = legvander(x, npol)
+        if npol > 0:
+            covariates = concatenate([ph.aux.values, legvander(x, npol)[:, 1:]], 1)
+        else:
+            covariates = ph.aux.values
+        covariates = preprocessing.scale(covariates)
+        reg = linear_model.LinearRegression()
+        reg.fit(covariates, flux)
+        if npol > 0:
+            reg.coef_[6:] = 0
+        trend = reg.predict(covariates)
+        scatter = diff((flux - trend) / median(flux)).std() / sqrt(2)
+        if scatter < smin:
+            fcorr = flux - trend + reg.intercept_
+            fraw = flux
+            ftrend = trend
+            smin = scatter
+    return scatter, fcorr, fraw, ftrend
 
 
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('target', type=str, help='Target name')
-    ap.add_argument('--tic', type=str, default=None, help='TIC and planet numbers as TIC?????????-??')
     ap.add_argument('date', type=str, help='Observation night as YYMMDD')
-    ap.add_argument('datadir', type=Path, help='Light curve directory')
+    ap.add_argument('--tic', type=str, default=None, help='TIC and planet numbers as TIC?????????-??')
+    ap.add_argument('--datadir', type=Path, default=None, help='Light curve directory')
+    ap.add_argument('--dataroot', type=Path, default=None, help='Light curve repository root')
     ap.add_argument('--tid', type=int, default=0, help='Target ID')
     ap.add_argument('--passbands', type=str, nargs='+', default=('g', 'r', 'i', 'z_s'))
     ap.add_argument('--exptime', type=float, default=30.)
     ap.add_argument('--bintime', type=float, default=300.)
-    ap.add_argument('--stars-per-page', type=int, default=12)
+    ap.add_argument('--stars-per-page', type=int, default=9)
     ap.add_argument('--ref-star-start', type=int, default=1)
     ap.add_argument('--ref-star-end', type=int, default=7)
     ap.add_argument('--fit', action='store_true', default=False)
-    ap.add_argument('--period', type=float, default=None)
-    ap.add_argument('--tdur', type=float, default=None)
     ap.add_argument('--mjd-start', type=float, default=-inf)
     ap.add_argument('--mjd-end', type=float, default=inf)
     args = ap.parse_args()
 
-    root = args.datadir
+    # Define and check the directories and files
+    # ------------------------------------------
+    datadir = args.datadir or args.dataroot.joinpath(args.target, args.date) or Path(getenv('TFOP_M2_DATAROOT'))
+    if datadir is None:
+        raise IOError("Data directory not given.")
+    if not datadir.exists():
+        raise IOError("Data directory doesn't exist.")
     basename = "{}_{}".format(args.target, args.date)
+
+    if args.tic is None:
+        toi = get_toi(float(args.target.lower().strip('toi')))
+        tic = "{:d}-{}".format(toi.tic, str(toi.toi).split('.')[1])
+    else:
+        tic = args.tic
+
+    targetname = 'TIC{}'.format(tic)
+
+    # Create an example fits frame
+    # ----------------------------
+    fits_files = list(datadir.glob('MCT*fits'))
+    assert len(fits_files) > 0, 'No example frame fits-files found.'
+    f = fits_files[0]
+    f1 = pf.open(f)
+    f2 = pf.open(f.with_suffix('.wcs'))
+    h1 = f1[0].header.copy()
+    h1.append(('COMMENT', '*********************'))
+    h1.append(('COMMENT', '  WCS '))
+    h1.append(('COMMENT', '*********************'))
+    h1.extend(f2[0].header, unique=True, bottom=True)
+    f1[0].header = h1
+    f1.writeto(f'{targetname}_{args.date}_MuSCAT2_frame.fits', overwrite=True)
+
+    # Passband check
+    # --------------
+    passbands = [pb for pb in args.passbands if datadir.joinpath(f"{basename}_{pb}.nc").exists()]
+    print(passbands)
+
+    # Get the target coordinates
+    # --------------------------
     coords = get_m2_coords(args.target)
 
+    # Read in the data
+    # ----------------
     with catch_warnings():
         simplefilter('ignore', RuntimeWarning)
-        phs = [PhotometryData(root.joinpath('{}_{}.nc'.format(basename, pb)), args.tid, [1,2,3], objname=args.target,
+        phs = [PhotometryData(datadir.joinpath(f'{basename}_{pb}.nc'), args.tid, [1, 2, 3], objname=args.target,
                               mjd_start=args.mjd_start, mjd_end=args.mjd_end, objskycoords=coords)
-               for pb in args.passbands]
-    phs[0]._rset.select_best(3, start_id=args.ref_star_start, end_id=args.ref_star_end)
+               for pb in passbands]
+
+    # Select the reference stars
+    # --------------------------
+    phs[0]._rset.select_best(3, start_id=args.ref_star_start, end_id=min(args.ref_star_end, phs[0].nobj))
     for ph in phs[1:]:
         ph._rset.tap = phs[0]._rset.tap
         ph._rset.cids = phs[0]._rset.cids
         ph._rset.caps = phs[0]._rset.caps
 
+    # Calculate separations
+    # ---------------------
     dist = sqrt(((phs[0]._ds.centroids_pix - phs[0]._ds.centroids_pix[args.tid])**2).sum('centroid_pix'))
     sids = argsort(array(dist))
     n_stars = sids.size
@@ -126,16 +270,14 @@ if __name__ == '__main__':
     n_cols = 3
     n_rows = int(ceil(args.stars_per_page /n_cols))
 
-    if args.tic is None:
-        toi = args.target.lower()
-        tic = "{:d}-{}".format(get_toi(float(toi.strip('toi'))).tic, toi.split('.')[1])
-    else:
-        tic = args.tic
-
-    targetname = 'TIC{}'.format(tic)
 
 
-    for ph, passband in zip(phs, args.passbands):
+    times = []
+    detrended_fluxes = []
+
+    # Per-passband plots
+    # ------------------
+    for ph, passband in zip(phs, passbands):
 
         # Export the data in the stoopid csv format
         # -----------------------------------------
@@ -162,22 +304,22 @@ if __name__ == '__main__':
             istar = 0
             with tqdm(total=n_stars, desc='Plotting raw fluxes for {}'.format(passband)) as pb:
                 for ipage in range(n_pages):
-                    fig, axs = pl.subplots(n_rows, n_cols, figsize=(16 * 0.75, 9 * 0.75), sharex=True)
+                    fig, axs = pl.subplots(n_rows, n_cols, figsize=(16 * 0.75, 9 * 0.75), sharex='all', sharey='none')
                     for iax, ax in enumerate(axs.flat):
                         if istar < n_stars:
-                            plot_raw(ax, ph, sids[istar], args.tid)
+                            plot_raw(ax, ph, sids[istar], args.tid, toi)
                             pb.update(1)
                         else:
                             pl.setp(ax, visible=False)
                         istar += 1
                     pl.setp(axs, title='')
-                    pl.setp(axs[:-1, :], xlabel='')
+                    pl.setp(axs[:-1, :], xlabel='', xticks=[])
                     pl.setp(axs[:, 0], ylabel='F / F$_0$')
                     pl.setp(axs[:, 1], ylabel='')
                     pl.setp(axs[-1, :], xlabel='Time - {:7.0f} [BJD]'.format(t0))
                     fig.suptitle("{} 20{} MuSCAT2 {} raw fluxes".format(targetname, args.date, passband))
                     fig.tight_layout()
-                    fig.subplots_adjust(hspace=0, top=0.9)
+                    fig.subplots_adjust(hspace=0.12, top=0.9)
                     pdf.savefig(fig)
                     pl.close(fig)
 
@@ -194,7 +336,7 @@ if __name__ == '__main__':
             pl.setp(axs[-1,:], xlabel='Time - {:7.0f} [BJD]'.format(t0))
             fig.suptitle('{}  20{} MuSCAT2 {} covariates'.format(targetname, args.date, passband))
             fig.tight_layout()
-            fig.subplots_adjust(hspace=0, top=0.9)
+            fig.subplots_adjust(hspace=0, top=0.9, bottom=0.01)
             pdf.savefig(fig)
             pl.close(fig)
 
@@ -210,6 +352,53 @@ if __name__ == '__main__':
             pdf.savefig(fig)
             pl.close(fig)
 
+            # Detrended flux plot
+            # -------------------
+            _, fcorr, _, trend = detrend(ph, args.tid, ph._rset.cids, 2, 5)
+            fcorr /= median(fcorr)
+            times.append(time - t0)
+            detrended_fluxes.append(fcorr)
+            bt, bf, be = downsample_time(time-t0, fcorr, 360)
+            fig, ax = pl.subplots(figsize=(16 * 0.75, 9 * 0.75))
+            ax.plot(time-t0, fcorr, 'k.', alpha=0.25)
+            ax.plot(bt, bf, 'k', drawstyle='steps-mid')
+            ax.errorbar(bt, bf, be, fmt='k.')
+
+            nsamples = 500
+            fmodel = tmodel(time,
+                            toi.depth[0]*1e-6, normal(*toi.epoch, size=nsamples),
+                            normal(*toi.period, size=nsamples), toi.duration[0]) - 3 * fcorr.std()
+
+            fmlims = percentile(fmodel, [50, 16, 84, 0.5, 99.5], 0)
+            ax.fill_between(time - t0, fmlims[1], fmlims[2], alpha=0.25, facecolor='b')
+            #ax.fill_between(time - t0, fmlims[3], fmlims[4], alpha=0.25, facecolor='b')
+            ax.plot(time - t0, fmlims[0], 'k', ls='-', alpha=0.5)
+
+            pl.setp(ax, xlabel='Time - {:7.0f} [BJD]'.format(t0), ylabel='Normalised flux', xlim=time[[0,-1]]-t0,
+                    label='Detrended relative flux')
+            fig.suptitle('{}  20{} MuSCAT2 {} detrended light curve'.format(targetname, args.date, passband))
+            fig.tight_layout()
+            fig.subplots_adjust(hspace=0, top=0.9)
+            pdf.savefig(fig)
+            pl.close(fig)
+
+    # Combined plot
+    # -------------
+    fig, ax = pl.subplots(figsize=(16 * 0.75, 9 * 0.75))
+    time = concatenate(times)
+    flux = concatenate(detrended_fluxes)
+    bt, bf, be = downsample_time(time, flux, 360)
+
+    ax.plot(time, flux, 'k.', alpha=0.20)
+    ax.plot(bt, bf, 'k', drawstyle='steps-mid')
+    ax.errorbar(bt, bf, be, fmt='k.')
+    pl.setp(ax, xlabel='Time - {:7.0f} [BJD]'.format(t0), ylabel='Normalised flux', xlim=time[[0, -1]],
+            label='Detrended relative flux')
+    fig.suptitle('{}  20{} MuSCAT2 detrended light curve'.format(targetname, args.date))
+    fig.tight_layout()
+    fig.subplots_adjust(hspace=0, top=0.9)
+    fig.savefig("{}_20{}_MuSCAT2_combined_lightcurve.pdf".format(targetname, args.date))
+    pl.close(fig)
 
 
     if args.fit:
