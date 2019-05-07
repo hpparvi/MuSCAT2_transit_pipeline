@@ -49,11 +49,11 @@ def read_m2_catalog():
 def get_toi(toi):
     df = pd.read_csv(toi_catalog_file, sep=',')
     dtoi = df[df.TOI == toi]
-    zero_epoch = dtoi[[' Epoch (BJD)', 'Epoch (BJD) err']].values[0]
+    zero_epoch = dtoi[['Epoch (BJD)', 'Epoch (BJD) err']].values[0]
     period = dtoi[['Period (days)', 'Period (days) err']].values[0]
     duration = dtoi[['Duration (hours)', 'Duration (hours) err']].values[0]
     depth = dtoi[['Depth (ppm)', 'Depth (ppm) err']].values[0]
-    return TOI(*dtoi['TIC ID, TOI, Tess Mag, RA, Dec'.split(', ')], epoch=zero_epoch, period=period, duration=duration, depth=depth)
+    return TOI(*dtoi['TIC ID, TOI, TESS Mag, RA, Dec'.split(', ')].values[0], epoch=zero_epoch, period=period, duration=duration, depth=depth)
 
 
 def get_toi_or_tic(toi_or_tic):

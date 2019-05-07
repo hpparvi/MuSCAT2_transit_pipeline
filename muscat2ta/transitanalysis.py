@@ -34,7 +34,7 @@ from numpy.random import permutation
 from muscat2ph.catalog import get_m2_coords
 from muscat2ph.phdata import PhotometryData
 from muscat2ta.lc import M2LCSet, M2LightCurve, downsample_time
-from muscat2ta.lpf import GPLPF, NormalLSqLPF
+#from muscat2ta.lpf import GPLPF, NormalLSqLPF
 
 
 class TransitAnalysis:
@@ -55,6 +55,7 @@ class TransitAnalysis:
         self.fit_wn = fit_wn
         self.use_oec = kwargs.get('use_oec', False)
         self.period = kwargs.get('period', 5.0)
+        self.mask_outliers = kwargs.get('mask_outliers', True)
 
         with catch_warnings():
             simplefilter('ignore', RuntimeWarning)
@@ -69,8 +70,9 @@ class TransitAnalysis:
 
     def _init_lcs(self):
         self.lcs = M2LCSet([M2LightCurve(pbi, ph.bjd, ph.relative_flux, ph.relative_error, ph.aux, array(ph.aux.quantity)) for pbi,ph in enumerate(self.phs)])
-        self.lcs.mask_outliers()
-        self.lcs.mask_covariate_outliers()
+        if self.mask_outliers:
+            self.lcs.mask_outliers()
+            self.lcs.mask_covariate_outliers()
         self.lcs.mask_limits(self.flux_lims)
 
         try:
@@ -81,12 +83,12 @@ class TransitAnalysis:
             print("Couldn't initialise the light curves")
             return
 
-        try:
-            self.lmlpf = NormalLSqLPF(self.target, self.lcs, self.pbs, model=self.model, use_oec=self.use_oec, period=self.period)
-            self.gplpf = GPLPF(self.target, self.lcs, self.pbs, model=self.model, fit_wn=self.fit_wn, use_oec=self.use_oec, period=self.period)
-            self.models = {'linear':self.lmlpf, 'gp':self.gplpf}
-        except ValueError:
-            print("Couldn't initialise the LPFs")
+        # try:
+        #     self.lmlpf = NormalLSqLPF(self.target, self.lcs, self.pbs, model=self.model, use_oec=self.use_oec, period=self.period)
+        #     self.gplpf = GPLPF(self.target, self.lcs, self.pbs, model=self.model, fit_wn=self.fit_wn, use_oec=self.use_oec, period=self.period)
+        #     self.models = {'linear':self.lmlpf, 'gp':self.gplpf}
+        # except ValueError:
+        #     print("Couldn't initialise the LPFs")
 
 
     def optimize_comparison_stars(self, n_stars=1, start_id=0, end_id=10, start_apt=0, end_apt=None):
@@ -224,21 +226,26 @@ class TransitAnalysis:
         df.drop(['k2'], axis=1, inplace=True)
         return corner(df)
 
+
     def plot_polyfit(self, npol=4, figsize=(11, 6)):
-        fig, axs = subplots(2, 3, figsize=figsize, sharex=True, sharey='row')
+        fig, axs = subplots(3, 3, figsize=figsize, sharex='all', sharey='all')
         for ilc, lc in enumerate(self.lcs):
             time, fcorr, fsys, fbase = lc.detrend_poly(npol)
             t0 = time.min()
             time = 24 * (time - t0)
             axs[0, ilc].plot(time, lc.flux)
             axs[0, ilc].plot(time, fbase + fsys, 'k')
-            axs[1, ilc].plot(time, fcorr)
+            axs[1, ilc].plot(time, lc.flux)
+            axs[1, ilc].plot(time, fbase, 'k')
+            axs[2, ilc].plot(time, fcorr)
             axs[0, ilc].set_title(
-                f"{1e3 * diff(lc.flux).std() / sqrt(2):3.2f} ppt -> {1e3 * diff(fcorr).std() / sqrt(2):3.2f} ppt")
+                f"{1e3 * (lc.flux - fbase).std():3.2f} ppt -> {1e3 * fcorr.std():3.2f} ppt")
         fig.tight_layout()
+        return fig
+
 
     def plot_binned(self, exptime: float = 300., tdepth: float = None, ylim=None, npoly: int = 1, figsize: tuple = (11, 3)):
-        fig, axs = subplots(1, 4, figsize=figsize, sharey=True, gridspec_kw={'wspace': 0})
+        fig, axs = subplots(1, 4, figsize=figsize, sharey='all', gridspec_kw={'wspace': 0})
         trange = self.lcs[0].time[[0, -1]]
         tcs, fcs = [], []
         for lc, ax in zip(self.lcs, axs):

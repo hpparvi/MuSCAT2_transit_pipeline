@@ -26,12 +26,12 @@ from numpy import (ones, zeros_like, median, concatenate, dot, ones_like,
                    clip, argsort, any, s_, arccos, nan, isnan, full, sum, repeat, arange)
 from numpy.linalg import lstsq, LinAlgError
 from pyde import DiffEvol
-from pytransit import MandelAgol as MA
+#from pytransit import MandelAgol as MA
 from pytransit.contamination import SMContamination
 from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
 from pytransit.contamination.instrument import Instrument
-from pytransit.ma_quadratic_nb import eval_quad_ip_mp
-from pytransit.orbits_py import z_circular, duration_eccentric, as_from_rhop
+#from pytransit.ma_quadratic_nb import eval_quad_ip_mp
+#from pytransit.orbits_py import z_circular, duration_eccentric, as_from_rhop
 from pytransit.param.parameter import *
 from pytransit.param.parameter import PParameter, GParameter, LParameter
 from pytransit.param.parameter import UniformPrior as U, NormalPrior as N, GammaPrior as GM

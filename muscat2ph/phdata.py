@@ -276,8 +276,9 @@ class PhotometryData:
         p_start = ((t1 < transit_start) & (transit_start < t2)).mean()
         p_end = ((t1 < transit_end) & (transit_end < t2)).mean()
         p_full = ((t1 < transit_start) & (transit_end < t2)).mean()
+        p_all  = ((t1 > transit_start) & (transit_end > t2)).mean()
         p_miss = ((t1 > transit_end) | (transit_start > t2)).mean()
-        return p_full, p_miss, p_start, p_end
+        return p_full, p_miss, p_all, p_start, p_end
 
     def event_limits(self, zero_epoch: tuple, period: tuple, duration: tuple, event='center', nsamples: int = 2500):
         events = 'center', 'start', 'end'
