@@ -28,19 +28,33 @@ from astropy.table import Table
 from corner import corner
 from matplotlib.pyplot import subplots, setp
 from numpy import (array, arange, min, max, sqrt, inf, floor, diff, percentile, median, full_like, concatenate,
-                   zeros_like, full, ones_like, s_, zeros)
+                   zeros_like, full, ones_like, s_, zeros, ndarray)
 from numpy.random import permutation
+
 
 from muscat2ph.catalog import get_m2_coords
 from muscat2ph.phdata import PhotometryData
 from muscat2ta.lc import M2LCSet, M2LightCurve, downsample_time
-#from muscat2ta.lpf import GPLPF, NormalLSqLPF
+from muscat2ta.lpf import GPLPF, NormalLSqLPF
+from muscat2ta.m2lpf import M2LPF
+from tqdm.auto import tqdm
 
+
+def get_files(droot, target, night):
+    ddata = droot.joinpath(target, night)
+    files, pbs = [], []
+    for pb in 'g r i z_s'.split():
+        fname = ddata.joinpath(f'{target}_{night}_{pb}.nc')
+        if fname.exists():
+            files.append(fname)
+            pbs.append(pb)
+    return files, pbs
 
 class TransitAnalysis:
-    def __init__(self, datadir, target, date, tid, cids, etime=30., mjd_start=-inf, mjd_end=inf, flux_lims=(-inf, inf),
-                 model='pb_independent_k', npop=100, pbs=('g', 'r', 'i', 'z_s'), fit_wn=True, **kwargs):
-        self.ddata = dd = Path(datadir)
+    def __init__(self, dataroot, target, date, tid, cids, etime=30., mjd_start=-inf, mjd_end=inf, flux_lims=(-inf, inf),
+                 model='pb_independent_k', npop=200, pbs=('g', 'r', 'i', 'z_s'), fit_wn=True, **kwargs):
+        dataroot = Path(dataroot)
+        self.ddata = dd = dataroot.joinpath(target, date)
         self.target = target
         self.coords = get_m2_coords(target)
         self.date = date
@@ -53,42 +67,24 @@ class TransitAnalysis:
         self.pbs = pbs
         self.flux_lims = flux_lims
         self.fit_wn = fit_wn
-        self.use_oec = kwargs.get('use_oec', False)
-        self.period = kwargs.get('period', 5.0)
-        self.mask_outliers = kwargs.get('mask_outliers', True)
 
-        with catch_warnings():
-            simplefilter('ignore', RuntimeWarning)
-            self.phs = [PhotometryData(dd.joinpath('{}_{}_{}.nc'.format(target, date, pb)), tid, cids, objname=target,
-                                       objskycoords=self.coords, mjd_start=mjd_start, mjd_end=mjd_end, **kwargs)
-                        for pb in self.pbs]
-        self._init_lcs()
+        files, pbs = get_files(dataroot, target, date)
+        self.phs = [PhotometryData(f, tid, cids, objname=target, objskycoords=self.coords) for f in files]
+
+        # Select the best aperture
+        # ------------------------
+        apt = []
+        for ph in self.phs:
+            nflux = (ph.flux / ph.flux.median('mjd'))
+            apt.append(int(nflux.diff('mjd').std('mjd').argmin('aperture')[[tid] + list(cids)].max()))
+        apt = max(apt)
+
+        self.lmlpf = M2LPF(target, self.phs, tid, cids, apt, pbs, use_oec=False)
+        self.gplpf = None
+        self.models = {'linear': self.lmlpf}
 
         self.lm_pv = None
         self.gp_pv = None
-
-
-    def _init_lcs(self):
-        self.lcs = M2LCSet([M2LightCurve(pbi, ph.bjd, ph.relative_flux, ph.relative_error, ph.aux, array(ph.aux.quantity)) for pbi,ph in enumerate(self.phs)])
-        if self.mask_outliers:
-            self.lcs.mask_outliers()
-            self.lcs.mask_covariate_outliers()
-        self.lcs.mask_limits(self.flux_lims)
-
-        try:
-            for ph, lc in zip(self.phs, self.lcs):
-                et = float(ph._aux.loc[:, 'exptime'].mean())
-                lc.downsample_time(self.etime)
-        except ValueError:
-            print("Couldn't initialise the light curves")
-            return
-
-        # try:
-        #     self.lmlpf = NormalLSqLPF(self.target, self.lcs, self.pbs, model=self.model, use_oec=self.use_oec, period=self.period)
-        #     self.gplpf = GPLPF(self.target, self.lcs, self.pbs, model=self.model, fit_wn=self.fit_wn, use_oec=self.use_oec, period=self.period)
-        #     self.models = {'linear':self.lmlpf, 'gp':self.gplpf}
-        # except ValueError:
-        #     print("Couldn't initialise the LPFs")
 
 
     def optimize_comparison_stars(self, n_stars=1, start_id=0, end_id=10, start_apt=0, end_apt=None):
@@ -170,7 +166,7 @@ class TransitAnalysis:
         return time, fcorr, fsys, fbase
 
 
-    def optimize(self, model, niter=100, pop=None):
+    def optimize(self, model, niter: int = 1000, pop: ndarray = None):
         assert model in self.models.keys()
         if model == 'linear':
             self.lmlpf.optimize_global(niter, self.npop, pop, label='Optimizing linear model')
@@ -183,18 +179,20 @@ class TransitAnalysis:
             self.gplpf.optimize_global(niter, self.npop, pop, label='Optimizing GP model')
             self.gp_pv = self.gplpf.de.minimum_location
 
-
-    def sample(self, model, niter=100, thin=5, reset=False):
+    def sample(self, model, niter: int = 1000, thin: int = 5, repeats: int = None, reset: bool = False):
         assert model in self.models.keys()
-        self.models[model].sample_mcmc(niter, thin=thin, label='Sampling linear model', reset=reset)
-
+        if repeats is not None:
+            for i in tqdm(range(repeats)):
+                self.models[model].sample_mcmc(niter, thin=thin, label='Sampling linear model', reset=(i!=0))
+        else:
+            self.models[model].sample_mcmc(niter, thin=thin, label='Sampling linear model', reset=reset)
 
     def mask_flux_outliers(self, sigma=4):
         assert self.lm_pv is not None, "Need to run global optimization before calling outlier masking"
         self.lmlpf.mask_outliers(sigma=sigma, means=self.lmlpf.flux_model(self.lm_pv))
 
-
     def learn_gp_hyperparameters(self, pv=None, joint_fit=True, method='L-BFGS-B'):
+        raise NotImplementedError
         pv = pv if pv is not None else self.lm_pv
         assert pv is not None, 'Must carry out linear model optimisation before GP hyperparameter optimisation'
         if joint_fit:
@@ -202,30 +200,19 @@ class TransitAnalysis:
         else:
             self.gplpf.optimize_hps(pv, method=method)
 
-    def posterior_samples(self, burn=0, thin=1, model='gp', include_ldc=False):
-        assert model in ('linear', 'gp')
-        lpf = self.lmlpf if model == 'linear' else self.gplpf
-        ldstart = lpf._slld[0].start
-        fc = lpf.sampler.chain[:,burn::thin,:].reshape([-1, lpf.de.n_par])
-        if include_ldc:
-            return pd.DataFrame(fc, columns=lpf.ps.names)
-        else:
-            return pd.DataFrame(fc[:,:ldstart], columns=lpf.ps.names[:ldstart])
+    def posterior_samples(self, burn=0, thin=1, model='linear', include_ldc=False):
+        assert model in self.models.keys()
+        return self.models[model].posterior_samples(burn, thin, include_ldc)
 
-    def plot_mcmc_chains(self, pid=0, model='gp', alpha=0.1, thin=1, ax=None):
-        assert model in ('linear', 'gp')
-        lpf = self.lmlpf if model == 'linear' else self.gplpf
-        fig, ax = (None, ax) if ax is not None else subplots()
-        ax.plot(lpf.sampler.chain[:,::thin,pid].T, 'k', alpha=alpha)
-        fig.tight_layout()
-        return fig
+    def plot_mcmc_chains(self, pid=0, model='linear', alpha=0.1, thin=1, ax=None):
+        assert model in self.models.keys()
+        return self.models[model].plot_mcmc_chains(pid, alpha, thin, ax)
 
-    def plot_basic_posteriors(self, model='gp', burn=0, thin=1):
+    def plot_basic_posteriors(self, model='linear', burn=0, thin=1):
         df = self.posterior_samples(burn, thin, model, False)
         df['k'] = sqrt(df.k2)
         df.drop(['k2'], axis=1, inplace=True)
         return corner(df)
-
 
     def plot_polyfit(self, npol=4, figsize=(11, 6)):
         fig, axs = subplots(3, 3, figsize=figsize, sharex='all', sharey='all')
@@ -242,7 +229,6 @@ class TransitAnalysis:
                 f"{1e3 * (lc.flux - fbase).std():3.2f} ppt -> {1e3 * fcorr.std():3.2f} ppt")
         fig.tight_layout()
         return fig
-
 
     def plot_binned(self, exptime: float = 300., tdepth: float = None, ylim=None, npoly: int = 1, figsize: tuple = (11, 3)):
         fig, axs = subplots(1, 4, figsize=figsize, sharey='all', gridspec_kw={'wspace': 0})
@@ -267,69 +253,10 @@ class TransitAnalysis:
         fig.tight_layout()
         return fig
 
-    def plot_light_curve(self, model='linear', method='de', detrend_obs=False, detrend_mod=True, include_mod=True,
-                         figsize=(11, 6), figshape=(2,2)):
-        assert model in ('linear', 'gp')
-        assert method in ('de', 'mcmc')
-
-        lpf = self.lmlpf if model == 'linear' else self.gplpf
-        posterior_limits = None
-
-        if method == 'de':
-            pv = lpf.de.minimum_location
-        else:
-            assert lpf.sampler is not None
-            niter = lpf.sampler.chain.shape[1]
-            fc = lpf.sampler.chain[:, niter // 2:, :].reshape([-1, lpf.de.n_par])
-            fms = [lpf.flux_model(pv) for pv in permutation(fc)[:100]]
-            fms = [array([fm[i] for fm in fms]) for i in range(4)]
-            posterior_limits = pl = [percentile(fm, [16, 84, 0.5, 99.5], 0) for fm in fms]
-            pv = median(fc, 0)
-
-        if model == 'linear':
-            baseline = lpf.baseline(pv)
-            trends = lpf.trends(pv)
-            fluxes_obs = [lpf.fluxes[i] / baseline[i] - trends[i] for i in range(lpf.npb)] if detrend_obs else [f/b for f,b in zip(lpf.fluxes, baseline)]
-            fluxes_trm = lpf.transit_model(pv)
-            fluxes_mod = lpf.transit_model(pv) if detrend_mod else lpf.flux_model(pv)
-        else:
-            baseline = lpf.predict(pv)
-            fluxes_obs = [lpf.fluxes[i] - baseline[i] for i in range(lpf.npb)] if detrend_obs else lpf.fluxes
-            fluxes_trm = lpf.transit_model(pv)
-            fluxes_mod = lpf.flux_model(pv)
-
-        fig, axs = subplots(*figshape, figsize=figsize, sharex=True, sharey=True)
-        for i, (ax, time) in enumerate(zip(axs.flat, lpf.times)):
-
-            # Plot the observations
-            # ---------------------
-            ax.plot(time, fluxes_obs[i], 'k.', alpha=0.25)
-
-
-            if include_mod:
-                # Plot the residuals
-                # ------------------
-                omin = fluxes_obs[i].min()
-                rmax = (fluxes_obs[i] - fluxes_mod[i]).max()
-                shift = omin - rmax
-                ax.plot(time, fluxes_obs[i] - fluxes_mod[i] + shift, 'k.', alpha=0.25)
-                ax.text(0.97, 0.9, 'STD: {:3.0f} ppm'.format((fluxes_obs[i] / fluxes_trm[i]).std()*1e6),
-                        ha='right', transform=ax.transAxes)
-
-                # Plot the model
-                # ---------------
-                if posterior_limits:
-                    ax.fill_between(time, pl[i][0], pl[i][1], facecolor='k', alpha=0.5)
-                    ax.fill_between(time, pl[i][2], pl[i][3], facecolor='k', alpha=0.2)
-                else:
-                    ax.plot(lpf.times[i], fluxes_mod[i], 'w-', lw=3)
-                    ax.plot(lpf.times[i], fluxes_mod[i], 'k-', lw=1)
-            else:
-                ax.text(0.97, 0.9, 'STD: {:3.0f} ppm'.format((fluxes_obs[i]).std()*1e6),
-                        ha='right', transform=ax.transAxes)
-
-        setp(axs, xlim=lpf.times[0][[0, -1]])
-        fig.tight_layout()
+    def plot_light_curve(self, model='linear', method='de', figsize=(13, 8)):
+        assert model in self.models.keys()
+        assert method in ('de', 'mc')
+        fig, _ = self.models[model].plot_light_curves(model = method, figsize = figsize)
         return fig
 
     def plot_gpfit(self, figsize=(11,6)):
@@ -388,38 +315,16 @@ class TransitAnalysis:
             delm = xa.DataArray(self.lmlpf.de.population, dims='pvector lm_parameter'.split(),
                                 coords={'lm_parameter': self.lmlpf.ps.names})
 
-        degp = None
-        if self.gplpf.de:
-            degp = xa.DataArray(self.gplpf.de.population, dims='pvector gp_parameter'.split(),
-                                coords={'gp_parameter': self.gplpf.ps.names})
-
-        gphp = None
-        if self.gplpf.gphps is not None:
-            if self.fit_wn:
-                gphpls = 'log_var sky airmass xy_amplitude xy_scale entropy'.split()
-            else:
-                gphpls = 'sky airmass xy_amplitude xy_scale entropy'.split()
-
-            gphp = xa.DataArray(self.gplpf.gphps, dims='filter gp_hyperparameter'.split(),
-                                coords={'filter': array(self.pbs),
-                                        'gp_hyperparameter':gphpls})
-
         lmmc = None
         if self.lmlpf.sampler is not None:
             lmmc = xa.DataArray(self.lmlpf.sampler.chain, dims='pvector step lm_parameter'.split(),
                                 coords={'lm_parameter': self.lmlpf.ps.names},
                                 attrs={'ndim': self.lmlpf.de.n_par, 'npop': self.lmlpf.de.n_pop})
 
-        gpmc = None
-        if self.gplpf.sampler is not None:
-            gpmc = xa.DataArray(self.gplpf.sampler.chain, dims='pvector step gp_parameter'.split(),
-                                coords={'gp_parameter': self.gplpf.ps.names},
-                                attrs={'ndim': self.gplpf.de.n_par, 'npop': self.gplpf.de.n_pop})
-
-        ds = xa.Dataset(data_vars={'de_population_lm': delm, 'de_population_gp': degp,
-                                   'gp_hyperparameters': gphp, 'lm_mcmc': lmmc, 'gp_mcmc': gpmc},
-                        attrs={'created': strftime('%Y-%m-%d %H:%M:%S'), 'obsnight':self.ddata.absolute().name,
-                               'tid':self.tid, 'cids':self.cids, 'target':self.target})
+        ds = xa.Dataset(data_vars={'de_population_lm': delm, 'lm_mcmc': lmmc},
+                        attrs={'created': strftime('%Y-%m-%d %H:%M:%S'),
+                               'obsnight': self.ddata.absolute().name,
+                               'target': self.target})
 
         ds.to_netcdf(self.savefile_name)
 

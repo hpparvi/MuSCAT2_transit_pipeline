@@ -1,75 +1,161 @@
 #!/usr/bin/env python
 import warnings
 import sys
+import logging
+
 from argparse import ArgumentParser
 from pathlib import Path
+from tqdm import tqdm
 
-from numpy import sqrt
+from numpy import sqrt, linspace
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.pyplot import figure, figtext
 import matplotlib.pyplot as pl
 
 from corner import corner
-from muscat2ta.transitanalysis import TransitAnalysis
-from muscat2ta.lpf import BaseLPF
+
+logging.basicConfig(level=logging.INFO)
+
+def get_files(droot, target, night):
+    dtarget = droot.joinpath(target)
+    ddata = dtarget.joinpath(night)
+
+    logging.info(f" Data root {droot} exists: {droot.exists()}")
+    logging.info(f" Target directory {dtarget} exists: {dtarget.exists()}")
+    logging.info(f" Night directory {ddata} exists: {ddata.exists()}")
+
+    assert ddata.exists(), f'Nonexisting Data directory: {ddata}'
+    files, pbs = [], []
+    for pb in 'g r i z_s'.split():
+        fname = ddata.joinpath(f'{target}_{night}_{pb}.nc')
+        if fname.exists():
+            files.append(fname)
+            pbs.append(pb)
+    logging.info(f" Found passbands {pbs}")
+    return files, pbs
 
 if __name__ == '__main__':
     ap = ArgumentParser()
-    ap.add_argument('target', type=str)
-    ap.add_argument('date', type=str)
-    ap.add_argument('datadir', type=Path)
-    ap.add_argument('tid', type=int)
-    ap.add_argument('cids', type=int, nargs='+')
-    ap.add_argument('--detrend-only', action='store_true', default=False)
-    ap.add_argument('--npoly', type=int, default=10)
-    ap.add_argument('--exptime', type=float, default=30.)
-    ap.add_argument('--plot-dir', type=Path, default='.')
-    ap.add_argument('--npop', default=100, type=int)
-    ap.add_argument('--niter-od', default=30, type=int)
-    ap.add_argument('--niter-de', default=500, type=int)
-    ap.add_argument('--mc-nburn', default=500, type=int)
-    ap.add_argument('--mc-niter', default=500, type=int)
-    ap.add_argument('--mc-thin', default=5, type=int)
-    ap.add_argument('--npasses', default=2, type=int)
-    ap.add_argument('--model', default=BaseLPF.models[0], choices=BaseLPF.models)
+    ap.add_argument('target', type=str,  help='Target name')
+    ap.add_argument('date',   type=str,  help='Observing night as yymmdd')
+    ap.add_argument('droot',  type=Path, help='Root data directory')
+    ap.add_argument('--tid',    type=int,  help='Target star ID')
+    ap.add_argument('--cids',   type=int,  nargs='+', help='Comparison star IDs')
+    ap.add_argument('--apt',    type=int, help='Aperture ID')
+
+    ap.add_argument('--plot-raw',   type=int, default=None)
+    ap.add_argument('--plot-dir',   default='.', type=Path)
+    ap.add_argument('--npop',       default=100, type=int)
+    ap.add_argument('--de-niter',   default=500, type=int)
+    ap.add_argument('--de-repeats', default=5,   type=int)
+    ap.add_argument('--mc-niter',   default=500, type=int)
+    ap.add_argument('--mc-repeats', default=5,   type=int)
+    ap.add_argument('--mc-thin',    default=5,   type=int)
     args = ap.parse_args()
 
-    ta = TransitAnalysis(args.datadir, args.target, args.date, args.tid, args.cids, etime=args.exptime,
-                         model=args.model)
+    files, pbs = get_files(args.droot, args.target, args.date)
+
+    from muscat2ph.catalog import get_m2_coords
+    from muscat2ph.phdata import PhotometryData
+
+    coords = get_m2_coords(args.target)
+    phs = [PhotometryData(f, args.tid, args.cids, objname=args.target, objskycoords=coords) for f in files]
+
+    # Plot the raw light curves if requested
+    # --------------------------------------
+    if args.plot_raw is not None:
+        phs[args.plot_raw].plot_raw(8)
+        pl.show()
+        exit()
+
+    from muscat2ta.m2lpf import M2LPF
+    lpf = M2LPF(args.target, phs, args.tid, args.cids, args.apt, pbs, use_oec=False)
+
+    logging.info(f" Created an LPF with {len(lpf.ps)} free parameters")
+    logging.info(f" Using {args.npop} parameter vectors")
+
+    assert len(lpf.ps) < 2*args.npop, f"Population size {args.npop} should be at least twice the number of free parameters {len(lpf.ps)}."
+
+    fig_lc = pl.figure(figsize=(13, 8))
+    #pl.ion()
+    #pl.show()
+
+    for ide in tqdm(range(args.de_repeats)):
+        fig_lc.clear()
+        lpf.optimize_global(args.de_niter, args.npop)
+        fig_lc, axs = lpf.plot_light_curves(fig=fig_lc)
+        fig_lc.savefig(f'{args.target}-{args.date}-de.pdf')
+        #pl.pause(0.5)
+
+    fig_ps = pl.figure(figsize=(13, 8))
+    for imc in tqdm(range(args.mc_repeats)):
+        fig_lc.clear()
+        lpf.sample_mcmc(args.mc_niter, reset = (imc!=0))
+        fig_lc, _ = lpf.plot_light_curves(model='mc', fig=fig_lc)
+        fig_lc.savefig(f'{args.target}-{args.date}-mc.pdf')
+
+        fig_ps.clear()
+        fig_ps, _ = lpf.plot_posteriors(fig=fig_ps)
+        fig_ps.savefig(f'{args.target}-{args.date}-posteriors.pdf')
+        #pl.pause(0.5)
+
+    #pl.ioff()
+
+    # Final plot
+    # ----------
+    night = args.date
+    fig = figure(figsize=(13, 1.4142 * 13))
+    #figtext(0.05, 0.99, f"MuSCAT2 - TOI {lpf.toi.toi}", size=33, weight='bold', va='top')
+    figtext(0.05, 0.95, f"{args.target}\n20{night[:2]}-{night[2:4]}-{night[4:]}", size=25, weight='bold', va='top')
+
+    # Light curve plots
+    # -----------------
+    figtext(0.05, 0.875, f"Raw light curve, model, and residuals", size=20, weight='bold', va='bottom')
+    fig.add_axes((0.03, 0.87, 0.96, 0.001), facecolor='k', xticks=[], yticks=[])
+    lpf.plot_light_curves(model='mc', fig=fig,
+                      gridspec=dict(top=0.82, bottom=0.39, left=0.1, right=0.95, wspace=0.03, hspace=0.5))
+
+    # Parameter posterior plots
+    # -------------------------
+    figtext(0.05, 0.325, f"Parameter posteriors", size=20, weight='bold', va='bottom')
+    fig.add_axes((0.03, 0.32, 0.96, 0.001), facecolor='k', xticks=[], yticks=[])
+    lpf.plot_posteriors(fig=fig, gridspec=dict(top=0.30, bottom=0.05, left=0.1, right=0.95, wspace=0.03, hspace=0.3))
+    fig.add_axes((0.03, 0.01, 0.96, 0.001), facecolor='k', xticks=[], yticks=[]);
+    fig.savefig(f'{args.target}_{args.date}_transit_fit.pdf')
+
+    exit()
 
     basename = '{}_{}_{}'.format(args.target, args.datadir.absolute().name, args.model)
 
-    if args.detrend_only:
-        ta.save_fits('linpoly', npoly=args.npoly)
-    else:
-        with PdfPages('{}.pdf'.format(basename)) as pdf:
-            ta.optimize('linear', args.niter_de)
-            ta.save_fits('linear')
-            ta.learn_gp_hyperparameters()
-            ta.optimize('gp', args.niter_de)
-            ta.save_fits('gp')
-            ta.sample('gp', args.mc_burn, thin=args.mc_thin)
-            ta.sample('gp', args.mc_niter, thin=args.mc_thin, reset=True)
-            #ta.print_ptp_scatter()
-            ta.save()
+    with PdfPages('{}.pdf'.format(basename)) as pdf:
+        ta.optimize('linear', args.niter_de)
+        ta.save_fits('linear')
+        ta.learn_gp_hyperparameters()
+        ta.optimize('gp', args.niter_de)
+        ta.save_fits('gp')
+        ta.sample('gp', args.mc_burn, thin=args.mc_thin)
+        ta.sample('gp', args.mc_niter, thin=args.mc_thin, reset=True)
+        #ta.print_ptp_scatter()
+        ta.save()
 
-            pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
-            pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
-            pdf.savefig(ta.plot_light_curve('gp', 'de',   detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
-            pdf.savefig(ta.plot_light_curve('gp', 'mcmc', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
-            pdf.savefig(ta.plot_noise('bins'))
+        pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
+        pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
+        pdf.savefig(ta.plot_light_curve('gp', 'de',   detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
+        pdf.savefig(ta.plot_light_curve('gp', 'mcmc', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
+        pdf.savefig(ta.plot_noise('bins'))
 
-            df = ta.posterior_samples()
-            if args.model == 'pb_independent_k':
-                df['k'] = sqrt(df.k2)
-                df.drop('k2', axis=1, inplace=True)
-            elif args.model == 'pb_dependent_k':
-                k2labels = 'k2_g k2_r k2_i k2_z'.split()
-                for l in k2labels:
-                    df[l.replace('k2','k')] = sqrt(df[l])
-                    df.drop(l, axis=1, inplace=True)
-            elif args.model == 'physical_contamination':
-                df['cnt'] = 1. - df.k2_app / df.k2_true
-                df['k_true'] = sqrt(df['k2_true'])
-                df['k_app'] = sqrt(df['k2_app'])
+        df = ta.posterior_samples()
+        if args.model == 'pb_independent_k':
+            df['k'] = sqrt(df.k2)
+            df.drop('k2', axis=1, inplace=True)
+        elif args.model == 'pb_dependent_k':
+            k2labels = 'k2_g k2_r k2_i k2_z'.split()
+            for l in k2labels:
+                df[l.replace('k2','k')] = sqrt(df[l])
+                df.drop(l, axis=1, inplace=True)
+        elif args.model == 'physical_contamination':
+            df['cnt'] = 1. - df.k2_app / df.k2_true
+            df['k_true'] = sqrt(df['k2_true'])
+            df['k_app'] = sqrt(df['k2_app'])
 
-            pdf.savefig(corner(df))
+        pdf.savefig(corner(df))
