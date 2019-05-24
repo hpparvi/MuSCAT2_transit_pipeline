@@ -26,11 +26,10 @@ from astropy.io import fits as pf
 from astropy.stats import mad_std
 from astropy.table import Table
 from corner import corner
-from matplotlib.pyplot import subplots, setp
+from matplotlib.pyplot import subplots, setp, figure, figtext
 from numpy import (array, arange, min, max, sqrt, inf, floor, diff, percentile, median, full_like, concatenate,
                    zeros_like, full, ones_like, s_, zeros, ndarray)
 from numpy.random import permutation
-
 
 from muscat2ph.catalog import get_m2_coords
 from muscat2ph.phdata import PhotometryData
@@ -51,9 +50,10 @@ def get_files(droot, target, night):
     return files, pbs
 
 class TransitAnalysis:
-    def __init__(self, dataroot, target, date, tid, cids, etime=30., mjd_start=-inf, mjd_end=inf, flux_lims=(-inf, inf),
-                 model='pb_independent_k', npop=200, pbs=('g', 'r', 'i', 'z_s'), fit_wn=True, **kwargs):
+    def __init__(self, dataroot, target, date, tid, cids, apt=None, etime=30., mjd_start=-inf, mjd_end=inf, flux_lims=(-inf, inf),
+                 model='pb_independent_k', npop=200, pbs=('g', 'r', 'i', 'z_s'), fit_wn=True, use_opencl=False, **kwargs):
         dataroot = Path(dataroot)
+        self.use_opencl = use_opencl
         self.ddata = dd = dataroot.joinpath(target, date)
         self.target = target
         self.coords = get_m2_coords(target)
@@ -69,17 +69,19 @@ class TransitAnalysis:
         self.fit_wn = fit_wn
 
         files, pbs = get_files(dataroot, target, date)
-        self.phs = [PhotometryData(f, tid, cids, objname=target, objskycoords=self.coords) for f in files]
+        self.phs = [PhotometryData(f, tid, cids, objname=target, objskycoords=self.coords,
+                                   mjd_start=mjd_start, mjd_end=mjd_end) for f in files]
 
         # Select the best aperture
         # ------------------------
-        apt = []
-        for ph in self.phs:
-            nflux = (ph.flux / ph.flux.median('mjd'))
-            apt.append(int(nflux.diff('mjd').std('mjd').argmin('aperture')[[tid] + list(cids)].max()))
-        apt = max(apt)
+        if apt is None:
+            apt = []
+            for ph in self.phs:
+                nflux = (ph.flux / ph.flux.median('mjd'))
+                apt.append(int(nflux.diff('mjd').std('mjd').argmin('aperture')[[tid] + list(cids)].max()))
+            apt = max(apt)
 
-        self.lmlpf = M2LPF(target, self.phs, tid, cids, apt, pbs, use_oec=False)
+        self.lmlpf = M2LPF(target, self.phs, tid, cids, apt, pbs, use_opencl=use_opencl)
         self.gplpf = None
         self.models = {'linear': self.lmlpf}
 
@@ -166,7 +168,7 @@ class TransitAnalysis:
         return time, fcorr, fsys, fbase
 
 
-    def optimize(self, model, niter: int = 1000, pop: ndarray = None):
+    def optimize(self, model: str = 'linear', niter: int = 1000, pop: ndarray = None):
         assert model in self.models.keys()
         if model == 'linear':
             self.lmlpf.optimize_global(niter, self.npop, pop, label='Optimizing linear model')
@@ -179,7 +181,7 @@ class TransitAnalysis:
             self.gplpf.optimize_global(niter, self.npop, pop, label='Optimizing GP model')
             self.gp_pv = self.gplpf.de.minimum_location
 
-    def sample(self, model, niter: int = 1000, thin: int = 5, repeats: int = None, reset: bool = False):
+    def sample(self, model: str = 'linear', niter: int = 1000, thin: int = 5, repeats: int = None, reset: bool = False):
         assert model in self.models.keys()
         if repeats is not None:
             for i in tqdm(range(repeats)):
@@ -375,6 +377,36 @@ class TransitAnalysis:
             fname = '{}_{}_{}_{}.fits'.format(self.target, self.date, model, self.model)
         hdul.writeto(fname, overwrite=True)
 
+
+    def plot_final_fit(self, model='linear', save=True, figwidth: float = 13):
+        lpf = self.models[model]
+        fig = figure(figsize = (figwidth, 1.4142*figwidth))
+        if lpf.toi is None:
+            figtext(0.05, 0.99, f"MuSCAT2 - {lpf.name}", size=33, weight='bold', va='top')
+            figtext(0.05, 0.95, f"20{self.date[:2]}-{self.date[2:4]}-{self.date[4:]}", size=25, weight='bold', va='top')
+        else:
+            figtext(0.05, 0.99, f"MuSCAT2 - TOI {lpf.toi.toi}", size=33, weight='bold', va='top')
+            figtext(0.05, 0.95, f"TIC {lpf.toi.tic}\n20{self.date[:2]}-{self.date[2:4]}-{self.date[4:]}", size=25, weight='bold',
+                    va='top')
+
+        # Light curve plots
+        # -----------------
+        figtext(0.05, 0.875, f"Raw light curve, model, and residuals", size=20, weight='bold', va='bottom')
+        fig.add_axes((0.03, 0.87, 0.96, 0.001), facecolor='k', xticks=[], yticks=[])
+        lpf.plot_light_curves(model='mc', fig=fig,
+                              gridspec=dict(top=0.82, bottom=0.39, left=0.1, right=0.95, wspace=0.03, hspace=0.5))
+
+        # Parameter posterior plots
+        # -------------------------
+        figtext(0.05, 0.325, f"Parameter posteriors", size=20, weight='bold', va='bottom')
+        fig.add_axes((0.03, 0.32, 0.96, 0.001), facecolor='k', xticks=[], yticks=[])
+        lpf.plot_posteriors(fig=fig, gridspec=dict(top=0.30, bottom=0.05, left=0.1, right=0.95, wspace=0.03, hspace=0.3))
+        fig.add_axes((0.03, 0.01, 0.96, 0.001), facecolor='k', xticks=[], yticks=[])
+
+        if lpf.toi is None:
+            fig.savefig(f"{self.target}_{self.date}_transit_fit.pdf")
+        else:
+            fig.savefig(f"TIC{lpf.toi.tic}-{str(lpf.toi.toi).split('.')[1]}_20{self.date}_MuSCAT2_transit_fit.pdf")
 
 class MultiTransitAnalysis(TransitAnalysis):
     def __init__(self, datadir, target, ftemplate, model='pb_independent_k', npop=100, pbs=('g', 'r', 'i', 'z_s'), fit_wn=True):

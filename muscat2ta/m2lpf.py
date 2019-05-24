@@ -22,17 +22,28 @@ from matplotlib.pyplot import subplots, setp, figure
 from muscat2ph.catalog import get_toi
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
-    sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median
+    sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat
 from numpy.random import permutation
-from pytransit import QuadraticModel
+from pytransit import QuadraticModel, QuadraticModelCL
 from pytransit.contamination import SMContamination
 from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
 from pytransit.contamination.instrument import Instrument
 from pytransit.lpf.lpf import BaseLPF
-from pytransit.orbits.orbits_py import as_from_rhop, duration_eccentric
-from pytransit.param.parameter import NormalPrior as NP, LParameter
+from pytransit.orbits.orbits_py import as_from_rhop, duration_eccentric, i_from_ba, d_from_pkaiews
+from pytransit.param.parameter import NormalPrior as NP, UniformPrior as UP, LParameter, PParameter
 from scipy.stats import logistic, norm
 from uncertainties import ufloat
+
+
+@njit
+def transit_inside_obs(pvp, tmin, tmax, limit_min: float = 10.):
+    limit = limit_min/60./24.
+    a = as_from_rhop(pvp[:,2], pvp[:,1])
+    i = i_from_ba(pvp[:, 3], a)
+    duration = d_from_pkaiews(pvp[:,1], sqrt(pvp[:,4]), a, i, 0, 0, 1)
+    ingress = pvp[:,0] + 0.5*duration
+    egress = pvp[:,0] + 0.5*duration
+    return (ingress < tmax - limit) & (egress > tmin + limit)
 
 
 @njit(parallel=True, cache=False, fastmath=True)
@@ -61,8 +72,8 @@ def lnlike_logistic_vb(o, m, e):
 
 class M2LPF(BaseLPF):
     def __init__(self, target: str, photometry: list, tid: int, cids: list, aid: int,
-                 filters: tuple, use_oec: bool = False, period: float = 5., use_toi_info=True):
-        self.use_oec = use_oec
+                 filters: tuple, use_opencl: bool = False, period: float = 5., use_toi_info=True):
+        self.use_opencl = use_opencl
         self.planet = None
         self.aid = aid
         self.tid = tid
@@ -72,35 +83,42 @@ class M2LPF(BaseLPF):
         fluxes = [array(ph.flux[:, tid, aid]) for ph in photometry]
         fluxes = [f/nanmedian(f) for f in fluxes]
 
+        self.t0 = floor(times[0].min())
+        times = [t - self.t0 for t in times]
+
+        self._tmin = times[0].min()
+        self._tmax = times[0].max()
+
         covariates = []
         for ph in photometry:
             rfluxes = ph.flux[:, cids, aid].copy()
             rfluxes = ((rfluxes - rfluxes.mean('mjd')) / rfluxes.std('mjd')).fillna(0)
-            covs = concatenate([ones([ph.nframes, 1]), array(ph.aux)[:,1:]], 1)
+            covs = concatenate([ones([ph._fmask.sum(), 1]), array(ph.aux)[:,1:]], 1)
             covs[:, 1:] = (covs[:,1:] - covs[:,1:].mean(0)) / covs[:,1:].std(0)
             covs = c_[covs, rfluxes]
             covariates.append(covs)
 
         wns = [ones(ph.nframes) for ph in photometry]
 
-        super().__init__(target, filters, times, fluxes, wns, arange(len(photometry)), covariates,
-                         tm = QuadraticModel(interpolate=True, klims=(0.01, 0.75), nk=512, nz=512))
+        if use_opencl:
+            import pyopencl as cl
+            ctx = cl.create_some_context()
+            queue = cl.CommandQueue(ctx)
+            tm = QuadraticModelCL(klims=(0.005, 0.25), nk=512, nz=512, cl_ctx=ctx, cl_queue=queue)
+        else:
+            tm = QuadraticModel(interpolate=True, klims=(0.005, 0.25), nk=512, nz=512)
+
+        super().__init__(target, filters, times, fluxes, wns, arange(len(photometry)), covariates, tm = tm)
 
         if 'toi' in self.name and use_toi_info:
             self.toi = toi = get_toi(float(self.name.strip('toi')))
-            tn = round((self.times[0].mean() - toi.epoch[0]) / toi.period[0])
+            tn = round((self.times[0].mean() - (toi.epoch[0] - self.t0)) / toi.period[0])
             epoch = ufloat(*toi.epoch)
             period = ufloat(*toi.period)
-            tc = epoch + tn*period
+            tc = epoch - self.t0 + tn*period
             self.set_prior(0, NP(tc.n, tc.s))
             self.set_prior(1, NP(*toi.period))
             self.add_t14_prior(*(toi.duration/24))
-        elif self.use_oec:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                import exodata
-                exocat = exodata.OECDatabase(join(split(__file__)[0], '../ext/oec/systems/'))
-            self.planet = exocat.searchPlanet(target)
         else:
             p = self.planet.P if self.planet else period
             t0 = times[0].mean()
@@ -123,6 +141,15 @@ class M2LPF(BaseLPF):
         self._sl_ccoef = self.ps.blocks[-1].slice
         self._start_ccoef = self.ps.blocks[-1].start
 
+    def _init_p_planet(self):
+        """Planet parameter initialisation.
+        """
+        pk2 = [PParameter('k2', 'area_ratio', 'A_s', UP(0.005**2, 0.25**2), (0.005**2, 0.25**2))]
+        self.ps.add_passband_block('k2', 1, 1, pk2)
+        self._pid_k2 = repeat(self.ps.blocks[-1].start, self.npb)
+        self._start_k2 = self.ps.blocks[-1].start
+        self._sl_k2 = self.ps.blocks[-1].slice
+
     def _init_instrument(self):
         self.instrument = Instrument('MuSCAT2', [sdss_g, sdss_r, sdss_i, sdss_z])
         self.cm = SMContamination(self.instrument, "i'")
@@ -131,6 +158,12 @@ class M2LPF(BaseLPF):
         flux_m = self.flux_model(pv)
         wn = 10**(atleast_2d(pv)[:,self._sl_err])
         return lnlike_logistic_v(self.ofluxa, flux_m, wn, self.lcids)
+
+    def flux_model(self, pv):
+        baseline    = self.baseline(pv)
+        trends      = self.trends(pv)
+        model_flux = self.transit_model(pv, copy=True)
+        return baseline * model_flux + trends
 
     def baseline(self, pv):
         pv = atleast_2d(pv)
@@ -145,9 +178,12 @@ class M2LPF(BaseLPF):
         lds = ld[:,::2] + ld[:, 1::2]
         return where(any(diff(ld[:,::2], 1) > 0., 1) | any(diff(ld[:,1::2], 1) > 0., 1), -inf, 0)
 
+    def inside_obs_prior(self, pv):
+        return where(transit_inside_obs(pv, self._tmin, self._tmax, 20.), 0., -inf)
+
     def lnprior(self, pv):
         pv = atleast_2d(pv)
-        return super().lnprior(pv) + self.ldprior(pv)
+        return super().lnprior(pv) + self.ldprior(pv) + self.inside_obs_prior(pv)
 
     def add_t14_prior(self, mean: float, std: float) -> None:
         """Add a normal prior on the transit duration.
@@ -193,10 +229,10 @@ class M2LPF(BaseLPF):
         tm = percentile(atleast_2d(self.transit_model(pv)), ps, 0)
         fm = percentile(atleast_2d(self.flux_model(pv)), ps, 0)
         bl = percentile(atleast_2d(self.baseline(pv)), ps, 0)
-        t0 = floor(self.timea.min())
+        t0 = self.t0
 
         for i, sl in enumerate(self.lcslices):
-            t = self.timea[sl] - t0
+            t = self.timea[sl]
             axs[1, i].plot(t, self.ofluxa[sl], '.', alpha=0.5)
             axs[1, i].plot(t, fm[0][sl], 'k', lw=2)
             axs[2, i].plot(t, self.ofluxa[sl] / bl[0][sl], '.', alpha=0.5)
@@ -217,7 +253,7 @@ class M2LPF(BaseLPF):
         setp(axs[1, 0], ylabel='Transit + Systematics')
         setp(axs[2, 0], ylabel='Transit - Systematics')
         setp(axs[3, 0], ylabel='Residuals')
-        setp(axs[3, :], xlabel=f'Time - {t0:9.0f} [BJD]')
+        setp(axs[3, :], xlabel=f'Time - {self.t0:9.0f} [BJD]')
         setp(axs[0, :], xlabel='Residual [ppt]', yticks=[])
         [sb.despine(ax=ax, offset=5, left=True) for ax in axs[0]]
         return fig, axs
