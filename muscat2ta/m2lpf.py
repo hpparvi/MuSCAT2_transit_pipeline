@@ -23,7 +23,7 @@ from matplotlib.pyplot import subplots, setp, figure
 from muscat2ph.catalog import get_toi
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
-    sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite
+    sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip
 from numpy.random import permutation
 from pytransit import QuadraticModel, QuadraticModelCL
 from pytransit.contamination import SMContamination
@@ -79,6 +79,7 @@ class M2LPF(BaseLPF):
         self.aid = aid
         self.tid = tid
         self.cids = cids
+        self.phs = photometry
 
         self.covnames = 'intercept sky airmass xshift yshift entropy'.split()
 
@@ -94,7 +95,7 @@ class M2LPF(BaseLPF):
 
         covariates = []
         for ph in photometry:
-            covs = concatenate([ones([ph._fmask.sum(), 1]), array(ph.aux)[:,[1,3,4]]], 1)
+            covs = concatenate([ones([ph._fmask.sum(), 1]), array(ph.aux)[:,[1,3,4,5]]], 1)
             covariates.append(covs)
 
         self.airmasses = [array(ph.aux[:,2]) for ph in photometry]
@@ -113,7 +114,8 @@ class M2LPF(BaseLPF):
 
         self.refs = []
         for ip, ph in enumerate(photometry):
-            self.refs.append([array(ph.flux[:, cid, aid]) for cid in self.cids])
+            self.refs.append([pad(array(ph.flux[:, cid, :]), ((0, 0), (1, 0)), mode='constant') for cid in cids])
+        self.napt = self.refs[0][0].shape[1]
 
         self.refa = zeros((self.ofluxa.size, len(cids)))
         for ic, cid in enumerate(cids):
@@ -145,14 +147,15 @@ class M2LPF(BaseLPF):
             c.append(LParameter(f'ca_{ilc:d}', 'airmass_{ilc:d}',   '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
             c.append(LParameter(f'cx_{ilc:d}', 'xshift_{ilc:d}',    '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
             c.append(LParameter(f'cy_{ilc:d}', 'yshift_{ilc:d}',    '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
-        self.ps.add_lightcurve_block('ccoef', 5, self.nlc, c)
+            c.append(LParameter(f'ce_{ilc:d}', 'entropy_{ilc:d}',   '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
+        self.ps.add_lightcurve_block('ccoef', 6, self.nlc, c)
         self._sl_ccoef = self.ps.blocks[-1].slice
         self._start_ccoef = self.ps.blocks[-1].start
 
         c = []
         for ilc in range(self.nlc):
             for irf in range(len(self.cids)):
-                c.append(LParameter(f'ref_{irf:d}_{ilc:d}', 'comparison_star_{irf:d}_{ilc:d}', '', UP(0.0, 1.0), bounds=( 0.0, 1.0)))
+                c.append(LParameter(f'ref_{irf:d}_{ilc:d}', 'comparison_star_{irf:d}_{ilc:d}', '', UP(0.0, 0.999), bounds=( 0.0, 0.999)))
         self.ps.add_lightcurve_block('rstars', len(self.cids), self.nlc, c)
         self._sl_ref = self.ps.blocks[-1].slice
         self._start_ref = self.ps.blocks[-1].start
@@ -184,12 +187,12 @@ class M2LPF(BaseLPF):
 
     def reference_flux(self, pv):
         pv = atleast_2d(pv)
-        p = where(pv[:, self._sl_ref] < 0.5, 0, 1)
+        p = floor(clip(pv[:, self._sl_ref], 0., 0.999) * self.napt).astype('int')
         r = zeros((pv.shape[0], self.ofluxa.size))
         nref = len(self.cids)
         for ipb, sl in enumerate(self.lcslices):
             for i in range(nref):
-                r[:, sl] += (self.refs[ipb][i] * p[:, ipb * nref + i: ipb * nref + i + 1])
+                r[:, sl] += self.refs[ipb][i][:, p[:, ipb * nref + i]].T
             r[:, sl] = r[:, sl] / median(r[:, sl], 1)[:, newaxis]
         return where(isfinite(r), r, inf)
 
@@ -198,7 +201,7 @@ class M2LPF(BaseLPF):
         pv = atleast_2d(pv)
         ext = zeros((pv.shape[0], self.timea.size))
         for i, sl in enumerate(self.lcslices):
-            st = self._start_ccoef + i * 5
+            st = self._start_ccoef + i * 6
             ext[:, sl] = exp(- pv[:, st + 2] * self.airmasses[i][:, newaxis]).T
             ext[:, sl] /= mean(ext[:, sl], 1)[:, newaxis]
         return squeeze(ext)
@@ -207,9 +210,9 @@ class M2LPF(BaseLPF):
         pv = atleast_2d(pv)
         bl = zeros((pv.shape[0], self.timea.size))
         for i,sl in enumerate(self.lcslices):
-            st = self._start_ccoef + i*5
+            st = self._start_ccoef + i*6
             p = pv[:, st:st+6]
-            bl[:, sl] = (self.covariates[i] @ p[:,[0,1,3,4]].T).T
+            bl[:, sl] = (self.covariates[i] @ p[:,[0,1,3,4,5]].T).T
         bl = bl * self.extinction(pv) * self.reference_flux(pv)
         return bl
 
