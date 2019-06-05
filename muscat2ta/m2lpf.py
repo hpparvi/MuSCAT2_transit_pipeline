@@ -23,7 +23,7 @@ from matplotlib.pyplot import subplots, setp, figure
 from muscat2ph.catalog import get_toi
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
-    sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis
+    sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite
 from numpy.random import permutation
 from pytransit import QuadraticModel, QuadraticModelCL
 from pytransit.contamination import SMContamination
@@ -83,7 +83,7 @@ class M2LPF(BaseLPF):
         self.covnames = 'intercept sky airmass xshift yshift entropy'.split()
 
         times =  [array(ph.bjd) for ph in photometry]
-        fluxes = [array(ph.flux[:, tid, aid] / ph.flux[:, cids, aid].sum('star')) for ph in photometry]
+        fluxes = [array(ph.flux[:, tid, aid]) for ph in photometry]
         fluxes = [f/nanmedian(f) for f in fluxes]
 
         self.t0 = floor(times[0].min())
@@ -95,7 +95,6 @@ class M2LPF(BaseLPF):
         covariates = []
         for ph in photometry:
             covs = concatenate([ones([ph._fmask.sum(), 1]), array(ph.aux)[:,[1,3,4]]], 1)
-            #covs[:, [1,3,4,5]] = (covs[:,[1,3,4,5]] - covs[:,[1,3,4,5]].mean(0)) / covs[:,[1,3,4,5]].std(0)
             covariates.append(covs)
 
         self.airmasses = [array(ph.aux[:,2]) for ph in photometry]
@@ -111,6 +110,15 @@ class M2LPF(BaseLPF):
             tm = QuadraticModel(interpolate=True, klims=(0.005, 0.25), nk=512, nz=512)
 
         super().__init__(target, filters, times, fluxes, wns, arange(len(photometry)), covariates, tm = tm)
+
+        self.refs = []
+        for ip, ph in enumerate(photometry):
+            self.refs.append([array(ph.flux[:, cid, aid]) for cid in self.cids])
+
+        self.refa = zeros((self.ofluxa.size, len(cids)))
+        for ic, cid in enumerate(cids):
+            for ip, ph in enumerate(photometry):
+                self.refa[self.lcslices[ip], ic] = ph.flux[:, cid, aid]
 
         if 'toi' in self.name and use_toi_info:
             self.toi = toi = get_toi(float(self.name.strip('toi')))
@@ -141,6 +149,15 @@ class M2LPF(BaseLPF):
         self._sl_ccoef = self.ps.blocks[-1].slice
         self._start_ccoef = self.ps.blocks[-1].start
 
+        c = []
+        for ilc in range(self.nlc):
+            for irf in range(len(self.cids)):
+                c.append(LParameter(f'ref_{irf:d}_{ilc:d}', 'comparison_star_{irf:d}_{ilc:d}', '', UP(0.0, 1.0), bounds=( 0.0, 1.0)))
+        self.ps.add_lightcurve_block('rstars', len(self.cids), self.nlc, c)
+        self._sl_ref = self.ps.blocks[-1].slice
+        self._start_ref = self.ps.blocks[-1].start
+
+
     def _init_p_planet(self):
         """Planet parameter initialisation.
         """
@@ -165,6 +182,18 @@ class M2LPF(BaseLPF):
         model_flux = self.transit_model(pv, copy=True)
         return baseline * model_flux + trends
 
+    def reference_flux(self, pv):
+        pv = atleast_2d(pv)
+        p = where(pv[:, self._sl_ref] < 0.5, 0, 1)
+        r = zeros((pv.shape[0], self.ofluxa.size))
+        nref = len(self.cids)
+        for ipb, sl in enumerate(self.lcslices):
+            for i in range(nref):
+                r[:, sl] += (self.refs[ipb][i] * p[:, ipb * nref + i: ipb * nref + i + 1])
+            r[:, sl] = r[:, sl] / median(r[:, sl], 1)[:, newaxis]
+        return where(isfinite(r), r, inf)
+
+
     def extinction(self, pv):
         pv = atleast_2d(pv)
         ext = zeros((pv.shape[0], self.timea.size))
@@ -181,7 +210,7 @@ class M2LPF(BaseLPF):
             st = self._start_ccoef + i*5
             p = pv[:, st:st+6]
             bl[:, sl] = (self.covariates[i] @ p[:,[0,1,3,4]].T).T
-        bl = bl + self.extinction(pv) - 1.
+        bl = bl * self.extinction(pv) * self.reference_flux(pv)
         return bl
 
     def ldprior(self, pv):
