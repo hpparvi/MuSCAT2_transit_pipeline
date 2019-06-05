@@ -142,7 +142,7 @@ class M2LPF(BaseLPF):
         for ilc in range(self.nlc):
             c.append(LParameter(f'ci_{ilc:d}', 'intercept_{ilc:d}', '', NP(1.0, 0.03), bounds=( 0.5, 1.5)))
             c.append(LParameter(f'cs_{ilc:d}', 'sky_{ilc:d}',       '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
-            c.append(LParameter(f'ca_{ilc:d}', 'airmass_{ilc:d}',   '', UP(0.0, 1.00), bounds=( 0.0, 1.0)))
+            c.append(LParameter(f'ca_{ilc:d}', 'airmass_{ilc:d}',   '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
             c.append(LParameter(f'cx_{ilc:d}', 'xshift_{ilc:d}',    '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
             c.append(LParameter(f'cy_{ilc:d}', 'yshift_{ilc:d}',    '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
         self.ps.add_lightcurve_block('ccoef', 5, self.nlc, c)
