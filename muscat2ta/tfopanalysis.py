@@ -176,7 +176,7 @@ class TFOPAnalysis:
             fig.savefig(self.resdir.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{ptype}.pdf"))
 
     def plot_possible_blends(self, ncols: int = 3, max_separation: float = 2.5, figwidth: float = 13,
-                             axheight: float = 2.5, pbs: tuple = None, save: bool = False, close: bool = False):
+                             axheight: float = 2.5, pbs: tuple = None, save: bool = True, close: bool = False):
         m = self.distances < max_separation
         sids = where(m)[0]
         stars = sids[argsort(self.distances[m])]

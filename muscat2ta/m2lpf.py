@@ -22,7 +22,7 @@ from matplotlib.pyplot import subplots, setp, figure
 from muscat2ph.catalog import get_toi
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
-    sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat
+    sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis
 from numpy.random import permutation
 from pytransit import QuadraticModel, QuadraticModelCL
 from pytransit.contamination import SMContamination
@@ -79,8 +79,10 @@ class M2LPF(BaseLPF):
         self.tid = tid
         self.cids = cids
 
+        self.covnames = 'intercept sky airmass xshift yshift entropy'.split()
+
         times =  [array(ph.bjd) for ph in photometry]
-        fluxes = [array(ph.flux[:, tid, aid]) for ph in photometry]
+        fluxes = [array(ph.flux[:, tid, aid] / ph.flux[:, cids, aid].sum('star')) for ph in photometry]
         fluxes = [f/nanmedian(f) for f in fluxes]
 
         self.t0 = floor(times[0].min())
@@ -91,12 +93,11 @@ class M2LPF(BaseLPF):
 
         covariates = []
         for ph in photometry:
-            rfluxes = ph.flux[:, cids, aid].copy()
-            rfluxes = ((rfluxes - rfluxes.mean('mjd')) / rfluxes.std('mjd')).fillna(0)
-            covs = concatenate([ones([ph._fmask.sum(), 1]), array(ph.aux)[:,1:]], 1)
-            covs[:, 1:] = (covs[:,1:] - covs[:,1:].mean(0)) / covs[:,1:].std(0)
-            covs = c_[covs, rfluxes]
+            covs = concatenate([ones([ph._fmask.sum(), 1]), array(ph.aux)[:,[1,3,4,5]]], 1)
+            #covs[:, [1,3,4,5]] = (covs[:,[1,3,4,5]] - covs[:,[1,3,4,5]].mean(0)) / covs[:,[1,3,4,5]].std(0)
             covariates.append(covs)
+
+        self.airmasses = [array(ph.aux[:,2]) for ph in photometry]
 
         wns = [ones(ph.nframes) for ph in photometry]
 
@@ -128,19 +129,15 @@ class M2LPF(BaseLPF):
 
 
     def _init_p_baseline(self):
-        ccoefs = []
+        c = []
         for ilc in range(self.nlc):
-            for icoef in range(self.ncovs):
-                if icoef % self.ncovs == 0:
-                    ccoefs.append(LParameter('cc_{:d}_{:d}'.format(ilc, icoef), 'coef_{:d}_{:d}'.format(ilc, icoef),
-                                         '', NP(1.0, 0.01), bounds=(0.5, 1.5)))
-                elif icoef % self.ncovs < 6:
-                    ccoefs.append(LParameter('cc_{:d}_{:d}'.format(ilc, icoef), 'coef_{:d}_{:d}'.format(ilc, icoef),
-                                             '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
-                else:
-                    ccoefs.append(LParameter('cc_{:d}_{:d}'.format(ilc, icoef), 'coef_{:d}_{:d}'.format(ilc, icoef),
-                                         '', UP(0.0, 0.2), bounds=(0.0, 0.2)))
-        self.ps.add_lightcurve_block('ccoef', self.ncovs, self.nlc, ccoefs)
+            c.append(LParameter(f'ci_{ilc:d}', 'intercept_{ilc:d}', '', NP(1.0, 0.03), bounds=(0.5, 1.5)))
+            c.append(LParameter(f'cs_{ilc:d}', 'sky_{ilc:d}',       '', NP(0.0, 0.01), bounds=(0.5, 1.5)))
+            c.append(LParameter(f'ca_{ilc:d}', 'airmass_{ilc:d}',   '', UP(0.0, 1.00), bounds=(0.5, 1.5)))
+            c.append(LParameter(f'cx_{ilc:d}', 'xshift_{ilc:d}',    '', NP(0.0, 0.01), bounds=(0.5, 1.5)))
+            c.append(LParameter(f'cy_{ilc:d}', 'yshift_{ilc:d}',    '', NP(0.0, 0.01), bounds=(0.5, 1.5)))
+            c.append(LParameter(f'ce_{ilc:d}', 'entropy_{ilc:d}',   '', NP(0.0, 0.01), bounds=(0.5, 1.5)))
+        self.ps.add_lightcurve_block('ccoef', 6, self.nlc, c)
         self._sl_ccoef = self.ps.blocks[-1].slice
         self._start_ccoef = self.ps.blocks[-1].start
 
@@ -168,12 +165,23 @@ class M2LPF(BaseLPF):
         model_flux = self.transit_model(pv, copy=True)
         return baseline * model_flux + trends
 
+    def extinction(self, pv):
+        pv = atleast_2d(pv)
+        ext = zeros((pv.shape[0], self.timea.size))
+        for i, sl in enumerate(self.lcslices):
+            st = self._start_ccoef + i * 6
+            ext[:, sl] = exp(- pv[:, st + 2] * self.airmasses[i][:, newaxis]).T
+            ext[:, sl] /= mean(ext[:, sl], 1)[:, newaxis]
+        return squeeze(ext)
+
     def baseline(self, pv):
         pv = atleast_2d(pv)
         bl = zeros((pv.shape[0], self.timea.size))
         for i,sl in enumerate(self.lcslices):
-            st = self._start_ccoef + i*self.ncovs
-            bl[:, sl] = (self.covariates[i] @ pv[:,st:st+self.ncovs].T).T
+            st = self._start_ccoef + i*6
+            p = pv[:, st:st+6]
+            bl[:, sl] = (self.covariates[i] @ p[:,[0,1,3,4,5]].T).T
+        bl = bl + self.extinction(pv) - 1.
         return bl
 
     def ldprior(self, pv):
