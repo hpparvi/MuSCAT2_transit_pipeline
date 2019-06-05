@@ -18,6 +18,7 @@ import warnings
 import seaborn as sb
 from os.path import join, split
 
+from ldtk import LDPSetCreator
 from matplotlib.pyplot import subplots, setp, figure
 from muscat2ph.catalog import get_toi
 from numba import njit, prange
@@ -93,7 +94,7 @@ class M2LPF(BaseLPF):
 
         covariates = []
         for ph in photometry:
-            covs = concatenate([ones([ph._fmask.sum(), 1]), array(ph.aux)[:,[1,3,4,5]]], 1)
+            covs = concatenate([ones([ph._fmask.sum(), 1]), array(ph.aux)[:,[1,3,4]]], 1)
             #covs[:, [1,3,4,5]] = (covs[:,[1,3,4,5]] - covs[:,[1,3,4,5]].mean(0)) / covs[:,[1,3,4,5]].std(0)
             covariates.append(covs)
 
@@ -119,7 +120,7 @@ class M2LPF(BaseLPF):
             tc = epoch - self.t0 + tn*period
             self.set_prior(0, NP(tc.n, tc.s))
             self.set_prior(1, NP(*toi.period))
-            self.add_t14_prior(toi.duration[0]/24, 0.1*toi.duration[1]/24)
+            self.add_t14_prior(toi.duration[0]/24, 0.5*toi.duration[1]/24)
         else:
             p = self.planet.P if self.planet else period
             t0 = times[0].mean()
@@ -136,8 +137,7 @@ class M2LPF(BaseLPF):
             c.append(LParameter(f'ca_{ilc:d}', 'airmass_{ilc:d}',   '', UP(0.0, 1.00), bounds=( 0.0, 1.0)))
             c.append(LParameter(f'cx_{ilc:d}', 'xshift_{ilc:d}',    '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
             c.append(LParameter(f'cy_{ilc:d}', 'yshift_{ilc:d}',    '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
-            c.append(LParameter(f'ce_{ilc:d}', 'entropy_{ilc:d}',   '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
-        self.ps.add_lightcurve_block('ccoef', 6, self.nlc, c)
+        self.ps.add_lightcurve_block('ccoef', 5, self.nlc, c)
         self._sl_ccoef = self.ps.blocks[-1].slice
         self._start_ccoef = self.ps.blocks[-1].start
 
@@ -169,7 +169,7 @@ class M2LPF(BaseLPF):
         pv = atleast_2d(pv)
         ext = zeros((pv.shape[0], self.timea.size))
         for i, sl in enumerate(self.lcslices):
-            st = self._start_ccoef + i * 6
+            st = self._start_ccoef + i * 5
             ext[:, sl] = exp(- pv[:, st + 2] * self.airmasses[i][:, newaxis]).T
             ext[:, sl] /= mean(ext[:, sl], 1)[:, newaxis]
         return squeeze(ext)
@@ -178,9 +178,9 @@ class M2LPF(BaseLPF):
         pv = atleast_2d(pv)
         bl = zeros((pv.shape[0], self.timea.size))
         for i,sl in enumerate(self.lcslices):
-            st = self._start_ccoef + i*6
+            st = self._start_ccoef + i*5
             p = pv[:, st:st+6]
-            bl[:, sl] = (self.covariates[i] @ p[:,[0,1,3,4,5]].T).T
+            bl[:, sl] = (self.covariates[i] @ p[:,[0,1,3,4]].T).T
         bl = bl + self.extinction(pv) - 1.
         return bl
 
@@ -214,6 +214,37 @@ class M2LPF(BaseLPF):
             t14 = duration_eccentric(pv[:,1], sqrt(pv[:,4]), a, arccos(pv[:,3] / a), 0, 0, 1)
             return norm.logpdf(t14, mean, std)
         self.lnpriors.append(T14)
+
+    def add_ldtk_prior(self, teff: tuple, logg: tuple, z: tuple,
+                       uncertainty_multiplier: float = 3,
+                       pbs: tuple = ('g', 'r', 'i', 'z')) -> None:
+        """Add a LDTk-based prior on the limb darkening.
+
+        Parameters
+        ----------
+        teff
+        logg
+        z
+        uncertainty_multiplier
+        pbs
+
+        Returns
+        -------
+
+        """
+        fs = {n: f for n, f in zip('g r i z'.split(), (sdss_g, sdss_r, sdss_i, sdss_z))}
+        filters = [fs[k] for k in pbs]
+        self.ldsc = LDPSetCreator(teff, logg, z, filters)
+        self.ldps = self.ldsc.create_profiles(1000)
+        self.ldps.resample_linear_z()
+        self.ldps.set_uncertainty_multiplier(uncertainty_multiplier)
+        def ldprior(pv):
+            pv = atleast_2d(pv)
+            lnl = zeros(pv.shape[0])
+            for i in range(pv.shape[0]):
+                lnl[i] = self.ldps.lnlike_tq(pv[i, self._sl_ld])
+            return lnl
+        self.lnpriors.append(ldprior)
 
     def plot_light_curves(self, model: str = 'de', figsize: tuple = (13, 8), fig=None, gridspec=None):
         if fig is None:
