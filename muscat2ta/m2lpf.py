@@ -134,9 +134,12 @@ class M2LPF(BaseLPF):
                 if icoef % self.ncovs == 0:
                     ccoefs.append(LParameter('cc_{:d}_{:d}'.format(ilc, icoef), 'coef_{:d}_{:d}'.format(ilc, icoef),
                                          '', NP(1.0, 0.01), bounds=(0.5, 1.5)))
+                elif icoef % self.ncovs < 6:
+                    ccoefs.append(LParameter('cc_{:d}_{:d}'.format(ilc, icoef), 'coef_{:d}_{:d}'.format(ilc, icoef),
+                                             '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
                 else:
                     ccoefs.append(LParameter('cc_{:d}_{:d}'.format(ilc, icoef), 'coef_{:d}_{:d}'.format(ilc, icoef),
-                                         '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
+                                         '', UP(0.0, 0.2), bounds=(0.0, 0.2)))
         self.ps.add_lightcurve_block('ccoef', self.ncovs, self.nlc, ccoefs)
         self._sl_ccoef = self.ps.blocks[-1].slice
         self._start_ccoef = self.ps.blocks[-1].start
