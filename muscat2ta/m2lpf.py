@@ -119,7 +119,7 @@ class M2LPF(BaseLPF):
             tc = epoch - self.t0 + tn*period
             self.set_prior(0, NP(tc.n, tc.s))
             self.set_prior(1, NP(*toi.period))
-            self.add_t14_prior(*(toi.duration/24))
+            self.add_t14_prior(toi.duration[0]/24, 0.1*toi.duration[1]/24)
         else:
             p = self.planet.P if self.planet else period
             t0 = times[0].mean()
@@ -194,7 +194,7 @@ class M2LPF(BaseLPF):
 
     def lnprior(self, pv):
         pv = atleast_2d(pv)
-        return super().lnprior(pv) + self.ldprior(pv) + self.inside_obs_prior(pv)
+        return super().lnprior(pv) + self.ldprior(pv) + self.inside_obs_prior(pv) + self.additional_priors(pv)
 
     def add_t14_prior(self, mean: float, std: float) -> None:
         """Add a normal prior on the transit duration.
