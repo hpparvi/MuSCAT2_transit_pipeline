@@ -50,7 +50,8 @@ def get_files(droot, target, night):
     return files, pbs
 
 class TransitAnalysis:
-    def __init__(self, dataroot, target, date, tid, cids, apt=None, etime=30., mjd_start=-inf, mjd_end=inf, flux_lims=(-inf, inf),
+    def __init__(self, dataroot, target, date, tid, cids, etime=30., mjd_start=-inf, mjd_end=inf, flux_lims=(-inf, inf),
+                 aperture_lims=(0, inf),
                  model='pb_independent_k', npop=200, pbs=('g', 'r', 'i', 'z_s'), fit_wn=True, use_opencl=False, **kwargs):
         dataroot = Path(dataroot)
         self.use_opencl = use_opencl
@@ -72,16 +73,7 @@ class TransitAnalysis:
         self.phs = [PhotometryData(f, tid, cids, objname=target, objskycoords=self.coords,
                                    mjd_start=mjd_start, mjd_end=mjd_end) for f in files]
 
-        # Select the best aperture
-        # ------------------------
-        if apt is None:
-            apt = []
-            for ph in self.phs:
-                nflux = (ph.flux / ph.flux.median('mjd'))
-                apt.append(int(nflux.diff('mjd').std('mjd').argmin('aperture')[[tid] + list(cids)].max()))
-            apt = max(apt)
-
-        self.lmlpf = M2LPF(target, self.phs, tid, cids, apt, pbs, use_opencl=use_opencl)
+        self.lmlpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl)
         self.gplpf = None
         self.models = {'linear': self.lmlpf}
 

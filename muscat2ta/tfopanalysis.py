@@ -89,7 +89,7 @@ def tmodel(time, toi, fratio=None):
 
 class TFOPAnalysis:
     def __init__(self, target: str, date: str, tid: int, cids, apt=None, etime=30.,
-                 mjd_lims=(-inf, inf), flux_lims=(-inf, inf),
+                 mjd_lims=(-inf, inf), flux_lims=(-inf, inf), aperture_lims=(0, inf),
                  model='pb_independent_k', npop=200, pbs=('g', 'r', 'i', 'z_s'), fit_wn=True, use_opencl=False,
                  dataroot: Path = None, **kwargs):
 
@@ -131,7 +131,7 @@ class TFOPAnalysis:
         sc = SkyCoord(array(self.phs[0]._ds.centroids_sky), frame=FK5, unit=(u.deg, u.deg))
         self.distances = sc[tid].separation(sc).arcmin
 
-        self.lpf = M2LPF(target, self.phs, tid, cids, apt, passbands, use_opencl=use_opencl)
+        self.lpf = M2LPF(target, self.phs, tid, cids, passbands, aperture_lims=aperture_lims, use_opencl=use_opencl)
 
     def optimize(self, niter: int = 1000, pop: ndarray = None):
         self.lpf.optimize_global(niter, self.npop, pop, label='Optimizing linear model')
