@@ -52,7 +52,8 @@ def get_files(droot, target, night):
 class TransitAnalysis:
     def __init__(self, dataroot, target, date, tid, cids, etime=30., mjd_start=-inf, mjd_end=inf, flux_lims=(-inf, inf),
                  aperture_lims=(0, inf),
-                 model='pb_independent_k', npop=200, pbs=('g', 'r', 'i', 'z_s'), fit_wn=True, use_opencl=False, **kwargs):
+                 model='pb_independent_k', npop=200, pbs=('g', 'r', 'i', 'z_s'), fit_wn=True, use_opencl=False, with_transit=True,
+                 **kwargs):
         dataroot = Path(dataroot)
         self.use_opencl = use_opencl
         self.ddata = dd = dataroot.joinpath(target, date)
@@ -73,7 +74,7 @@ class TransitAnalysis:
         self.phs = [PhotometryData(f, tid, cids, objname=target, objskycoords=self.coords,
                                    mjd_start=mjd_start, mjd_end=mjd_end) for f in files]
 
-        self.lmlpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl)
+        self.lmlpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl, with_transit=with_transit)
         self.gplpf = None
         self.models = {'linear': self.lmlpf}
 

@@ -24,7 +24,7 @@ from muscat2ph.catalog import get_toi
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
-    delete, s_, log10, argsort
+    delete, s_, log10, argsort, atleast_1d, tile
 from numpy.random import permutation, uniform, normal
 from pytransit import QuadraticModel, QuadraticModelCL
 from pytransit.contamination import SMContamination
@@ -86,30 +86,58 @@ def lnlike_logistic_vbb(o, m, e):
         lnl[i] = sum(log(t / (e[i,0]*(1.+t)**2)))
     return lnl
 
+@njit
+def contaminate(flux, cnt, lcids, pbids):
+    flux = atleast_2d(flux)
+    npv = flux.shape[0]
+    npt = flux.shape[1]
+    for ipv in range(npv):
+        for ipt in range(npt):
+            c = cnt[ipv, pbids[lcids[ipt]]]
+            flux[ipv, ipt] = c + (1.-c)*flux[ipv, ipt]
+    return flux
+
 class M2LPF(BaseLPF):
     def __init__(self, target: str, photometry: list, tid: int, cids: list,
                  filters: tuple, aperture_lims: tuple = (0, inf), use_opencl: bool = False, period: float = 5.,
-                 use_toi_info=True, with_transit=True):
+                 use_toi_info=True, with_transit=True, with_contamination=False):
         self.use_opencl = use_opencl
         self.planet = None
-        self.tid = tid
-        self.cids = cids
+
+        self.photometry_frozen = False
+        self.with_transit = with_transit
+        self.with_contamination = with_contamination
+
+        # Set photometry
+        # --------------
         self.phs = photometry
+        self.nph = len(photometry)
+
+        # Set the aperture ranges
+        # -----------------------
         self.min_apt = amin = min(max(aperture_lims[0], 0), photometry[0].flux.aperture.size)
         self.max_apt = amax = max(min(aperture_lims[1], photometry[0].flux.aperture.size), 0)
         self.napt = amax-amin
 
-        self.photometry_frozen = False
-        self.with_transit = with_transit
+        # Target and comparison star IDs
+        # ------------------------------
+        self.tid = atleast_1d(tid)
+        if self.tid.size == 1:
+            self.tid = tile(self.tid, self.nph)
+
+        self.cids = atleast_2d(cids)
+        if self.cids.shape[0] == 1:
+            self.cids = tile(self.cids, (self.nph, 1))
+
+        assert self.tid.size == self.nph
+        assert self.cids.shape[0] == self.nph
 
         self.covnames = 'intercept sky airmass xshift yshift entropy'.split()
 
         times =  [array(ph.bjd) for ph in photometry]
-        fluxes = [array(ph.flux[:, tid, 1]) for ph in photometry]
+        fluxes = [array(ph.flux[:, tid, 1]) for tid,ph in zip(self.tid, photometry)]
         fluxes = [f/nanmedian(f) for f in fluxes]
         self.apertures = ones(len(times)).astype('int')
-
-        self.ofluxes = [array(ph.flux[:, tid, amin:amax+1] / ph.flux[:, tid, amin:amax+1].median('mjd')) for ph in photometry]
 
         self.t0 = floor(times[0].min())
         times = [t - self.t0 for t in times]
@@ -136,10 +164,13 @@ class M2LPF(BaseLPF):
 
         super().__init__(target, filters, times, fluxes, wns, arange(len(photometry)), covariates, tm = tm)
 
+        # Create the target and reference star flux arrays
+        # ------------------------------------------------
+        self.ofluxes = [array(ph.flux[:, self.tid[i], amin:amax+1] / ph.flux[:, self.tid[i], amin:amax+1].median('mjd')) for i,ph in enumerate(photometry)]
+
         self.refs = []
         for ip, ph in enumerate(photometry):
-            self.refs.append([pad(array(ph.flux[:, cid, amin:amax+1]), ((0, 0), (1, 0)), mode='constant') for cid in cids])
-
+            self.refs.append([pad(array(ph.flux[:, cid, amin:amax+1]), ((0, 0), (1, 0)), mode='constant') for cid in self.cids[ip]])
 
         if 'toi' in self.name and use_toi_info:
             self.toi = toi = get_toi(float(self.name.strip('toi')))
@@ -176,6 +207,13 @@ class M2LPF(BaseLPF):
         self._start_k2 = self.ps.blocks[-1].start
         self._sl_k2 = self.ps.blocks[-1].slice
 
+        if self.with_contamination:
+            pcn = [PParameter('cnt_{}'.format(pb), 'contamination', '', UP(0., 1.), (0., 1.)) for pb in self.passbands]
+            self.ps.add_passband_block('contamination', 1, self.npb, pcn)
+            self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
+            self._sl_cn = self.ps.blocks[-1].slice
+
+
     def _init_p_baseline(self):
         c = []
         for ilc in range(self.nlc):
@@ -199,9 +237,9 @@ class M2LPF(BaseLPF):
 
             c = []
             for ilc in range(self.nlc):
-                for irf in range(len(self.cids)):
+                for irf in range(self.cids.shape[1]):
                     c.append(LParameter(f'ref_{irf:d}_{ilc:d}', 'comparison_star_{irf:d}_{ilc:d}', '', UP(0.0, 0.999), bounds=( 0.0, 0.999)))
-            self.ps.add_lightcurve_block('rstars', len(self.cids), self.nlc, c)
+            self.ps.add_lightcurve_block('rstars', self.cids.shape[1], self.nlc, c)
             self._sl_ref = self.ps.blocks[-1].slice
             self._start_ref = self.ps.blocks[-1].start
 
@@ -273,7 +311,11 @@ class M2LPF(BaseLPF):
 
     def transit_model(self, pv, copy=True):
         if self.with_transit:
-            return super().transit_model(pv, copy)
+            pv = atleast_2d(pv)
+            flux = super().transit_model(pv, copy)
+            if self.with_contamination:
+                flux = contaminate(flux, pv[:, self._sl_cn], self.lcids, self.pbids)
+            return flux
         else:
             return 1.
 
@@ -298,7 +340,7 @@ class M2LPF(BaseLPF):
         pv = atleast_2d(pv)
         p = floor(clip(pv[:, self._sl_ref], 0., 0.999) * self.napt+1).astype('int')
         r = zeros((pv.shape[0], self.ofluxa.size))
-        nref = len(self.cids)
+        nref = self.cids.shape[1]
         for ipb, sl in enumerate(self.lcslices):
             for i in range(nref):
                 r[:, sl] += self.refs[ipb][i][:, p[:, ipb * nref + i]].T
@@ -423,7 +465,10 @@ class M2LPF(BaseLPF):
             raise NotImplementedError("Light curve plotting `model` needs to be either `de` or `mc`")
 
         ps = [50, 16, 84]
-        tm = percentile(atleast_2d(self.transit_model(pv)), ps, 0)
+        if self.with_transit:
+            tm = percentile(atleast_2d(self.transit_model(pv)), ps, 0)
+        else:
+            tm = percentile(atleast_2d(ones(self.timea.size)), ps, 0)
         fm = percentile(atleast_2d(self.flux_model(pv)), ps, 0)
         bl = percentile(atleast_2d(self.baseline(pv)), ps, 0)
         t0 = self.t0
