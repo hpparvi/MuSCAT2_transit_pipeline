@@ -24,7 +24,8 @@ from muscat2ph.catalog import get_toi
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
-    delete, s_, log10, argsort, atleast_1d, tile
+    delete, s_, log10, argsort, atleast_1d, tile, any, fabs
+from numpy.polynomial.legendre import legvander
 from numpy.random import permutation, uniform, normal
 from pytransit import QuadraticModel, QuadraticModelCL
 from pytransit.contamination import SMContamination
@@ -36,6 +37,17 @@ from pytransit.param.parameter import NormalPrior as NP, UniformPrior as UP, LPa
 from pytransit.utils.de import DiffEvol
 from scipy.stats import logistic, norm
 from uncertainties import ufloat
+
+
+@njit
+def running_mean(time, flux, npt, width_min):
+    btime = linspace(time.min(), time.max(), npt)
+    bflux, berror = zeros(npt), zeros(npt)
+    for i in range(npt):
+        m = fabs(time - btime[i]) < 0.5 * width_min / 60 / 24
+        bflux[i] = flux[m].mean()
+        berror[i] = flux[m].std() / sqrt(m.sum())
+    return btime, bflux, berror
 
 
 @njit
@@ -100,13 +112,17 @@ def contaminate(flux, cnt, lcids, pbids):
 class M2LPF(BaseLPF):
     def __init__(self, target: str, photometry: list, tid: int, cids: list,
                  filters: tuple, aperture_lims: tuple = (0, inf), use_opencl: bool = False, period: float = 5.,
-                 use_toi_info=True, with_transit=True, with_contamination=False):
+                 n_legendre: int = 0, use_toi_info=True, with_transit=True, with_contamination=False):
         self.use_opencl = use_opencl
         self.planet = None
 
         self.photometry_frozen = False
         self.with_transit = with_transit
         self.with_contamination = with_contamination
+        self.n_legendre = n_legendre
+
+        if self.with_transit and 'toi' in target.lower() and use_toi_info:
+            self.toi = get_toi(float(target.lower().strip('toi')))
 
         # Set photometry
         # --------------
@@ -164,6 +180,8 @@ class M2LPF(BaseLPF):
 
         super().__init__(target, filters, times, fluxes, wns, arange(len(photometry)), covariates, tm = tm)
 
+        self.legendre = [legvander((t - t.min())/(0.5*t.ptp()) - 1, self.n_legendre)[:,1:] for t in self.times]
+
         # Create the target and reference star flux arrays
         # ------------------------------------------------
         self.ofluxes = [array(ph.flux[:, self.tid[i], amin:amax+1] / ph.flux[:, self.tid[i], amin:amax+1].median('mjd')) for i,ph in enumerate(photometry)]
@@ -172,21 +190,8 @@ class M2LPF(BaseLPF):
         for ip, ph in enumerate(photometry):
             self.refs.append([pad(array(ph.flux[:, cid, amin:amax+1]), ((0, 0), (1, 0)), mode='constant') for cid in self.cids[ip]])
 
-        if 'toi' in self.name and use_toi_info:
-            self.toi = toi = get_toi(float(self.name.strip('toi')))
-            tn = round((self.times[0].mean() - (toi.epoch[0] - self.t0)) / toi.period[0])
-            epoch = ufloat(*toi.epoch)
-            period = ufloat(*toi.period)
-            tc = epoch - self.t0 + tn*period
-            self.set_prior(0, NP(tc.n, tc.s))
-            self.set_prior(1, NP(*toi.period))
-            self.add_t14_prior(toi.duration[0]/24, 0.5*toi.duration[1]/24)
-        else:
-            p = self.planet.P if self.planet else period
-            t0 = times[0].mean()
-            tce = times[0].ptp() / 10
-            self.set_prior(0, NP(t0, tce))
-            self.set_prior(1, NP( p, 1e-5))
+        self.set_orbit_priors()
+
 
     def _init_parameters(self):
         self.ps = ParameterSet()
@@ -198,6 +203,17 @@ class M2LPF(BaseLPF):
         self._init_p_noise()
         self.ps.freeze()
 
+    def set_orbit_priors(self):
+        if self.with_transit and self.toi is not None:
+            tn = round((self.times[0].mean() - (self.toi.epoch[0] - self.t0)) / self.toi.period[0])
+            epoch = ufloat(*self.toi.epoch)
+            period = ufloat(*self.toi.period)
+            tc = epoch - self.t0 + tn * period
+            self.set_prior(0, NP(tc.n, tc.s))
+            self.set_prior(1, NP(*self.toi.period))
+            self.add_t14_prior(self.toi.duration[0] / 24, 0.5 * self.toi.duration[1] / 24)
+
+
     def _init_p_planet(self):
         """Planet parameter initialisation.
         """
@@ -208,7 +224,8 @@ class M2LPF(BaseLPF):
         self._sl_k2 = self.ps.blocks[-1].slice
 
         if self.with_contamination:
-            pcn = [PParameter('cnt_{}'.format(pb), 'contamination', '', UP(0., 1.), (0., 1.)) for pb in self.passbands]
+            pcn = [PParameter('cnt_ref', 'Reference contamination', '', UP(0., 1.), (0., 1.))]
+            pcn.extend([PParameter(f'cnt_{pb}', 'contamination', '', UP(-1., 1.), (-1., 1.)) for pb in self.passbands[1:]])
             self.ps.add_passband_block('contamination', 1, self.npb, pcn)
             self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
             self._sl_cn = self.ps.blocks[-1].slice
@@ -227,10 +244,19 @@ class M2LPF(BaseLPF):
         self._sl_ccoef = self.ps.blocks[-1].slice
         self._start_ccoef = self.ps.blocks[-1].start
 
+        if self.n_legendre > 0:
+            c = []
+            for ilc in range(self.nlc):
+                for ilg in range(self.n_legendre):
+                    c.append(LParameter(f'leg_{ilc:d}_{ilg:d}', f'legendre__{ilc:d}_{ilg:d}', '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
+            self.ps.add_lightcurve_block('legendre_polynomials', self.n_legendre, self.nlc, c)
+            self._sl_leg = self.ps.blocks[-1].slice
+            self._start_leg = self.ps.blocks[-1].start
+
         if not self.photometry_frozen:
             c = []
             for ilc in range(self.nlc):
-                c.append(LParameter(f'tap_{ilc:d}', 'target_aperture__{ilc:d}', '', UP(0.0, 0.999),  bounds=(0.0, 0.999)))
+                c.append(LParameter(f'tap_{ilc:d}', f'target_aperture__{ilc:d}', '', UP(0.0, 0.999),  bounds=(0.0, 0.999)))
             self.ps.add_lightcurve_block('apertures', 1, self.nlc, c)
             self._sl_tap = self.ps.blocks[-1].slice
             self._start_tap = self.ps.blocks[-1].start
@@ -238,7 +264,7 @@ class M2LPF(BaseLPF):
             c = []
             for ilc in range(self.nlc):
                 for irf in range(self.cids.shape[1]):
-                    c.append(LParameter(f'ref_{irf:d}_{ilc:d}', 'comparison_star_{irf:d}_{ilc:d}', '', UP(0.0, 0.999), bounds=( 0.0, 0.999)))
+                    c.append(LParameter(f'ref_{irf:d}_{ilc:d}', f'comparison_star_{irf:d}_{ilc:d}', '', UP(0.0, 0.999), bounds=( 0.0, 0.999)))
             self.ps.add_lightcurve_block('rstars', self.cids.shape[1], self.nlc, c)
             self._sl_ref = self.ps.blocks[-1].slice
             self._start_ref = self.ps.blocks[-1].start
@@ -252,6 +278,12 @@ class M2LPF(BaseLPF):
         if self.with_transit:
             for sl in self.ps.blocks[1].slices:
                 pvp[:,sl] = uniform(0.01**2, 0.25**2, size=(npop, 1))
+
+            if self.with_contamination:
+                p = pvp[:, self._sl_cn]
+                p[:, 1]  = uniform(size=npop)
+                p[:, 1:] = normal(0, 0.2, size=(npop, self.npb - 1))
+                p[:, 1:] = clip(p[:, 0][:, newaxis] + p[:, 1:], 0.001, 0.999) - p[:, 0][:, newaxis]
 
             # With LDTk
             # ---------
@@ -306,15 +338,24 @@ class M2LPF(BaseLPF):
         self.ofluxa[:] = self.relative_flux(pv)
         self.photometry_frozen = True
         self._init_parameters()
+        self.set_orbit_priors()
         self.de = DiffEvol(self.lnposterior, clip(self.ps.bounds, -1, 1), self.de.n_pop, maximize=True, vectorize=True)
         self.de._population[:,:] = self._frozen_population.copy()
+        self.de._fitness[:] = self.lnposterior(self._frozen_population)
+
 
     def transit_model(self, pv, copy=True):
         if self.with_transit:
             pv = atleast_2d(pv)
             flux = super().transit_model(pv, copy)
             if self.with_contamination:
-                flux = contaminate(flux, pv[:, self._sl_cn], self.lcids, self.pbids)
+                p = pv[:, self._sl_cn]
+                pv_cnt = zeros((pv.shape[0], self.npb))
+                pv_cnt[:,0] = p[:,0]
+                pv_cnt[:,1:] = p[:,1:] + p[:,0][:, newaxis]
+                bad = any(pv_cnt < 0.0, 1)
+                flux = contaminate(flux, pv_cnt, self.lcids, self.pbids)
+                flux[bad,0] = inf
             return flux
         else:
             return 1.
@@ -363,6 +404,11 @@ class M2LPF(BaseLPF):
             st = self._start_ccoef + i*6
             p = pv[:, st:st+6]
             bl[:, sl] = (self.covariates[i] @ p[:,[0,1,3,4,5]].T).T
+        if self.n_legendre > 0:
+            for i, sl in enumerate(self.lcslices):
+                st = self._start_leg + i * self.n_legendre
+                p = pv[:, st:st + self.n_legendre]
+                bl[:, sl] += (self.legendre[i] @ p.T).T
         bl = bl * self.extinction(pv)
         return bl
 
@@ -384,7 +430,7 @@ class M2LPF(BaseLPF):
 
     def lnprior(self, pv):
         pv = atleast_2d(pv)
-        lnp = super().lnprior(pv)
+        lnp = self.ps.lnprior(pv)
         if self.with_transit:
             lnp += self.ldprior(pv) + self.inside_obs_prior(pv) + self.additional_priors(pv)
         return lnp
@@ -544,3 +590,33 @@ class M2LPF(BaseLPF):
 
         setp(axs, yticks=[])
         return fig, axs
+
+
+    def plot_running_mean(self, figsize=(13, 5), errors=True, combine=False, remove_baseline=True, ylim=None, npt=100,
+                     width_min=10):
+        pv = self.de.minimum_location
+        rflux = self.relative_flux(pv)
+        if remove_baseline:
+            rflux /= squeeze(self.baseline(pv))
+
+        if combine:
+            bt, bf, be = running_mean(self.timea, rflux, npt, width_min)
+            fig, axs = subplots(figsize=figsize, constrained_layout=True)
+            if errors:
+                axs.errorbar(bt, bf, be, drawstyle='steps-mid', c='k')
+            else:
+                axs.plot(bt, bf, drawstyle='steps-mid', c='k')
+            axs.fill_between(bt, bf - 3 * be, bf + 3 * be, alpha=0.2, step='mid')
+
+        else:
+            rfluxes = [rflux[sl] for sl in self.lcslices]
+            fig, axs = subplots(1, self.nlc, figsize=figsize, constrained_layout=True, sharey='all')
+            for i, ax in enumerate(axs):
+                bt, bf, be = running_mean(self.times[i], rfluxes[i], npt, width_min)
+                if errors:
+                    ax.errorbar(bt, bf, be, drawstyle='steps-mid', c='k')
+                else:
+                    ax.plot(bt, bf, drawstyle='steps-mid', c='k')
+
+        if ylim:
+            setp(axs, ylim=ylim)
