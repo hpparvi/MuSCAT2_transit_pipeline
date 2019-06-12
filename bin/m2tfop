@@ -403,8 +403,9 @@ if __name__ == '__main__':
 
     if args.fit:
         from muscat2ta.transitanalysis import TransitAnalysis
-        ta = TransitAnalysis(args.datadir, args.target, args.date, args.tid, [0], etime=args.exptime,
-                             model='pb_independent_k', pbs=args.passbands, mjd_start=args.mjd_start, mjd_end=args.mjd_end)
+        ta = TransitAnalysis(args.datadir, args.target, args.date, args.tid, [0], mjd_start=args.mjd_start,
+                             mjd_end=args.mjd_end, passbands=args.passbands, etime=args.exptime,
+                             model='pb_independent_k')
         ta.optimize_comparison_stars(3, start_id=args.ref_star_start, end_id=args.ref_star_end)
         ta._init_lcs()
         if args.period:
