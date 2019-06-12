@@ -121,6 +121,7 @@ class M2LPF(BaseLPF):
         self.with_contamination = with_contamination
         self.n_legendre = n_legendre
 
+        self.toi = None
         if self.with_transit and 'toi' in target.lower() and use_toi_info:
             self.toi = get_toi(float(target.lower().strip('toi')))
 
@@ -591,6 +592,16 @@ class M2LPF(BaseLPF):
         setp(axs, yticks=[])
         return fig, axs
 
+    def plot_chains(self, pids=(0, 1, 2, 3, 4)):
+        fig, axs = subplots(len(pids), 1, figsize=(13, 10), constrained_layout=True, sharex='all')
+        x = arange(self.sampler.chain.shape[1])
+        for i, (pid, ax) in enumerate(zip(pids, axs)):
+            pes = percentile(self.sampler.chain[:, :, pid], [50, 16, 84, 0.5, 99.5], 0)
+            ax.fill_between(x, pes[3], pes[4])
+            ax.fill_between(x, pes[1], pes[2])
+            ax.plot(pes[0], 'k')
+            setp(ax, ylabel=self.ps.names[pid])
+        setp(axs, xlim=(0, x[-1]))
 
     def plot_running_mean(self, figsize=(13, 5), errors=True, combine=False, remove_baseline=True, ylim=None, npt=100,
                      width_min=10):

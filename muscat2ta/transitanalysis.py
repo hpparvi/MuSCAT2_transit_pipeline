@@ -14,33 +14,26 @@
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from glob import glob
 from pathlib import Path
 from time import strftime
-from warnings import catch_warnings, simplefilter
 
-import numpy as np
 import pandas as pd
 import xarray as xa
 from astropy.io import fits as pf
-from astropy.stats import mad_std
 from astropy.table import Table
 from corner import corner
-from matplotlib.pyplot import subplots, setp, figure, figtext
-from numpy import (array, arange, min, max, sqrt, inf, floor, diff, percentile, median, full_like, concatenate,
-                   zeros_like, full, ones_like, s_, zeros, ndarray, transpose, squeeze)
-from numpy.random import permutation
-
+from matplotlib.pyplot import figure, figtext
 from muscat2ph.catalog import get_m2_coords
 from muscat2ph.phdata import PhotometryData
-from muscat2ta.m2lpf import M2LPF
+from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze)
 from tqdm.auto import tqdm
 
+from .m2lpf import M2LPF
 
-def get_files(droot, target, night):
-    ddata = droot.joinpath(target, night)
+def get_files(droot, target, night, passbands: tuple = ('g', 'r', 'i', 'z_s')):
+    ddata = droot.joinpath(night)
     files, pbs = [], []
-    for pb in 'g r i z_s'.split():
+    for pb in passbands:
         fname = ddata.joinpath(f'{target}_{night}_{pb}.nc')
         if fname.exists():
             files.append(fname)
@@ -51,25 +44,27 @@ class TransitAnalysis:
     def __init__(self, target: str, date: str, tid: int, cids: list, dataroot: Path = None, exptime_min: float = 30.,
                  nlegendre: int = 0,  npop: int = 200,  mjd_start: float = -inf, mjd_end: float = inf,
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
-                 use_opencl: bool = False, with_transit: bool = True):
+                 use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False):
 
-        self.target = target
-        self.date = date
-        self.tid = tid
-        self.cids = list(cids)
-        self.npop = npop
-        self.etime = exptime_min
-        self.models = None
-        self.pbs = passbands
+        self.target: str = target
+        self.date: str = date
+        self.tid: int = tid
+        self.cids: list = list(cids)
+        self.npop: int = npop
+        self.etime: float = exptime_min
+        self.pbs: tuple = passbands
 
         self.nlegendre = nlegendre
         self.aperture_limits = aperture_lims
         self.use_opencl = use_opencl
         self.with_transit = with_transit
+        self.with_contamination = with_contamination
+        self.toi = None
 
         # Define directories and names
         # ----------------------------
-        self.datadir = datadir = Path(dataroot or 'photometry').joinpath(date)
+        self.dataroot = Path(dataroot or 'photometry')
+        self.datadir = datadir = self.dataroot.joinpath(date)
         if not datadir.exists():
             raise IOError("Data directory doesn't exist.")
         self.basename = basename = f"{self.target}_{self.date}"
@@ -85,7 +80,7 @@ class TransitAnalysis:
 
         # Read in the data
         # ----------------
-        files, pbs = get_files(dataroot, target, date)
+        files, pbs = get_files(self.dataroot, target, date, passbands)
         self.phs = [PhotometryData(f, tid, cids, objname=target, objskycoords=self.target_coordinates,
                                    mjd_start=mjd_start, mjd_end=mjd_end) for f in files]
 
@@ -116,6 +111,9 @@ class TransitAnalysis:
     def add_ldtk_prior(self, teff: float, logg: float, z: float, uncertainty_multiplier: float = 3., pbs: tuple = ('g', 'r', 'i', 'z')):
         self.lpf.add_ldtk_prior(teff, logg, z, uncertainty_multiplier, pbs)
 
+    def freeze_photometry(self):
+        self.lpf.freeze_photometry()
+
     def optimize(self, niter: int = 1000, pop: ndarray = None):
         self.lpf.optimize_global(niter, self.npop, pop, label='Optimizing the model')
         self.pv = self.lpf.de.minimum_location
@@ -144,7 +142,7 @@ class TransitAnalysis:
 
     @property
     def savefile_name(self):
-        return '{}_{}_fit.nc'.format(self.target, self.date)
+        return f'{self.target}_{self.date}.nc'
 
     def load(self):
         ds = xa.open_dataset(self.savefile_name).load()

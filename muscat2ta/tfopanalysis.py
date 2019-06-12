@@ -18,28 +18,26 @@
 from pathlib import Path
 from time import strftime
 
+import astropy.units as u
 import pandas as pd
 import xarray as xa
-import astropy.units as u
+from astropy.coordinates import SkyCoord, FK5
+from astropy.io import fits as pf
+from astropy.stats import mad_std
 from astropy.visualization import simple_norm
 from astropy.wcs import WCS
 from matplotlib import cm
-
+from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.pyplot import subplots, setp, figure, figtext
+from muscat2ph.catalog import get_toi
+from numba import njit
 from numpy import sqrt, nan, zeros, digitize, sin, arange, ceil, where, isfinite, inf, ndarray, argsort, array, \
     floor, median, nanmedian, clip, mean, percentile, full, pi, concatenate, atleast_2d
 from numpy.random import normal
-from astropy.coordinates import SkyCoord, FK5
-from astropy.stats import mad_std
-from astropy.io import fits as pf
-from matplotlib.backends.backend_pdf import PdfPages
-from numba import njit
 from photutils import SkyCircularAperture
 from tqdm.auto import tqdm
 
-from matplotlib.pyplot import subplots, setp, figure, figtext
-from muscat2ph.catalog import get_m2_coords, get_toi
-from muscat2ph.phdata import PhotometryData
-from muscat2ta.m2lpf import M2LPF
+from .transitanalysis import TransitAnalysis
 
 @njit
 def as_from_dkp(d, p, k):
@@ -87,60 +85,26 @@ def tmodel(time, toi, fratio=None):
         return 1 + ((flux - 1) * (1 + fratio)) / fratio
 
 
-class TFOPAnalysis:
-    def __init__(self, target: str, date: str, tid: int, cids, etime=30.,
-                 mjd_lims=(-inf, inf), flux_lims=(-inf, inf), aperture_lims=(0, inf),
-                 model='pb_independent_k', npop=200, pbs=('g', 'r', 'i', 'z_s'), fit_wn=True, use_opencl=False,
-                 dataroot: Path = None, with_transit = True, with_contamination = False, **kwargs):
+class TFOPAnalysis(TransitAnalysis):
+    def __init__(self, target: str, date: str, tid: int, cids: list, dataroot: Path = None, exptime_min: float = 30.,
+                 nlegendre: int = 0,  npop: int = 200,  mjd_start: float = -inf, mjd_end: float = inf,
+                 aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
+                 use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False):
 
-        self.target: str = target
-        self.date: str = date
-        self.tid: int = tid
-        self.cids: list = cids
-        self.npop: int = npop
-        self.savefile_name = f"{target}_{date}.nc"
+        super().__init__(target, date, tid, cids, dataroot=dataroot, exptime_min=exptime_min,
+                 nlegendre=nlegendre,  npop=npop,  mjd_start=mjd_start, mjd_end=mjd_end,
+                 aperture_lims=aperture_lims, passbands=passbands,
+                 use_opencl=use_opencl, with_transit=with_transit, with_contamination=with_contamination)
 
-        # Define directories and names
-        # ----------------------------
-        self.datadir = datadir = Path(dataroot or 'photometry').joinpath(date)
-        if not datadir.exists():
-            raise IOError("Data directory doesn't exist.")
-        self.basename = basename = "{}_{}".format(self.target, self.date)
-
+        # Get the TOI information
+        # -----------------------
         self.toi = get_toi(float(target.lower().strip('toi')))
         self.ticname = 'TIC{:d}-{}'.format(self.toi.tic, str(self.toi.toi).split('.')[1])
-        self.resdir = Path(f"{self.ticname}_20{self.date}")
-        self.resdir.mkdir(exist_ok=True)
-
-        # Passband check
-        # --------------
-        self.passbands = passbands = [pb for pb in pbs if datadir.joinpath(f"{basename}_{pb}.nc").exists()]
-
-        # Get the target coordinates
-        # --------------------------
-        self.target_coordinates = coords = get_m2_coords(self.target)
-
-        # Read in the data
-        # ----------------
-        self.phs = [PhotometryData(datadir.joinpath(f'{basename}_{pb}.nc'), tid, cids, objname=target,
-                                   mjd_start=mjd_lims[0], mjd_end=mjd_lims[1], objskycoords=coords)
-                    for pb in passbands]
 
         # Calculate star separations
         # --------------------------
         sc = SkyCoord(array(self.phs[0]._ds.centroids_sky), frame=FK5, unit=(u.deg, u.deg))
         self.distances = sc[tid].separation(sc).arcmin
-
-        self.lpf = M2LPF(target, self.phs, tid, cids, passbands, aperture_lims=aperture_lims, use_opencl=use_opencl,
-                         with_transit=with_transit, with_contamination=with_contamination)
-
-    def optimize(self, niter: int = 1000, pop: ndarray = None):
-        self.lpf.optimize_global(niter, self.npop, pop, label='Optimizing linear model')
-
-    def sample(self, niter: int = 1000, thin: int = 5, repeats: int = None, reset=True):
-        repeats = repeats or 1
-        for i in tqdm(range(repeats)):
-            self.lpf.sample_mcmc(niter, thin=thin, label='Sampling linear model', reset=(reset or i != 0))
 
 
     def create_example_frame(self, plot=True, figsize=(13, 13)):
@@ -156,7 +120,7 @@ class TFOPAnalysis:
         h1.extend(f2[0].header, unique=True, bottom=True)
         f1[0].header = h1
         filter = h1['filter']
-        f1.writeto(self.resdir.joinpath(f'{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame.fits'), overwrite=True)
+        f1.writeto(self._dres.joinpath(f'{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame.fits'), overwrite=True)
 
         if plot:
             wcs = WCS(f1[0].header)
@@ -174,7 +138,8 @@ class TFOPAnalysis:
         fig, axs = self.lpf.plot_light_curves(model=model, figsize=figsize)
         ptype = 'fit' if model == 'de' else 'mcmc'
         if save:
-            fig.savefig(self.resdir.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{ptype}.pdf"))
+            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{ptype}.pdf"))
+        return fig, axs
 
     def plot_possible_blends(self, ncols: int = 3, max_separation: float = 2.5, figwidth: float = 13,
                              axheight: float = 2.5, pbs: tuple = None, save: bool = True, close: bool = False):
@@ -188,7 +153,7 @@ class TFOPAnalysis:
 
         phs = self.phs if pbs is None else [self.phs[i] for i in pbs]
         passbands = self.passbands if pbs is None else [self.passbands[i] for i in pbs]
-        plotname = self.resdir.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_raw_lcs.pdf")
+        plotname = self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_raw_lcs.pdf")
         pdf = PdfPages(plotname) if save else None
 
         for pb, ph in zip(passbands, phs):
@@ -290,7 +255,7 @@ class TFOPAnalysis:
         fig.add_axes((0.03, 0.32, 0.96, 0.001), facecolor='k', xticks=[], yticks=[])
         lpf.plot_posteriors(fig=fig, gridspec=dict(top=0.30, bottom=0.05, left=0.1, right=0.95, wspace=0.03, hspace=0.3))
         fig.add_axes((0.03, 0.01, 0.96, 0.001), facecolor='k', xticks=[], yticks=[])
-        plotname = self.resdir.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_transit_fit.pdf")
+        plotname = self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_transit_fit.pdf")
 
         if save:
             fig.savefig(plotname)
@@ -299,7 +264,7 @@ class TFOPAnalysis:
 
     def plot_covariates(self, figsize=(13, 5), close=False):
         cols = 'Sky, Airmass, X Shift [pix], Y Shift [pix], Aperture entropy'.split(',')
-        with PdfPages(self.resdir.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_covariates.pdf")) as pdf:
+        with PdfPages(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_covariates.pdf")) as pdf:
             for ipb, ph in enumerate(self.phs):
                 fig, axs = subplots(2, 2, figsize=figsize, sharex=True)
                 aux, time = ph.aux, ph.bjd
@@ -327,7 +292,7 @@ class TFOPAnalysis:
                                                                                                            'xshift',
                                                                                                            'yshift',
                                                                                                            'sky_entropy'])
-            df.to_csv(self.resdir.joinpath(f'{self.ticname}_20{self.date}_MuSCAT2_{self.passbands[i]}_measurements.tbl'),
+            df.to_csv(self._dres.joinpath(f'{self.ticname}_20{self.date}_MuSCAT2_{self.passbands[i]}_measurements.tbl'),
                       index=False, sep=" ")
 
     def save(self):
