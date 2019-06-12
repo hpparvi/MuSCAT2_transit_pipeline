@@ -24,7 +24,7 @@ from muscat2ph.catalog import get_toi
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
-    delete, s_, log10, argsort, atleast_1d, tile, any, fabs
+    delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like
 from numpy.polynomial.legendre import legvander
 from numpy.random import permutation, uniform, normal
 from pytransit import QuadraticModel, QuadraticModelCL
@@ -109,16 +109,33 @@ def contaminate(flux, cnt, lcids, pbids):
             flux[ipv, ipt] = c + (1.-c)*flux[ipv, ipt]
     return flux
 
+
+@njit
+def change_depth(relative_depth, flux, lcids, pbids):
+    npt = lcids.size
+    npop = relative_depth.shape[0]
+    flux = atleast_2d(flux)
+    flux2 = zeros_like(flux)
+    for ipv in range(npop):
+        for ipt in range(npt):
+            flux2[ipv, ipt] = (flux[ipv, ipt] - 1.) * relative_depth[ipv, pbids[lcids[ipt]]] + 1.
+    return flux2
+
 class M2LPF(BaseLPF):
     def __init__(self, target: str, photometry: list, tid: int, cids: list,
-                 filters: tuple, aperture_lims: tuple = (0, inf), use_opencl: bool = False, period: float = 5.,
-                 n_legendre: int = 0, use_toi_info=True, with_transit=True, with_contamination=False):
+                 filters: tuple, aperture_lims: tuple = (0, inf), use_opencl: bool = False,
+                 n_legendre: int = 0, use_toi_info=True, with_transit=True, with_contamination=False,
+                 radius_ratio: str = 'achromatic'):
+        assert radius_ratio in ('chromatic', 'achromatic')
+
         self.use_opencl = use_opencl
         self.planet = None
 
         self.photometry_frozen = False
         self.with_transit = with_transit
         self.with_contamination = with_contamination
+        self.chromatic_transit = radius_ratio == 'chromatic'
+        self.radius_ratio = radius_ratio
         self.n_legendre = n_legendre
 
         self.toi = None
@@ -218,9 +235,14 @@ class M2LPF(BaseLPF):
     def _init_p_planet(self):
         """Planet parameter initialisation.
         """
-        pk2 = [PParameter('k2', 'area_ratio', 'A_s', UP(0.005**2, 0.25**2), (0.005**2, 0.25**2))]
-        self.ps.add_passband_block('k2', 1, 1, pk2)
-        self._pid_k2 = repeat(self.ps.blocks[-1].start, self.npb)
+        if self.radius_ratio == 'achromatic':
+            pk2 = [PParameter('k2', 'area_ratio', 'A_s', UP(0.005**2, 0.25**2), (0.005**2, 0.25**2))]
+            self.ps.add_passband_block('k2', 1, 1, pk2)
+            self._pid_k2 = repeat(self.ps.blocks[-1].start, self.npb)
+        else:
+            pk2 = [PParameter(f'k2_{pb}', f'area_ratio {pb}', 'A_s', UP(0.005**2, 0.25**2), (0.005**2, 0.25**2)) for pb in self.passbands]
+            self.ps.add_passband_block('k2', 1, self.npb, pk2)
+            self._pid_k2 = arange(self.npb) + self.ps.blocks[-1].start
         self._start_k2 = self.ps.blocks[-1].start
         self._sl_k2 = self.ps.blocks[-1].slice
 
@@ -348,7 +370,18 @@ class M2LPF(BaseLPF):
     def transit_model(self, pv, copy=True):
         if self.with_transit:
             pv = atleast_2d(pv)
-            flux = super().transit_model(pv, copy)
+            if self.chromatic_transit:
+                mean_ar = pv[:, self._sl_k2].mean(1)
+                pvv = zeros((pv.shape[0], pv.shape[1]-self.npb+1))
+                pvv[:, :4] = pv[:, :4]
+                pvv[:, 4] = mean_ar
+                pvv[:, 5:] = pv[:, 4+self.npb:]
+                flux = super().transit_model(pvv, copy)
+                rel_ar = pv[:, self._sl_k2] / mean_ar[:,newaxis]
+                flux = change_depth(rel_ar, flux, self.lcids, self.pbids)
+            else:
+                flux = super().transit_model(pv, copy)
+
             if self.with_contamination:
                 p = pv[:, self._sl_cn]
                 pv_cnt = zeros((pv.shape[0], self.npb))
