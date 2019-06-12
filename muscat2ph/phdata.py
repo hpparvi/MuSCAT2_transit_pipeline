@@ -1,20 +1,22 @@
 import xarray as xa
 import seaborn as sb
 from astropy.coordinates import SkyCoord, FK5
-from matplotlib.mlab import normpdf
 from matplotlib.pyplot import subplots, setp
 
-from numpy import inf, sqrt, dot, exp, linspace, log, zeros, array, arange, meshgrid, ones, r_, isin, ceil
+from numpy import inf, sqrt, dot, exp, linspace, log, zeros, array, arange, meshgrid, ones, r_, isin, ceil, ones_like, \
+    newaxis, c_, all, percentile
 import patsy
 from numpy.linalg import lstsq
+from numpy.polynomial.legendre import legvander
 from photutils import CircularAperture
 from scipy.interpolate import interp1d
 from scipy.stats import norm
 from astropy.time import Time
 from astropy import coordinates as coord, units as u
 from astropy.stats import mad_std
-from astroquery.simbad import Simbad
 from tqdm import tqdm
+
+from muscat2ta.lc import M2LightCurve
 
 lapalma = coord.EarthLocation.from_geodetic(-17.8799*u.deg, 28.758*u.deg, 2327*u.m)
 
@@ -261,14 +263,48 @@ class PhotometryData:
         return xa.DataArray(mad_std(self.relative_fluxes.diff('mjd'), 0) / sqrt(2),
                             dims='aperture', coords={'aperture': self._flux.aperture})
 
+    def transit_coverage(self, zero_epoch: tuple, period: tuple, duration: tuple, nsamples: int = 2500):
+        de = norm(*zero_epoch)
+        dp = norm(*period)
+        dd = norm(*duration)
+        t1, t2 = self.bjd[[0, -1]]
+        tn = int(round((self.bjd.mean() - zero_epoch[0]) / period[0]))
+        centers = de.rvs(nsamples) + tn * dp.rvs(nsamples)
+        durations = dd.rvs(nsamples)
+        transit_start = centers - 0.5 * durations
+        transit_end = centers + 0.5 * durations
+        p_start = ((t1 < transit_start) & (transit_start < t2)).mean()
+        p_end = ((t1 < transit_end) & (transit_end < t2)).mean()
+        p_full = ((t1 < transit_start) & (transit_end < t2)).mean()
+        p_all  = ((t1 > transit_start) & (transit_end > t2)).mean()
+        p_miss = ((t1 > transit_end) | (transit_start > t2)).mean()
+        return p_full, p_miss, p_all, p_start, p_end
+
+    def event_limits(self, zero_epoch: tuple, period: tuple, duration: tuple, event='center', nsamples: int = 2500):
+        events = 'center', 'start', 'end'
+        assert event in events
+        de = norm(*zero_epoch)
+        dp = norm(*period)
+        dd = norm(*duration)
+        t1, t2 = self.bjd[[0, -1]]
+        tn = int(round((self.bjd.mean() - zero_epoch[0]) / period[0]))
+        centers = de.rvs(nsamples) + tn * dp.rvs(nsamples)
+        durations = dd.rvs(nsamples)
+        if event == 'center':
+            return percentile(centers, [50, 16, 84, 0.5, 99.5])
+        elif event == 'start':
+            return percentile(centers - 0.5 * durations, [50, 16, 84, 0.5, 99.5])
+        elif event == 'end':
+            return percentile(centers + 0.5 * durations, [50, 16, 84, 0.5, 99.5])
+
     def plot_single(self, iobj, iapt, plot_excluded=False):
         self.flux[:, iobj, iapt].plot(marker='.', linestyle='')
         if plot_excluded:
             self._flux[:, iobj, iapt].plot(alpha=0.25, c='k', marker='.', linestyle='')
 
-    def plot_raw(self, nstars, ylim=(0.85, 1.15), ncols=4):
+    def plot_raw(self, nstars, ylim=(0.85, 1.15), ncols=4, figsize=(11,11)):
         nrows = int(ceil(nstars / ncols))
-        fig, axs = subplots(nrows, ncols, figsize=(11,11), sharex=True, sharey=True)
+        fig, axs = subplots(nrows, ncols, figsize=figsize, sharex=True, sharey=True)
         nflux = self.flux / self.flux.median('mjd')
         aids = abs(nflux.diff('mjd')).median('mjd').argmin('aperture')
         for i,(ax,apt) in enumerate(zip(axs.flat, aids[:nstars])):
@@ -276,5 +312,38 @@ class PhotometryData:
             ax.text(0.05, 0.05, int(apt), transform=ax.transAxes, size='small')
         setp(axs, ylim=ylim)
         sb.despine(fig)
+        fig.tight_layout()
+        return fig
+
+    def plot_relative_set(self, targets: list, references: list, maxr: int = 3, figsize: tuple = (11, 11)) -> None:
+        nt = len(targets)
+        fig, axs = subplots(nt, maxr + 1, figsize=figsize, sharex=True, gridspec_kw={'hspace': 0.01, 'wspace': 0})
+        x = linspace(-1, 1, self.mjd.size)
+        covs = c_[legvander(x, 1), array([self.xshift, self.yshift, self.entropy, self.sky]).T]
+        cnames = 'c0 c1 xshift yshift entr sky'.split()
+
+        for i, tid in enumerate(targets):
+            s = set(references)
+            s.discard(tid)
+            s = list(s)[:maxr]
+            for j, cid in enumerate(s):
+                ax = axs[i, j]
+                flux = N(self.flux[:, tid, 3] / self.flux[:, cid, 3])
+                lc = M2LightCurve(0, self.bjd, flux, ones_like(flux), covs, cnames)
+                c, _, _, _ = lstsq(lc.covariates, lc.flux, rcond=None)
+                fsys = dot(lc.covariates, c)
+                lc._flux = 1 + lc._flux - fsys
+                lc.downsample_time(300)
+                ax.errorbar(lc.btime, lc.bflux, lc.bwn, drawstyle='steps-mid')
+                ax.text(0.05, 0.95, f"star {tid} / star {cid}", ha='left', va='top', transform=ax.transAxes)
+
+            flux = N(self.flux[:, tid, 3] / self.flux[:, s, 3].mean('star'))
+            lc = M2LightCurve(0, self.bjd, flux, ones_like(flux), covs, cnames)
+            c, _, _, _ = lstsq(lc.covariates, lc.flux, rcond=None)
+            fsys = dot(lc.covariates, c)
+            lc._flux = 1 + lc._flux - fsys
+            lc.downsample_time(300)
+            axs[i, maxr].errorbar(lc.btime, lc.bflux, lc.bwn, drawstyle='steps-mid', c='k')
+        setp(axs[:, 1:], yticks=[])
         fig.tight_layout()
         return fig

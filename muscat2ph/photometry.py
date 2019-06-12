@@ -1,30 +1,44 @@
-import warnings
-import numpy as np
-import xarray as xa
+#  MuSCAT2 photometry and transit analysis pipeline
+#  Copyright (C) 2019  Hannu Parviainen
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from astropy.io import fits as pf
-from astropy.visualization import simple_norm as sn
-from astropy.stats import sigma_clipped_stats
+import warnings
+
+from pathlib import Path
+
+import astropy.units as u
+import pandas as pd
+import xarray as xa
+import seaborn as sb
 from astropy.coordinates import SkyCoord, FK5
-from astropy.wcs import WCS, FITSFixedWarning
+from astropy.io import fits as pf
+from astropy.stats import sigma_clipped_stats
 from astropy.table import Table
+from astropy.visualization import simple_norm as sn
+from astropy.wcs import WCS, FITSFixedWarning
 from matplotlib import cm
 from matplotlib.pyplot import subplots, figure, subplot, setp
 from numpy import *
-from pathlib import Path
-from photutils import CircularAperture, CircularAnnulus
-from photutils.centroids import centroid_com
-from scipy.ndimage import label, labeled_comprehension, median_filter as mf
+from photutils import CircularAnnulus, centroid_2dg
+from photutils import DAOStarFinder, CircularAperture
 from scipy.ndimage import center_of_mass as com
+from scipy.ndimage import label, median_filter as mf
 from scipy.optimize import minimize
-from scipy.stats import scoreatpercentile as sap
 from scipy.spatial import distance as ds
+from scipy.stats import scoreatpercentile as sap
 from tqdm import tqdm
-import pandas as pd
-import astropy.units as u
-
-from photutils import DAOStarFinder, DAOPhotPSFPhotometry, DAOGroup, CircularAperture
-from scipy.stats import scoreatpercentile as sap, cauchy
 
 passbands = 'g r i z_s'.split()
 
@@ -413,7 +427,7 @@ class ScienceFrame(ImageFrame):
         self._margins_cut = True
 
 
-    def cut_separation(self, target=None, max_separation=3.0, keep_n_brightest=10):
+    def cut_separation(self, target=None, max_separation=3.0, keep_n_brightest=20):
         target = target or self._target_center
         if isinstance(target, int):
             sc_center = self._ref_centroids_sky[target]
@@ -428,6 +442,22 @@ class ScienceFrame(ImageFrame):
         stars = self._ref_centroids_sky[mask]
         self.set_reference_stars(stars.to_pixel(self._wcs), stars)
         self._separation_cut = max_separation*u.arcmin
+
+    def remove_doubles(self, target=None, min_separation=0.1):
+        target = target or self._target_center
+        if isinstance(target, int):
+            sc_center = self._ref_centroids_sky[target]
+        elif isinstance(target, SkyCoord):
+            sc_center = target
+        elif isinstance(target, str):
+            sc_center = SkyCoord(target, frame=FK5, unit=(u.hourangle, u.deg))
+        self._target_center = sc_center
+        separation = sc_center.separation(self._ref_centroids_sky)
+        mask = separation.arcmin >= min_separation
+        mask[0] = True
+        stars = self._ref_centroids_sky[mask]
+        self.set_reference_stars(stars.to_pixel(self._wcs), stars)
+        self._min_separation_cut = min_separation*u.arcmin
 
 
     def centroid_single(self, star, r=20, pmin=80, pmax=95, niter=1):
@@ -460,8 +490,8 @@ class ScienceFrame(ImageFrame):
         self._cur_centroids_pix[:] += r.x
         self._update_apertures(self._cur_centroids_pix)
 
-    def get_aperture(self, aid=0):
-        m = self._apertures_obj[-1].to_mask()[aid]
+    def get_aperture(self, aid=0, rid=-1):
+        m = self._apertures_obj[rid].to_mask()[aid]
         return m.multiply(self.reduced)
 
     def plot_aperture_masks(self, radius=None, minp=0.0, maxp=99.9, cols=5, figsize=(11, 2.5)):
@@ -510,6 +540,31 @@ class ScienceFrame(ImageFrame):
             apertures_sky.plot(ax=ax, alpha=0.25)
 
 
+    def plot_psf(self, iob=0, iapt=3, max_r=15, figsize=None, ax=None):
+        a = self._apertures_obj[iapt]
+        m = a.to_mask()[iob]
+        d = m.cutout(self.reduced)
+        _, dmedian, _ = sigma_clipped_stats(d)
+        d -= dmedian
+        xc, yc = centroid_2dg(d)
+
+        X, Y = meshgrid(arange(d.shape[1]), arange(d.shape[0]))
+        r = sqrt((X - xc) ** 2 + (Y - yc) ** 2)
+
+        if ax:
+            fig, axl = None, ax
+        else:
+            fig, axl = subplots(figsize=figsize)
+
+        axl.plot(r.ravel(), d.ravel() / d.max(), '.')
+        setp(axl, xlabel='Distance from the PSF centre [pix]', ylabel='Normalised flux')
+        if max_r:
+            axl.set_xlim(0, max_r)
+        sb.despine(ax=axl, offset=6)
+
+        return fig, axl
+
+
     def plot_raw(self, ax=None, figsize=(6,6), plot_apertures=True, minp=10, maxp=100):
         ax = super().plot(self.raw, ax=ax, figsize=figsize, title='Reduced image',
                             minp=minp, maxp=maxp)
@@ -521,7 +576,7 @@ class ScienceFrame(ImageFrame):
     def plot_reduced(self, ax=None, figsize=(6,6), plot_apertures=True,  minp=10, maxp=100, flt=lambda a:a,
                      transform=lambda im:(im.reduced, im._wcs),  **kwargs):
 
-        if 'subfield_radius' in kwargs.keys():
+        if 'subfield_radius' in kwargs.keys() and kwargs['subfield_radius']:
             from astropy.nddata import Cutout2D
             sc = kwargs.get('target', self._target_center)
             assert isinstance(sc, SkyCoord)

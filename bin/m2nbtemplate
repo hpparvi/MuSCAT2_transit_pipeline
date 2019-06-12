@@ -1,0 +1,19 @@
+from argparse import ArgumentParser
+from pathlib import Path
+from pkg_resources import resource_filename
+from string import Template
+
+if __name__ == '__main__':
+    ap = ArgumentParser()
+    ap.add_argument('target', type=str, help='Target name')
+    ap.add_argument('date', type=str, help='Observation night as YYMMDD')
+    ap.add_argument('--dataroot', type=Path, default=None, help='Light curve repository root')
+    ap.add_argument('--tid', type=int, default=0, help='Target ID')
+    ap.add_argument('--cids',   type=int,  nargs='+', help='Comparison star IDs')
+    args = ap.parse_args()
+
+    tfile = Path(resource_filename(__name__, '../data/templates/tfop_template_2.ipynb'))
+    t = Template(tfile.read_text())
+
+    with open(f"{args.target}_{args.date}.ipynb", "w") as f:
+        f.write(t.safe_substitute(target= args.target, night=args.date))

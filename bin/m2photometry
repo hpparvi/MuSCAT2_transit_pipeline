@@ -1,27 +1,39 @@
 #!/usr/bin/env python
-import warnings
 
-from warnings import simplefilter, catch_warnings
+#  MuSCAT2 photometry and transit analysis pipeline
+#  Copyright (C) 2019  Hannu Parviainen
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 from argparse import ArgumentParser
-from multiprocessing import Pool
-from pathlib import Path
-from os import makedirs
 from datetime import datetime, timedelta
+from multiprocessing import Pool
+from os import makedirs
+from pathlib import Path
+
+import xarray as xa
+from astropy.io import fits as pf
+from astropy.wcs.wcs import NoConvergence
+from numpy import zeros, inf, array, c_, nan, full_like
+from tqdm import tqdm
 
 import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as pl
-import xarray as xa
-from numpy import median, zeros, inf, array, fromstring, c_, nan, full_like
-from tqdm import tqdm
-from astropy.io import fits as pf
-from astropy.wcs.wcs import NoConvergence
-from astropy.coordinates import SkyCoord, FK5
-from astroquery.simbad import Simbad
-import astropy.units as u
-
 
 from muscat2ph.photometry import ScienceFrame, COMCentroider
+from muscat2ph.catalog import get_m2_coords
 
 passbands = 'g r i z_s'.split()
 
@@ -54,40 +66,27 @@ def create_datacube(filename):
     return im.get_aperture(5)
 
 
-def get_sky_coordinates(names):
-    assert isinstance(['ds'], (str, list, tuple))
-    names = (names,) if isinstance(names, str) else names
-    with catch_warnings():
-        simplefilter('ignore', UserWarning)
-        for name in names:
-            obj = Simbad.query_object(name)
-            if obj:
-                return SkyCoord(obj['RA'][0], obj['DEC'][0], frame=FK5, unit=(u.hourangle, u.deg))
-
-
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('datadir', type=str)
     ap.add_argument('--object', type=str, default=None)
     ap.add_argument('--passband', choices='g r i z_s all'.split(), default='all')
     ap.add_argument('--target-catalog-name', type=str, default=None)
-    ap.add_argument('--target-sky-coords', type=str, default=None)
-    ap.add_argument('--target-pix-coords', type=str, default=None)
     ap.add_argument('--result-dir', type=Path, default=None)
     ap.add_argument('--max-stars', type=int, default=15)
-    ap.add_argument('--edge-limit', type=float, default=30)
     ap.add_argument('--start-frame', type=int, default=0)
     ap.add_argument('--end-frame', type=int, default=inf)
     ap.add_argument('--with-wcs-only', action='store_true', default=False)
     ap.add_argument('--plot-only', action='store_false', dest='do_photometry', default=True)
     ap.add_argument('--n-processes', type=int, default=5)
     ap.add_argument('--chunksize', type=int, default=5)
+    ap.add_argument('--border-margin', type=int, default=30)
     ap.add_argument('--save-stars', action='store_true', default=False)
     ap.add_argument('--create-dc', action='store_true', default=False)
-    ap.add_argument('--tfop', action='store_true', default=False)
-    ap.add_argument('--border-margin', type=int, default=30)
     ap.add_argument('--apply-separation-cut', action='store_true', default=False)
     ap.add_argument('--separation-cut-distance', type=float, default=2.0)
+    ap.add_argument('--tfop', action='store_true', default=False)
+    ap.add_argument('--no-tfop', action='store_true', default=False)
     args = ap.parse_args()
 
     root = Path(args.datadir)
@@ -95,34 +94,29 @@ if __name__ == '__main__':
     target_sky_coords = None
     target_pix_coords = None
 
-    # Set up the defaults
-    # -------------------
-    if args.tfop:
-        apertures = (4, 8, 12, 16, 20)
-        max_stars = 200
-    else:
-        apertures  = (6, 8, 12, 16, 20, 24, 30, 40, 50, 60)
-        max_stars = args.max_stars
-
     objects = [args.object] if args.object else [o.name for o in list(root.joinpath('obj').glob('*'))]
-
-    # Get the sky and pixel coordinates for the target if a single target is defined
-    # ------------------------------------------------------------------------------
-    if args.object:
-        if args.target_sky_coords is not None:
-            target_sky_coords = SkyCoord(args.target_sky_coords, frame=FK5, unit=(u.hourangle, u.deg))
-        else:
-            target_sky_coords = get_sky_coordinates([args.target_catalog_name, args.object])
-        if target_sky_coords is None and args.target_pix_coords:
-            try:
-                target_pix_coords = fromstring(args.target_pix_coords, sep=',')
-            except TypeError:
-                pass
 
     # Do the photometry for all the targets
     # -------------------------------------
     for object in objects:
-        all_files = {pb : sorted(list(root.joinpath('obj', object, pb).glob('MCT2?_*.fits'))) for pb in pbs}
+        target_sky_coords = get_m2_coords(object)
+
+        if not args.no_tfop and (args.tfop or 'toi' in object.lower() or 'tic' in object.lower()):
+            print("Reducing a TFOP target {}.".format(object))
+            apertures = (4, 8, 12, 16, 20)
+            max_stars = 200
+            TFOP = True
+        else:
+            print("Reducing {}.".format(object))
+            apertures = (6, 8, 12, 16, 20, 24, 30, 40, 50, 60)
+            max_stars = args.max_stars
+            TFOP = False
+
+        all_files = {}
+        for pb in pbs:
+            ddir = root.joinpath('obj', object, pb)
+            if ddir.exists():
+                all_files[pb] = sorted(list(ddir.glob('MCT2?_*.fits')))
         if args.with_wcs_only:
             all_files = {pb : list(filter(lambda f: f.with_suffix('.wcs').exists(), all_files[pb])) for pb in all_files.keys()}
 
@@ -144,6 +138,8 @@ if __name__ == '__main__':
 
         stars_file = rdir.joinpath('{}_stars.fits'.format(object))
         for ipb, pb in enumerate(pbs):
+            if pb not in all_files:
+                continue
             files = all_files[pb]
             istart = max(0, args.start_frame)
             iend = min(args.end_frame, len(files))
@@ -152,45 +148,52 @@ if __name__ == '__main__':
             if target_sky_coords is not None:
                 im._target_center = target_sky_coords
             im.load_fits(files[0])
-
+            
             # Find, cut, save, and load the stars
             # -----------------------------------
             if (args.save_stars and ipb==0) or not stars_file.exists():
-                if args.tfop:
-                    im.find_stars_dao(maxn=150)
-                else:
-                    im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords)
+                im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords)
                 im.cut_margin(args.border_margin)
-                if args.tfop or args.apply_separation_cut:
+                if TFOP or args.apply_separation_cut:
                     im.cut_separation(target_sky_coords, args.separation_cut_distance)
+                    im.remove_doubles(target_sky_coords, 0.1)
                 im.save_reference_stars(stars_file)
 
             im.load_reference_stars(stars_file)
+            if TFOP or args.apply_separation_cut:
+                im.cut_separation(target_sky_coords, args.separation_cut_distance)
+            
+            cc = COMCentroider(im, None, aperture_radius=15)
+            cc.select_stars(20)
+            cc.calculate_and_apply()
 
-            # Masterframe plot with apertures
-            # -------------------------------
-            fig1 = pl.figure(figsize=(9,9))
+            # Field plot with apertures
+            # -------------------------
+            obsdate = root.absolute().name
             if im._wcs:
-                ax1 = fig1.add_subplot(111, projection=im._wcs)
-                ax1.grid()
+                for r in (None,5,2):
+                    fig_field = pl.figure(figsize=(9, 9))
+                    ax_field = fig_field.add_subplot(111, projection=im._wcs)
+                    ax_field.grid()
+                    im.plot_reduced(minp=90, offset=10, ax=ax_field, subfield_radius=r)
+                    ax_field.set_title("Reference frame - {} {}'".format(object, pb))
+                    pl.setp(ax_field, ylabel='Dec', xlabel='RA')
+                    fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
+                    if r:
+                        fig_field.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_field_{:d}am.png'.format(object, obsdate, pb, r))))
+                    else:
+                        fig_field.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_field.png'.format(object, obsdate, pb))))
             else:
-                ax1 = fig1.add_subplot(111)
-            _, ax1 = im.plot_reduced(minp=90, offset=10, ax=ax1)
-            ax1.set_title('Reference frame - {} {}'.format(object, pb))
-            fig1.tight_layout()
-            fig1.savefig(str(rdir.joinpath('{}_{}_{}.png'.format(object, root.absolute().name, pb))))
+                fig_field, ax_field = pl.subplots(figsize=(9, 9))
+                im.plot_reduced(minp=90, offset=10, ax=ax_field)
+                ax_field.set_title('Reference frame - {} {}'.format(object, pb))
+                pl.setp(ax_field, ylabel='Y [pix]', xlabel='X [pix]')
+                fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
+                fig_field.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_field.png'.format(object, obsdate, pb))))
 
-            if args.tfop and im._target_center is not None:
-                for r in [5,2]:
-                    fig = pl.figure(figsize=(9, 9))
-                    ax = fig.add_subplot(111, projection=im._wcs)
-                    ax.grid()
-                    im.plot_reduced(ax=ax, minp=90, offset=10, subfield_radius=r)
-                    ax.set_title("Reference frame - {} {} {:d}'".format(object, pb, r))
-                    pl.setp(ax, ylabel='Dec', xlabel='RA')
-                    fig.tight_layout()
-                    fig.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
-                    fig.savefig(str(rdir.joinpath('{}_{}_{}_{:d}am.png'.format(object, root.absolute().name, pb, r))))
+            fig_psf, _ = im.plot_psf(figsize=(9, 4.5))
+            fig_psf.tight_layout()
+            fig_psf.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_seeing_profile.png'.format(object, obsdate, pb))))
 
             # Datacube creation
             # -----------------
@@ -198,13 +201,13 @@ if __name__ == '__main__':
                 with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file, apertures)) as pool:
                     dc = array(list(tqdm(pool.imap(create_datacube, files, chunksize=args.chunksize), total=len(files))))
                     hdu = pf.PrimaryHDU(dc)
-                    hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, root.absolute().name, pb))), overwrite=True)
+                    hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, obsdate, pb))), overwrite=True)
 
             # Photometry
             # ----------
             if args.do_photometry:
                 with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file, apertures)) as pool:
-                    result = list(tqdm(pool.imap(photometry, files, chunksize=args.chunksize), total=len(files)))
+                    result = list(tqdm(pool.imap(photometry, files, chunksize=args.chunksize), total=len(files), desc='Photometry for {}'.format(pb)))
                 result = list(filter(lambda r:r is not None, result))
 
                 aux  = xa.concat([r[5] for r in result], 'frame')
@@ -232,4 +235,4 @@ if __name__ == '__main__':
 
                 ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos,
                                      aux=aux, centroids_pix=cpix, centroids_sky=csky))
-                ds.to_netcdf(str(rdir.joinpath('{}_{}_{}.nc'.format(object, root.absolute().name, pb))))
+                ds.to_netcdf(str(rdir.joinpath('{}_{}_{}.nc'.format(object, obsdate, pb))))

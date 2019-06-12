@@ -1,12 +1,30 @@
+#  MuSCAT2 photometry and transit analysis pipeline
+#  Copyright (C) 2019  Hannu Parviainen
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 import math as m
+
 import numpy as np
 import statsmodels.api as sm
-
+from astropy.stats import sigma_clip, mad_std
 from numpy import (ones, full, sqrt, array, concatenate, diff, ones_like, floor, ceil, all, arange, digitize, zeros,
-                   nan, linspace, isfinite)
+                   nan, linspace, isfinite, dot)
+from numpy.linalg import lstsq
 from numpy.polynomial.legendre import legvander
 from scipy.ndimage import median_filter as mf
-from astropy.stats import sigma_clip, mad_std
+
 
 def find_period(time, flux, minp=1, maxp=10):
     min2day = 1 / 60 / 24
@@ -15,11 +33,12 @@ def find_period(time, flux, minp=1, maxp=10):
     power = ls.power(freq)
     return 1 / freq[argmax(power)], freq, power
 
-def downsample_time(time, vals, inttime=30.):
-    duration = 24 * 60 * 60 * time.ptp()
+
+def downsample_time(time, vals, inttime=30., trange: tuple = None):
+    duration = 24 * 60 * 60 * (time.ptp() if trange is None else trange[1] - trange[0])
     nbins = int(ceil(duration / inttime))
     bins = arange(nbins)
-    edges = time[0] + bins * inttime / 24 / 60 / 60
+    edges = (time[0] if trange is None else trange[0]) + bins * inttime / 24 / 60 / 60
     bids = digitize(time, edges) - 1
     bt, bv, be = full(nbins, nan), zeros(nbins), zeros(nbins)
     for i, bid in enumerate(bins):
@@ -33,6 +52,7 @@ def downsample_time(time, vals, inttime=30.):
                 be[i] = nan
     m = isfinite(be)
     return bt[m], bv[m], be[m]
+
 
 class M2LightCurve:
     def __init__(self, pbid, time, flux, error, covariates, covnames):
@@ -49,11 +69,11 @@ class M2LightCurve:
         self.bcovariates = self.covariates
         self.bwn = self.wn
 
-    def downsample_time(self, inttime=30.):
-        duration = 24 * 60 * 60 * self.time.ptp()
+    def downsample_time(self, inttime: float = 30., trange: tuple = None):
+        duration = 24 * 60 * 60 * self.time.ptp() if trange is None else trange[1] - trange[0]
         nbins = int(ceil(duration / inttime))
         bins = arange(nbins)
-        edges = self.time[0] + bins * inttime / 24 / 60 / 60
+        edges = (self.time[0] if trange is None else trange[0]) + bins * inttime / 24 / 60 / 60
         bids = digitize(self.time, edges) - 1
         bt, bf, be, bc = full(nbins, nan), zeros(nbins), zeros(nbins), zeros([nbins, self.covariates.shape[1]])
         for i, bid in enumerate(bins):
@@ -83,27 +103,25 @@ class M2LightCurve:
         if all(self.bwn < 1e-8):
             self.bwn[:] = self.wn
 
-
     def detrend_poly(self, npol=20, istart=None, iend=None):
         flux = self.flux[istart:iend]
-        covs = self.covariates[istart:iend, [2,4,5,6]].copy()
+        covs = self.covariates[istart:iend, [2, 4, 5, 6]].copy()
         covs -= covs.mean(0)
-        pol = legvander(linspace(-1, 1, flux.size), npol)
+        covs /= covs.std(0)
+        x = (self.time - self.time[0]) / diff(self.time[[0, -1]]) * 2 - 1
+        pol = legvander(x, npol)
         pol[:, 1:] /= pol[:, 1:].ptp(0)
-
         covs = concatenate([covs, pol], 1)
-        rlm = sm.RLM(flux, covs, hasconst=True)
-        res = rlm.fit()
 
-        coefs = res.params.copy()
-        res.params[4:] = 0
-        systematics = res.predict()
-        res.params[:] = coefs
-        res.params[:4] = 0
-        baseline = res.predict()
-        flux_corr = flux - systematics + systematics.mean()
-        return self.time[istart:iend], flux_corr, systematics, baseline
-
+        c, _, _, _ = lstsq(covs, flux, rcond=None)
+        cbl = c.copy()
+        cbl[:4] = 0.
+        css = c.copy()
+        css[4:] = 0.
+        fbl = dot(covs, cbl)
+        fsys = dot(covs, css)
+        fall = dot(covs, c)
+        return self.time[istart:iend], flux - fall + 1, fsys, fbl
 
     @property
     def time(self):
@@ -131,7 +149,7 @@ class M2LightCurve:
         for i in cids:
             v = self._covariates[mask, i]
             mv = mf(v, mf_width)
-            mmv = sigma_clip(v - mv, sigma, iters=10)
+            mmv = sigma_clip(v - mv, sigma, maxiters=10)
             mask[mask] &= ~mmv.mask
         self._mask &= mask
 
