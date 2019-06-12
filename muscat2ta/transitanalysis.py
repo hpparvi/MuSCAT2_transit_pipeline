@@ -44,7 +44,8 @@ class TransitAnalysis:
     def __init__(self, target: str, date: str, tid: int, cids: list, dataroot: Path = None, exptime_min: float = 30.,
                  nlegendre: int = 0,  npop: int = 200,  mjd_start: float = -inf, mjd_end: float = inf,
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
-                 use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False):
+                 use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
+                 radius_ratio: str = 'achromatic'):
 
         self.target: str = target
         self.date: str = date
@@ -88,7 +89,7 @@ class TransitAnalysis:
             raise ValueError('No photometry files found.')
 
         self.lpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl,
-                         with_transit=with_transit, n_legendre=nlegendre)
+                         with_transit=with_transit, n_legendre=nlegendre, radius_ratio=radius_ratio)
 
         self.pv = None
 
