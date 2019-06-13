@@ -37,6 +37,11 @@ The pipeline requires a set of Python packages that can be easily installed eith
     cd PyTransit
     python setup.py install
     
+## Install LDTk
+    git clone https://github.com/hpparvi/ldtk.git
+    cd ldtk
+    python setup.py install
+    
 ## Install the MuSCAT2 transit analysis pipeline
 
     git clone https://github.com/hpparvi/MuSCAT2_transit_pipeline.git
