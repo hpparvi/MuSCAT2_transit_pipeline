@@ -28,6 +28,8 @@ from muscat2ph.phdata import PhotometryData
 from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze)
 from tqdm.auto import tqdm
 
+from pytransit.param import NormalPrior as NP
+
 from .m2lpf import M2LPF
 
 def get_files(droot, target, night, passbands: tuple = ('g', 'r', 'i', 'z_s')):
@@ -90,6 +92,8 @@ class TransitAnalysis:
 
         self.lpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl,
                          with_transit=with_transit, n_legendre=nlegendre, radius_ratio=radius_ratio)
+        if with_transit:
+            self.lpf.set_prior(0, NP(self.lpf.times[0].mean(), 0.2*self.lpf.times[0].ptp()))
 
         self.pv = None
 

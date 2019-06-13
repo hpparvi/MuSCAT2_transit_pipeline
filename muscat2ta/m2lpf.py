@@ -24,7 +24,7 @@ from muscat2ph.catalog import get_toi
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
-    delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like
+    delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort
 from numpy.polynomial.legendre import legvander
 from numpy.random import permutation, uniform, normal
 from pytransit import QuadraticModel, QuadraticModelCL
@@ -326,11 +326,14 @@ class M2LPF(BaseLPF):
             # red passbands.
             #
             else:
-                ldsl = self._sl_ld
-                for i in range(pvp.shape[0]):
-                    pid = argsort(pvp[i, ldsl][::2])[::-1]
-                    pvp[i, ldsl][::2] = pvp[i, ldsl][::2][pid]
-                    pvp[i, ldsl][1::2] = pvp[i, ldsl][1::2][pid]
+                pvv = uniform(size=(npop, 2*self.npb))
+                pvv[:, ::2] = sort(pvv[:, ::2], 1)[:, ::-1]
+                pvv[:, 1::2] = sort(pvv[:, 1::2], 1)[:, ::-1]
+                pvp[:,self._sl_ld] = pvv
+                #for i in range(pvp.shape[0]):
+                #    pid = argsort(pvp[i, ldsl][::2])[::-1]
+                #    pvp[i, ldsl][::2] = pvp[i, ldsl][::2][pid]
+                #    pvp[i, ldsl][1::2] = pvp[i, ldsl][1::2][pid]
 
         # Estimate white noise from the data
         # ----------------------------------
@@ -456,7 +459,8 @@ class M2LPF(BaseLPF):
 
     def ldprior(self, pv):
         ld = pv[:, self._sl_ld]
-        lds = ld[:,::2] + ld[:, 1::2]
+        #lds = ld[:,::2] + ld[:, 1::2]
+        #return where(any(diff(lds, 1) > 0., 1), -inf, 0.)
         return where(any(diff(ld[:,::2], 1) > 0., 1) | any(diff(ld[:,1::2], 1) > 0., 1), -inf, 0)
 
     def inside_obs_prior(self, pv):
@@ -466,7 +470,8 @@ class M2LPF(BaseLPF):
         pv = atleast_2d(pv)
         lnp = self.ps.lnprior(pv)
         if self.with_transit:
-            lnp += self.ldprior(pv) + self.inside_obs_prior(pv) + self.additional_priors(pv)
+            lnp += self.additional_priors(pv)
+            #lnp += self.ldprior(pv) + self.inside_obs_prior(pv) + self.additional_priors(pv)
         return lnp
 
     def add_t14_prior(self, mean: float, std: float) -> None:
