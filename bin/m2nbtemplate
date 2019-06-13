@@ -12,7 +12,11 @@ if __name__ == '__main__':
     ap.add_argument('--cids',   type=int,  nargs='+', help='Comparison star IDs')
     args = ap.parse_args()
 
-    tfile = Path(resource_filename(__name__, '../data/templates/tfop_template_2.ipynb'))
+    if 'toi' in args.target.lower():
+        tfile = Path(resource_filename(__name__, '../data/templates/tfop_template.ipynb'))
+    else:
+        tfile = Path(resource_filename(__name__, '../data/templates/transit_analysis_template.ipynb'))
+
     t = Template(tfile.read_text())
 
     with open(f"{args.target}_{args.date}.ipynb", "w") as f:
