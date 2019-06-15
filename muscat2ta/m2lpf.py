@@ -292,6 +292,15 @@ class M2LPF(BaseLPF):
             self._sl_ref = self.ps.blocks[-1].slice
             self._start_ref = self.ps.blocks[-1].start
 
+    def _init_p_noise(self):
+        """Noise parameter initialisation.
+        """
+        pns = [LParameter('loge_{:d}'.format(i), 'log10_error_{:d}'.format(i), '', UP(-3, 0), bounds=(-3, 0)) for i in
+               range(self.n_noise_blocks)]
+        self.ps.add_lightcurve_block('log_err', 1, self.n_noise_blocks, pns)
+        self._sl_err = self.ps.blocks[-1].slice
+        self._start_err = self.ps.blocks[-1].start
+
     def _init_instrument(self):
         self.instrument = Instrument('MuSCAT2', [sdss_g, sdss_r, sdss_i, sdss_z])
         self.cm = SMContamination(self.instrument, "i'")
@@ -357,6 +366,7 @@ class M2LPF(BaseLPF):
 
     def freeze_photometry(self, pv=None):
         pv = pv if pv is not None else self.de.minimum_location
+        ps_orig = self.ps
         self._original_population = pvp = self.de.population.copy()
         self._frozen_population = delete(pvp, s_[self._sl_tap.start: self._sl_ref.stop], 1)
         self.taps = self.target_apertures(pv)
@@ -364,7 +374,9 @@ class M2LPF(BaseLPF):
         self.ofluxa[:] = self.relative_flux(pv)
         self.photometry_frozen = True
         self._init_parameters()
-        self.set_orbit_priors()
+        for i in range(self._start_ld):
+            self.ps[i].prior = ps_orig[i].prior
+            self.ps[i].bounds = ps_orig[i].bounds
         self.de = DiffEvol(self.lnposterior, clip(self.ps.bounds, -1, 1), self.de.n_pop, maximize=True, vectorize=True)
         self.de._population[:,:] = self._frozen_population.copy()
         self.de._fitness[:] = self.lnposterior(self._frozen_population)
@@ -470,7 +482,7 @@ class M2LPF(BaseLPF):
         pv = atleast_2d(pv)
         lnp = self.ps.lnprior(pv)
         if self.with_transit:
-            lnp += self.additional_priors(pv)
+            lnp += self.additional_priors(pv) + self.ldprior(pv)
             #lnp += self.ldprior(pv) + self.inside_obs_prior(pv) + self.additional_priors(pv)
         return lnp
 

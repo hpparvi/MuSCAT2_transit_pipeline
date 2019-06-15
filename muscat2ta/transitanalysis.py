@@ -19,10 +19,11 @@ from time import strftime
 
 import pandas as pd
 import xarray as xa
+import seaborn as sb
 from astropy.io import fits as pf
 from astropy.table import Table
 from corner import corner
-from matplotlib.pyplot import figure, figtext
+from matplotlib.pyplot import figure, figtext, setp, subplots
 from muscat2ph.catalog import get_m2_coords
 from muscat2ph.phdata import PhotometryData
 from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze)
@@ -63,6 +64,9 @@ class TransitAnalysis:
         self.with_transit = with_transit
         self.with_contamination = with_contamination
         self.toi = None
+
+        self._old_de_population = None
+        self._old_de_fitness = None
 
         # Define directories and names
         # ----------------------------
@@ -119,9 +123,33 @@ class TransitAnalysis:
     def freeze_photometry(self):
         self.lpf.freeze_photometry()
 
-    def optimize(self, niter: int = 1000, pop: ndarray = None):
+    def optimize(self, niter: int = 1000, pop: ndarray = None, plot_convergence: bool = True, plot_lc: bool = False):
         self.lpf.optimize_global(niter, self.npop, pop, label='Optimizing the model')
         self.pv = self.lpf.de.minimum_location
+
+        if plot_lc:
+            self.plot_light_curve()
+
+        if plot_convergence:
+            fig, axs = subplots(1, 5, figsize=(13, 2), constrained_layout=True)
+            rfit = self.lpf.de._fitness
+
+            if self._old_de_fitness is not None:
+                axs[0].hist(-self._old_de_fitness, facecolor='midnightblue', bins='auto', alpha=0.25)
+            axs[0].hist(-rfit, facecolor='midnightblue', bins='auto')
+
+            for i, ax in zip([0, 2, 3, 4], axs[1:]):
+                if self._old_de_population is not None:
+                    ax.plot(self._old_de_population[:, i], -self._old_de_fitness, 'kx', alpha=0.25)
+                ax.plot(self.lpf.de.population[:, i], -rfit, 'k.')
+                ax.set_xlabel(self.lpf.ps.descriptions[i])
+            setp(axs, yticks=[])
+            setp(axs[1], ylabel='Log posterior')
+            setp(axs[0], xlabel='Log posterior')
+            sb.despine(fig, offset=5)
+        self._old_de_population = self.lpf.de.population.copy()
+        self._old_de_fitness = self.lpf.de._fitness.copy()
+
 
     def sample(self, niter: int = 1000, thin: int = 5, repeats: int = None, reset=True):
         repeats = repeats or 1
