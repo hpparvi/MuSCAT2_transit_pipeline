@@ -308,8 +308,8 @@ class M2LPF(BaseLPF):
     def create_pv_population(self, npop=50):
         pvp = self.ps.sample_from_prior(npop)
         if self.with_transit:
-            for sl in self.ps.blocks[1].slices:
-                pvp[:,sl] = uniform(0.01**2, 0.25**2, size=(npop, 1))
+            #for sl in self.ps.blocks[1].slices:
+            #    pvp[:,sl] = uniform(0.01**2, 0.25**2, size=(npop, 1))
 
             if self.with_contamination:
                 p = pvp[:, self._sl_cn]
@@ -371,12 +371,15 @@ class M2LPF(BaseLPF):
         self._frozen_population = delete(pvp, s_[self._sl_tap.start: self._sl_ref.stop], 1)
         self.taps = self.target_apertures(pv)
         self.raps = self.reference_apertures(pv)
+        self._target_flux = self.target_flux(pv)
+        self._reference_flux = self.reference_flux(pv)
         self.ofluxa[:] = self.relative_flux(pv)
         self.photometry_frozen = True
         self._init_parameters()
-        for i in range(self._start_ld):
-            self.ps[i].prior = ps_orig[i].prior
-            self.ps[i].bounds = ps_orig[i].bounds
+        if self.with_transit:
+            for i in range(self._start_ld):
+                self.ps[i].prior = ps_orig[i].prior
+                self.ps[i].bounds = ps_orig[i].bounds
         self.de = DiffEvol(self.lnposterior, clip(self.ps.bounds, -1, 1), self.de.n_pop, maximize=True, vectorize=True)
         self.de._population[:,:] = self._frozen_population.copy()
         self.de._fitness[:] = self.lnposterior(self._frozen_population)
@@ -452,7 +455,9 @@ class M2LPF(BaseLPF):
         for i,sl in enumerate(self.lcslices):
             st = self._start_ccoef + i*6
             p = pv[:, st:st+6]
-            bl[:, sl] = (self.covariates[i] @ p[:,[0,1,3,4,5]].T).T
+            #bl[:, sl] = (self.covariates[i] @ p[:,[0,1,3,4,5]].T).T
+            bl[:, sl] = (self.covariates[i][:,[0,2,3]] @ p[:,[0,3,4]].T).T
+
         if self.n_legendre > 0:
             for i, sl in enumerate(self.lcslices):
                 st = self._start_leg + i * self.n_legendre

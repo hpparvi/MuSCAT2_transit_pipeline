@@ -29,8 +29,13 @@ comparison star selection, transit model fitting, MCMC sampling, etc.
 The pipeline requires a set of Python packages that can be easily installed either using `pip` or 
 `conda`:
 
-`numpy`, `scipy`, `astropy`, `emcee`, `tqdm`, `traitlets`, `pandas`, `xarray`, 
-`photutils`, `matplotlib`, `astroquery`, `corner`
+`numpy`, `scipy`, `astropy`, `tqdm`, `traitlets`, `pandas`, `xarray`, `photutils`, `matplotlib`, `astroquery`, `corner`,
+`seaborn`, `numba`, `uncertainties`
+
+## Install emcee
+
+The pipeline needs the latest version of `emcee` that is not available through conda or pip at the time of writing. It
+is best installed directly from GitHub.
 
 ## Install PyTransit
     git clone https://github.com/hpparvi/PyTransit.git

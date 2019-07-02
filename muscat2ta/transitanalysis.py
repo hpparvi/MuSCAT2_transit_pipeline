@@ -26,12 +26,14 @@ from corner import corner
 from matplotlib.pyplot import figure, figtext, setp, subplots
 from muscat2ph.catalog import get_m2_coords
 from muscat2ph.phdata import PhotometryData
-from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze)
+from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze, atleast_1d, ceil)
 from tqdm.auto import tqdm
 
-from pytransit.param import NormalPrior as NP
+from pytransit.param import NormalPrior as NP, UniformPrior as UP
 
 from .m2lpf import M2LPF
+
+__all__ = ["TransitAnalysis", "NP", "UP"]
 
 def get_files(droot, target, night, passbands: tuple = ('g', 'r', 'i', 'z_s')):
     ddata = droot.joinpath(night)
@@ -209,28 +211,53 @@ class TransitAnalysis:
         lpf = self.lpf
         pv = lpf.de.minimum_location
         time = lpf.timea
-        target_flux = lpf.target_flux(pv)
-        reference_flux = lpf.reference_flux(pv)
+
         baseline = squeeze(lpf.baseline(pv))
         if lpf.with_transit:
             transit = lpf.transit_model(pv).astype('d')
         else:
             transit = ones_like(time)
-        detrended_flux = target_flux / reference_flux / baseline
 
-        for i, pb in enumerate(self.pbs):
+        if not self.lpf.photometry_frozen:
+            target_flux = lpf.target_flux(pv)
+            reference_flux = lpf.reference_flux(pv)
+            relative_flux = target_flux / reference_flux
+            detrended_flux = relative_flux / baseline
+        else:
+            target_flux = lpf._target_flux
+            reference_flux = lpf._reference_flux
+            relative_flux = self.lpf.ofluxa
+            detrended_flux = relative_flux / baseline
+
+        for i, pb in enumerate(self.pbs[1:]):
             sl = lpf.lcslices[i]
-            df = Table(transpose([time[sl], detrended_flux[sl], target_flux[sl],
-                                     reference_flux[sl], baseline[sl], transit[sl]]),
-                       names='time_bjd flux flux_trg flux_ref baseline model'.split(),
+            df = Table(transpose([time[sl] + self.lpf.t0, detrended_flux[sl], relative_flux[sl], target_flux[sl],
+                                  reference_flux[sl], baseline[sl], transit[sl]]),
+                       names='time_bjd flux flux_rel flux_trg flux_ref baseline model'.split(),
                        meta={'extname': f"flux_{pb}", 'filter': pb, 'trends': 'linear', 'wn': lpf.wn})
             hdul.append(pf.BinTableHDU(df))
 
-        for i, pb in enumerate(self.pbs):
+        for i, pb in enumerate(self.pbs[1:]):
             df = Table(lpf.covariates[i], names='intercept sky xshift yshift entropy'.split(),
                        meta={'extname': f'aux_{pb}'})
             hdul.append(pf.BinTableHDU(df))
         hdul.writeto(self._dres.joinpath(f'{self.target}_{self.date}.fits'), overwrite=True)
+
+    def plot_raw_light_curves(self, pb: int, sids: int, aids: int):
+        sids = atleast_1d(sids)
+        aids = atleast_1d(aids)
+        nrows = int(ceil(sids.size / 2))
+        ncols = min(sids.size, 2)
+
+        fig, axs = subplots(nrows, ncols, figsize=(13, (4 if nrows == 1 else 2 * nrows)), constrained_layout=True,
+                            sharex='all', squeeze=False)
+        ph = self.phs[pb]
+        for sid, aid, ax in zip(sids, aids, axs.flat):
+            f = ph.flux[:, sid, aid]
+            f /= f.median()
+            ax.plot(ph.bjd - self.lpf.t0, f)
+            ax.set_title(f"Star {sid}, aperture {aid}, scatter {float(f.diff('mjd').std('mjd') / sqrt(2)):.4f}")
+            setp(ax, xlabel=f"Time - {self.lpf.t0:.0f} [d]", ylabel='Normalised flux')
 
     def plot_final_fit(self, model='linear', figwidth: float = 13):
         lpf = self.models[model]
