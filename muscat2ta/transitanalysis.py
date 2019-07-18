@@ -132,31 +132,8 @@ class TransitAnalysis:
         if plot_lc:
             self.plot_light_curve()
 
-        if plot_convergence:
-            fig, axs = subplots(1, 5, figsize=(13, 2), constrained_layout=True)
-            rfit = self.lpf.de._fitness
-
-            if self._old_de_fitness is not None:
-                axs[0].hist(-self._old_de_fitness, facecolor='midnightblue', bins='auto', alpha=0.25)
-            axs[0].hist(-rfit, facecolor='midnightblue', bins='auto')
-
-            for i, ax in zip([0, 2, 3, 4], axs[1:]):
-                if self._old_de_population is not None:
-                    ax.plot(self._old_de_population[:, i], -self._old_de_fitness, 'kx', alpha=0.25)
-                ax.plot(self.lpf.de.population[:, i], -rfit, 'k.')
-                ax.set_xlabel(self.lpf.ps.descriptions[i])
-            setp(axs, yticks=[])
-            setp(axs[1], ylabel='Log posterior')
-            setp(axs[0], xlabel='Log posterior')
-            sb.despine(fig, offset=5)
-        self._old_de_population = self.lpf.de.population.copy()
-        self._old_de_fitness = self.lpf.de._fitness.copy()
-
-
     def sample(self, niter: int = 1000, thin: int = 5, repeats: int = None, reset=True):
-        repeats = repeats or 1
-        for i in tqdm(range(repeats)):
-            self.lpf.sample_mcmc(niter, thin=thin, label='Sampling the model', reset=(reset or i != 0))
+        self.lpf.sample_mcmc(niter, thin=thin, repeats=repeats, label='Sampling the model', reset=reset)
 
     def posterior_samples(self, burn: int = 0, thin: int = 1, include_ldc: bool = False) -> pd.DataFrame:
         return self.lpf.posterior_samples(burn, thin, include_ldc)
@@ -170,9 +147,11 @@ class TransitAnalysis:
         df.drop(['k2'], axis=1, inplace=True)
         return corner(df)
 
-    def plot_light_curve(self, method='de', figsize=(13, 8)):
+    def plot_light_curve(self, method='de', figsize=(13, 8), save=False):
         assert method in ('de', 'mc')
         fig, _ = self.lpf.plot_light_curves(model=method, figsize=figsize)
+        if save:
+            fig.savefig(self._dplot.joinpath(f'{self.basename}_{self.lpf.radius_ratio}_k_lc.pdf'))
         return fig
 
     @property
@@ -201,7 +180,7 @@ class TransitAnalysis:
                                'obsnight': self.date,
                                'target': self.target})
 
-        ds.to_netcdf(self.savefile_name)
+        ds.to_netcdf(self._dres.joinpath(self.savefile_name))
 
     def save_fits(self):
         phdu = pf.PrimaryHDU()
@@ -214,7 +193,7 @@ class TransitAnalysis:
 
         baseline = squeeze(lpf.baseline(pv))
         if lpf.with_transit:
-            transit = lpf.transit_model(pv).astype('d')
+            transit = squeeze(lpf.transit_model(pv).astype('d'))
         else:
             transit = ones_like(time)
 
@@ -229,19 +208,20 @@ class TransitAnalysis:
             relative_flux = self.lpf.ofluxa
             detrended_flux = relative_flux / baseline
 
-        for i, pb in enumerate(self.pbs[1:]):
+        for i, pb in enumerate(self.pbs):
             sl = lpf.lcslices[i]
             df = Table(transpose([time[sl] + self.lpf.t0, detrended_flux[sl], relative_flux[sl], target_flux[sl],
                                   reference_flux[sl], baseline[sl], transit[sl]]),
                        names='time_bjd flux flux_rel flux_trg flux_ref baseline model'.split(),
-                       meta={'extname': f"flux_{pb}", 'filter': pb, 'trends': 'linear', 'wn': lpf.wn})
+                       meta={'extname': f"flux_{pb}", 'filter': pb, 'trends': 'linear', 'wn': lpf.wn[i],
+                             'radrat': lpf.radius_ratio})
             hdul.append(pf.BinTableHDU(df))
 
-        for i, pb in enumerate(self.pbs[1:]):
+        for i, pb in enumerate(self.pbs):
             df = Table(lpf.covariates[i], names='intercept sky xshift yshift entropy'.split(),
                        meta={'extname': f'aux_{pb}'})
             hdul.append(pf.BinTableHDU(df))
-        hdul.writeto(self._dres.joinpath(f'{self.target}_{self.date}.fits'), overwrite=True)
+        hdul.writeto(self._dres.joinpath(f'{self.target}_{self.date}_{lpf.radius_ratio}_k.fits'), overwrite=True)
 
     def plot_raw_light_curves(self, pb: int, sids: int, aids: int):
         sids = atleast_1d(sids)

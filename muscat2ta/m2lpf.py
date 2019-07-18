@@ -31,7 +31,7 @@ from pytransit import QuadraticModel, QuadraticModelCL
 from pytransit.contamination import SMContamination
 from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
 from pytransit.contamination.instrument import Instrument
-from pytransit.lpf.lpf import BaseLPF
+from pytransit.lpf.lpf import BaseLPF, map_pv, map_ldc
 from pytransit.orbits.orbits_py import as_from_rhop, duration_eccentric, i_from_ba, d_from_pkaiews
 from pytransit.param.parameter import NormalPrior as NP, UniformPrior as UP, LParameter, PParameter, ParameterSet
 from pytransit.utils.de import DiffEvol
@@ -196,7 +196,7 @@ class M2LPF(BaseLPF):
         else:
             tm = QuadraticModel(interpolate=True, klims=(0.005, 0.25), nk=512, nz=512)
 
-        super().__init__(target, filters, times, fluxes, wns, arange(len(photometry)), covariates, tm = tm)
+        super().__init__(target, filters, times, fluxes, wns, arange(len(photometry)), covariates, arange(len(photometry)), tm = tm)
 
         self.legendre = [legvander((t - t.min())/(0.5*t.ptp()) - 1, self.n_legendre)[:,1:] for t in self.times]
 
@@ -394,7 +394,10 @@ class M2LPF(BaseLPF):
                 pvv[:, :4] = pv[:, :4]
                 pvv[:, 4] = mean_ar
                 pvv[:, 5:] = pv[:, 4+self.npb:]
-                flux = super().transit_model(pvv, copy)
+
+                pvp = map_pv(pvv)
+                ldc = map_ldc(pvv[:, 5:5 + 2 * self.npb])
+                flux = self.tm.evaluate_pv(pvp, ldc, copy)
                 rel_ar = pv[:, self._sl_k2] / mean_ar[:,newaxis]
                 flux = change_depth(rel_ar, flux, self.lcids, self.pbids)
             else:
