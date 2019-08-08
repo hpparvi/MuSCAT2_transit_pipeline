@@ -1,6 +1,7 @@
 import xarray as xa
 import seaborn as sb
 from astropy.coordinates import SkyCoord, FK5
+from astroquery.simbad import Simbad
 from matplotlib.pyplot import subplots, setp
 
 from numpy import inf, sqrt, dot, exp, linspace, log, zeros, array, arange, meshgrid, ones, r_, isin, ceil, ones_like, \
@@ -86,13 +87,14 @@ class ReferenceStarSet:
 
 
 class PhotometryData:
-    def __init__(self, fname, tid, cids, objname=None, objskycoords=None, **kwargs):
+    def __init__(self, fname, tid, cids, objname=None, objskycoords=None, excluded_ranges=None, **kwargs):
         with xa.open_dataset(fname) as ds:
             self._ds = ds.load()
         self._flux = self._ds.flux
         self._mjd = Time(self._ds.aux.loc[:,'mjd'], format='mjd', scale='utc', location=lapalma)
         self.objname = objname
         self.objskycoords = objskycoords
+        self._excluded_ranges = excluded_ranges
 
         self._aux = self._ds.aux
         self._cnt = self._ds.centroid
@@ -131,6 +133,9 @@ class PhotometryData:
         self._fmask[self._mjd.value > self.mjd_end] = 0
         self._fmask &= self._flux.notnull().any(['star','aperture'])
         self._fmask = array(self._fmask)
+
+        if self._excluded_ranges is not None:
+            self.exclude_mjd_ranges(self._excluded_ranges)
 
         self._entropy_table = None
         self._calculate_effective_fwhm()
@@ -175,6 +180,11 @@ class PhotometryData:
     def select_aperture(self):
         self.iapt = int(self.normalized_relative_flux_ptps.argmin())
 
+    def exclude_mjd_ranges(self, mjd_ranges: tuple) -> None:
+        mask = ones(self.nframes, bool)
+        for mr in mjd_ranges:
+            mask &= ~((self._mjd.value > mr[0]) & (self._mjd.value < mr[1]))
+        self._fmask &= mask
 
     @property
     def aux(self):
@@ -303,13 +313,16 @@ class PhotometryData:
             self._flux[:, iobj, iapt].plot(alpha=0.25, c='k', marker='.', linestyle='')
 
     def plot_raw(self, nstars, ylim=(0.85, 1.15), ncols=4, figsize=(11,11)):
+        apertures = self._ds.aperture.data
+        date = self.mjd[0].iso.split(' ')[0]
         nrows = int(ceil(nstars / ncols))
-        fig, axs = subplots(nrows, ncols, figsize=figsize, sharex=True, sharey=True)
+        fig, axs = subplots(nrows, ncols, figsize=figsize, sharex='all', sharey='all')
         nflux = self.flux / self.flux.median('mjd')
         aids = abs(nflux.diff('mjd')).median('mjd').argmin('aperture')
-        for i,(ax,apt) in enumerate(zip(axs.flat, aids[:nstars])):
-            ax.plot(self.mjd.value, nflux[:,i,apt], 'k')
-            ax.text(0.05, 0.05, int(apt), transform=ax.transAxes, size='small')
+        for i,(ax,iapt) in enumerate(zip(axs.flat, aids[:nstars])):
+            apt = apertures[iapt]
+            ax.plot(self.mjd.value, nflux[:, i, iapt], 'k')
+            ax.text(0.05, 0.99, f'star id={i}\naperture id = {int(iapt)}\nr={int(apt)} pix', va='top', transform=ax.transAxes)
         setp(axs, ylim=ylim)
         sb.despine(fig)
         fig.tight_layout()
