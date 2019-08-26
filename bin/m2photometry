@@ -87,6 +87,9 @@ if __name__ == '__main__':
     ap.add_argument('--separation-cut-distance', type=float, default=2.0)
     ap.add_argument('--tfop', action='store_true', default=False)
     ap.add_argument('--no-tfop', action='store_true', default=False)
+    ap.add_argument('--find-mf', type=int, default=6)
+    ap.add_argument('--find-treshold', type=float, default=99.5)
+    ap.add_argument('--apertures', nargs='+', type=float, default=None)
     args = ap.parse_args()
 
     root = Path(args.datadir)
@@ -111,6 +114,9 @@ if __name__ == '__main__':
             apertures = (6, 8, 12, 16, 20, 24, 30, 40, 50, 60)
             max_stars = args.max_stars
             TFOP = False
+
+        if args.apertures is not None:
+            apertures = args.apertures
 
         all_files = {}
         for pb in pbs:
@@ -152,7 +158,8 @@ if __name__ == '__main__':
             # Find, cut, save, and load the stars
             # -----------------------------------
             if (args.save_stars and ipb==0) or not stars_file.exists():
-                im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords)
+                im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords,
+                              treshold=args.find_treshold, mf_size=args.find_mf)
                 im.cut_margin(args.border_margin)
                 if TFOP or args.apply_separation_cut:
                     im.cut_separation(target_sky_coords, args.separation_cut_distance)
@@ -163,7 +170,7 @@ if __name__ == '__main__':
             if TFOP or args.apply_separation_cut:
                 im.cut_separation(target_sky_coords, args.separation_cut_distance)
             
-            cc = COMCentroider(im, None, aperture_radius=15)
+            cc = COMCentroider(im, None, aperture_radius=apertures[0])
             cc.select_stars(20)
             cc.calculate_and_apply()
 

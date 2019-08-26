@@ -361,9 +361,9 @@ class ScienceFrame(ImageFrame):
         bhigh = (self._aps.positions > boundary).all(1)
         return blow & bhigh
 
-
-    def find_stars(self, treshold=99.5, maxn=10, target_sky=None, target_pix=None):
-        objects = mf(self.reduced, 6) > sap(self.reduced, treshold)
+    def find_stars(self, treshold=99.5, maxn=10, target_sky=None, target_pix=None, mf_size=6):
+        filtered_flux = mf(self.reduced, mf_size)
+        objects = filtered_flux > sap(filtered_flux, treshold)
         labels, nl = label(objects)
         fluxes = [self.reduced[labels == l].mean() for l in range(1, nl + 1)]
         fids = argsort(fluxes)[::-1] + 1
@@ -540,7 +540,7 @@ class ScienceFrame(ImageFrame):
             apertures_sky.plot(ax=ax, alpha=0.25)
 
 
-    def plot_psf(self, iob=0, iapt=3, max_r=15, figsize=None, ax=None):
+    def plot_psf(self, iob=0, iapt=0, max_r=15, figsize=None, ax=None):
         a = self._apertures_obj[iapt]
         m = a.to_mask()[iob]
         d = m.cutout(self.reduced)
