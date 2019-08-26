@@ -88,12 +88,14 @@ def tmodel(time, toi, fratio=None):
 class TFOPAnalysis(TransitAnalysis):
     def __init__(self, target: str, date: str, tid: int, cids: list, dataroot: Path = None, exptime_min: float = 30.,
                  nlegendre: int = 0,  npop: int = 200,  mjd_start: float = -inf, mjd_end: float = inf,
+                 excluded_mjd_ranges: tuple = None,
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
                  radius_ratio: str = 'achromatic'):
 
         super().__init__(target, date, tid, cids, dataroot=dataroot, exptime_min=exptime_min,
                  nlegendre=nlegendre,  npop=npop,  mjd_start=mjd_start, mjd_end=mjd_end,
+                 excluded_mjd_ranges=excluded_mjd_ranges,
                  aperture_lims=aperture_lims, passbands=passbands,
                  use_opencl=use_opencl, with_transit=with_transit, with_contamination=with_contamination,
                  radius_ratio=radius_ratio)
