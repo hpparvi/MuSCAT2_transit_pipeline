@@ -136,14 +136,14 @@ class TransitAnalysis:
     def sample(self, niter: int = 1000, thin: int = 5, repeats: int = None, reset=True):
         self.lpf.sample_mcmc(niter, thin=thin, repeats=repeats, label='Sampling the model', reset=reset)
 
-    def posterior_samples(self, burn: int = 0, thin: int = 1, include_ldc: bool = False) -> pd.DataFrame:
-        return self.lpf.posterior_samples(burn, thin, include_ldc)
+    def posterior_samples(self, burn: int = 0, thin: int = 1) -> pd.DataFrame:
+        return self.lpf.posterior_samples(burn, thin)
 
     def plot_mcmc_chains(self, pid: int = 0, alpha: float = 0.1, thin: int = 1, ax = None):
         return self.lpf.plot_mcmc_chains(pid, alpha, thin, ax)
 
     def plot_basic_posteriors(self, burn: int = 0, thin: int = 1):
-        df = self.posterior_samples(burn, thin, False)
+        df = self.posterior_samples(burn, thin)
         df['k'] = sqrt(df.k2)
         df.drop(['k2'], axis=1, inplace=True)
         return corner(df)
