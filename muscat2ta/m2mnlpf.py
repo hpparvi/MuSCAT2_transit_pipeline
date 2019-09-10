@@ -82,7 +82,7 @@ class M2MultiNightLPF(LinearModelBaseline, BaseLPF):
         flux = change_depth(rel_ar, flux, self.lcids, self.pbids)
         return flux
 
-    def create_pv_populations(self, npop=50):
+    def create_pv_population(self, npop=50):
         pvp = self.ps.sample_from_prior(npop)
 
         pvv = uniform(size=(npop, 2 * self.npb))
