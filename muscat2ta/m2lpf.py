@@ -32,7 +32,7 @@ from pytransit.contamination import SMContamination
 from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
 from pytransit.contamination.instrument import Instrument
 from pytransit.lpf.lpf import BaseLPF, map_pv, map_ldc
-from pytransit.orbits.orbits_py import as_from_rhop, duration_eccentric, i_from_ba, d_from_pkaiews
+from pytransit.orbits.orbits_py import as_from_rhop, duration_eccentric, i_from_ba, d_from_pkaiews, epoch
 from pytransit.param.parameter import NormalPrior as NP, UniformPrior as UP, LParameter, PParameter, ParameterSet
 from pytransit.utils.de import DiffEvol
 from scipy.stats import logistic, norm
@@ -138,10 +138,6 @@ class M2LPF(BaseLPF):
         self.radius_ratio = radius_ratio
         self.n_legendre = n_legendre
 
-        self.toi = None
-        if self.with_transit and 'toi' in target.lower() and use_toi_info:
-            self.toi = get_toi(float(target.lower().strip('toi')))
-
         # Set photometry
         # --------------
         self.phs = photometry
@@ -173,8 +169,8 @@ class M2LPF(BaseLPF):
         fluxes = [f/nanmedian(f) for f in fluxes]
         self.apertures = ones(len(times)).astype('int')
 
-        self.t0 = floor(times[0].min())
-        times = [t - self.t0 for t in times]
+        self.tref = floor(times[0].min())
+        times = [t - self.tref for t in times]
 
         self._tmin = times[0].min()
         self._tmax = times[0].max()
@@ -208,8 +204,6 @@ class M2LPF(BaseLPF):
         for ip, ph in enumerate(photometry):
             self.refs.append([pad(array(ph.flux[:, cid, amin:amax+1]), ((0, 0), (1, 0)), mode='constant') for cid in self.cids[ip]])
 
-        self.set_orbit_priors()
-
 
     def _init_parameters(self):
         self.ps = ParameterSet()
@@ -220,17 +214,6 @@ class M2LPF(BaseLPF):
         self._init_p_baseline()
         self._init_p_noise()
         self.ps.freeze()
-
-    def set_orbit_priors(self):
-        if self.with_transit and self.toi is not None:
-            tn = round((self.times[0].mean() - (self.toi.epoch[0] - self.t0)) / self.toi.period[0])
-            epoch = ufloat(*self.toi.epoch)
-            period = ufloat(*self.toi.period)
-            tc = epoch - self.t0 + tn * period
-            self.set_prior(0, NP(tc.n, tc.s))
-            self.set_prior(1, NP(*self.toi.period))
-            self.add_t14_prior(self.toi.duration[0] / 24, 0.5 * self.toi.duration[1] / 24)
-
 
     def _init_p_planet(self):
         """Planet parameter initialisation.
@@ -561,7 +544,7 @@ class M2LPF(BaseLPF):
                 self.set_ofluxa(pv)
 
         elif model == 'mc':
-            fc = array(self.posterior_samples(include_ldc=True))
+            fc = array(self.posterior_samples(derived_parameters=False))
             pv = permutation(fc)[:300]
             err = 10 ** median(pv[:, self._sl_err], 0)
             if not self.photometry_frozen:
@@ -576,7 +559,7 @@ class M2LPF(BaseLPF):
             tm = percentile(atleast_2d(ones(self.timea.size)), ps, 0)
         fm = percentile(atleast_2d(self.flux_model(pv)), ps, 0)
         bl = percentile(atleast_2d(self.baseline(pv)), ps, 0)
-        t0 = self.t0
+        t0 = self.tref
 
         for i, sl in enumerate(self.lcslices):
             t = self.timea[sl]
@@ -600,7 +583,7 @@ class M2LPF(BaseLPF):
         setp(axs[1, 0], ylabel='Transit + Systematics')
         setp(axs[2, 0], ylabel='Transit - Systematics')
         setp(axs[3, 0], ylabel='Residuals')
-        setp(axs[3, :], xlabel=f'Time - {self.t0:9.0f} [BJD]')
+        setp(axs[3, :], xlabel=f'Time - {self.tref:9.0f} [BJD]')
         setp(axs[0, :], xlabel='Residual [ppt]', yticks=[])
         [sb.despine(ax=ax, offset=5, left=True) for ax in axs[0]]
         return fig, axs
@@ -611,7 +594,7 @@ class M2LPF(BaseLPF):
             fig = figure(figsize=figsize, constrained_layout=True)
         axs = fig.subplots(2, 3, gridspec_kw=gridspec)
 
-        df = self.posterior_samples(include_ldc=True)
+        df = self.posterior_samples()
         df = df.iloc[:, :5].copy()
         df['k'] = sqrt(df.k2)
 
@@ -642,10 +625,6 @@ class M2LPF(BaseLPF):
         for i, ax in enumerate(axs.flat[2:]):
             ax.hist(df.iloc[:, i + 2], 50, density=True, alpha=0.5, edgecolor='k', histtype='stepfilled')
             ax.set_xlabel(names[i])
-
-        # TFOP Transit depth estimates
-        axs[1, 1].axvline(1e-6 * self.toi.depth[0], c='0.5', lw=2)
-        axs[1, 2].axvline(sqrt(1e-6 * self.toi.depth[0]), c='0.5', lw=2)
 
         setp(axs, yticks=[])
         return fig, axs

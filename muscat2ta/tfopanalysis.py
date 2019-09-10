@@ -29,6 +29,9 @@ from astropy.wcs import WCS
 from matplotlib import cm
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.pyplot import subplots, setp, figure, figtext
+from pytransit.orbits import epoch
+from uncertainties import ufloat
+
 from muscat2ph.catalog import get_toi
 from numba import njit
 from numpy import sqrt, nan, zeros, digitize, sin, arange, ceil, where, isfinite, inf, ndarray, argsort, array, \
@@ -36,6 +39,8 @@ from numpy import sqrt, nan, zeros, digitize, sin, arange, ceil, where, isfinite
 from numpy.random import normal
 from photutils import SkyCircularAperture
 from tqdm.auto import tqdm
+
+from pytransit import NormalPrior as NP, UniformPrior as UP
 
 from .transitanalysis import TransitAnalysis
 
@@ -91,7 +96,7 @@ class TFOPAnalysis(TransitAnalysis):
                  excluded_mjd_ranges: tuple = None,
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
-                 radius_ratio: str = 'achromatic'):
+                 radius_ratio: str = 'chromatic'):
 
         super().__init__(target, date, tid, cids, dataroot=dataroot, exptime_min=exptime_min,
                  nlegendre=nlegendre,  npop=npop,  mjd_start=mjd_start, mjd_end=mjd_end,
@@ -104,6 +109,22 @@ class TFOPAnalysis(TransitAnalysis):
         # -----------------------
         self.toi = get_toi(float(target.lower().strip('toi')))
         self.ticname = 'TIC{:d}-{}'.format(self.toi.tic, str(self.toi.toi).split('.')[1])
+
+        # Set priors
+        # ----------
+        self.t0 = ufloat(*self.toi.epoch)
+        self.pr = ufloat(*self.toi.period)
+        self.ep = epoch(self.lpf.timea.mean() + self.lpf.tref, self.t0.n, self.pr.n)
+        self.tc = self.t0 + self.ep * self.pr - self.lpf.tref
+
+        self.set_prior('tc', NP(self.tc.n, self.tc.s))
+        self.set_prior('p', NP(*self.toi.period))
+        self.add_t14_prior(self.toi.duration[0] / 24, 0.5*self.toi.duration[1] / 24)
+
+        for p in self.lpf.ps[self.lpf._sl_k2]:
+            p.prior = UP(0.25 * self.toi.depth[0] * 1e-6, 4 * self.toi.depth[0] * 1e-6)
+
+        self.lpf.aid = 4
 
         # Calculate star separations
         # --------------------------
@@ -138,8 +159,14 @@ class TFOPAnalysis(TransitAnalysis):
             apts.to_pixel(wcs).plot(color='w')
 
 
-    def plot_fit(self, model: str = 'de', figsize: tuple = (13, 8), save=False):
+    def plot_fit(self, model: str = 'de', figsize: tuple = (13, 8), save=False, plot_priors=True):
         fig, axs = self.lpf.plot_light_curves(model=model, figsize=figsize)
+        npb = self.lpf.npb
+        if plot_priors:
+            [ax.axvspan(self.tc.n - self.tc.s, self.tc.n + self.tc.s, alpha=0.2) for ax in fig.axes[npb:]]
+            [ax.axvline(self.tc.n) for ax in fig.axes[npb:]]
+            [ax.axhline(1 - self.toi.depth[0] * 1e-6, ls=':') for ax in fig.axes[npb:3*npb]]
+
         ptype = 'fit' if model == 'de' else 'mcmc'
         if save:
             fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{ptype}.pdf"))
@@ -296,6 +323,7 @@ class TFOPAnalysis(TransitAnalysis):
                                                                                                            'xshift',
                                                                                                            'yshift',
                                                                                                            'sky_entropy'])
+            df['BJD_TDB'] += self.lpf.tref
             df.to_csv(self._dres.joinpath(f'{self.ticname}_20{self.date}_MuSCAT2_{self.passbands[i]}_measurements.tbl'),
                       index=False, sep=" ")
 
@@ -314,6 +342,7 @@ class TFOPAnalysis(TransitAnalysis):
         ds = xa.Dataset(data_vars={'de_population': delm, 'mcmc': lmmc},
                         attrs={'created': strftime('%Y-%m-%d %H:%M:%S'),
                                'obsnight': self.date,
-                               'target': self.target})
+                               'target': self.target,
+                               'tref': self.lpf.tref})
 
         ds.to_netcdf(self.savefile_name)

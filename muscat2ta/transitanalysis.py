@@ -211,7 +211,7 @@ class TransitAnalysis:
 
         for i, pb in enumerate(self.pbs):
             sl = lpf.lcslices[i]
-            df = Table(transpose([time[sl] + self.lpf.t0, detrended_flux[sl], relative_flux[sl], target_flux[sl],
+            df = Table(transpose([time[sl] + self.lpf.tref, detrended_flux[sl], relative_flux[sl], target_flux[sl],
                                   reference_flux[sl], baseline[sl], transit[sl]]),
                        names='time_bjd flux flux_rel flux_trg flux_ref baseline model'.split(),
                        meta={'extname': f"flux_{pb}", 'filter': pb, 'trends': 'linear', 'wn': lpf.wn[i],
@@ -236,9 +236,9 @@ class TransitAnalysis:
         for sid, aid, ax in zip(sids, aids, axs.flat):
             f = ph.flux[:, sid, aid]
             f /= f.median()
-            ax.plot(ph.bjd - self.lpf.t0, f)
+            ax.plot(ph.bjd - self.lpf.tref, f)
             ax.set_title(f"Star {sid}, aperture {aid}, scatter {float(f.diff('mjd').std('mjd') / sqrt(2)):.4f}")
-            setp(ax, xlabel=f"Time - {self.lpf.t0:.0f} [d]", ylabel='Normalised flux')
+            setp(ax, xlabel=f"Time - {self.lpf.tref:.0f} [d]", ylabel='Normalised flux')
 
     def plot_final_fit(self, model='linear', figwidth: float = 13):
         lpf = self.models[model]
