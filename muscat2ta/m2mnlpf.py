@@ -21,11 +21,14 @@ import pandas as pd
 
 from astropy.stats import sigma_clip
 from astropy.table import Table
-from numpy import arange, newaxis, atleast_2d, zeros, sort, log10, sqrt, diff
-from numpy.random import uniform
+from matplotlib.artist import setp
+from matplotlib.pyplot import subplots
+from numpy import arange, newaxis, atleast_2d, zeros, sort, log10, sqrt, diff, unique, percentile, squeeze
+from numpy.random import uniform, permutation
 
 from pytransit import BaseLPF, LinearModelBaseline
 from pytransit.lpf.lpf import map_pv, map_ldc
+from pytransit.orbits import epoch
 from pytransit.param.parameter import PParameter, UniformPrior as UP
 
 from .m2lpf import change_depth
@@ -96,3 +99,53 @@ class M2MultiNightLPF(LinearModelBaseline, BaseLPF):
             wn = diff(self.ofluxa).std() / sqrt(2)
             pvp[:, self._start_err] = log10(uniform(0.5 * wn, 2 * wn, size=npop))
         return pvp
+
+
+    def plot_light_curves(self, method='de', width: float = 3., max_samples: int = 100, figsize=None, data_alpha=0.5,
+                          ylim=None):
+        if method == 'mcmc':
+            df = self.posterior_samples(derived_parameters=False)
+            t0, p = df.tc.median(), df.p.median()
+            fmodel = self.flux_model(permutation(df.values)[:max_samples])
+            fmperc = percentile(fmodel, [50, 16, 84, 2.5, 97.5], 0)
+        else:
+            fmodel = squeeze(self.flux_model(self.de.minimum_location))
+            t0, p = self.de.minimum_location[0], self.de.minimum_location[1]
+            fmperc = None
+
+        epochs = [epoch(t.mean(), t0, p) for t in self.times]
+        n_epochs = unique(epochs).size
+        epoch_to_row = {e: i for i, e in enumerate(unique(epochs))}
+
+        fig, axs = subplots(n_epochs, 4, figsize=figsize, sharey='all', sharex='all')
+        for i in range(self.nlc):
+            e = epochs[i]
+            irow = epoch_to_row[e]
+            icol = self.pbids[i]
+            ax = axs[irow, icol]
+
+            tc = t0 + e * p
+            time = self.times[i] - tc
+
+            ax.plot(time, self.fluxes[i], '.', alpha=data_alpha)
+
+            if method == 'de':
+                ax.plot(time, fmodel[self.lcslices[i]], 'w', lw=4)
+                ax.plot(time, fmodel[self.lcslices[i]], 'k', lw=1)
+            else:
+                ax.fill_between(time, *fmperc[3:5, self.lcslices[i]], alpha=0.15)
+                ax.fill_between(time, *fmperc[1:3, self.lcslices[i]], alpha=0.25)
+                ax.plot(time, fmperc[0, self.lcslices[i]])
+
+        setp(axs, xlim=(-width / 2 / 24, width / 2 / 24))
+        setp(axs[:, 0], ylabel='Normalised flux')
+        setp(axs[-1], xlabel=f'Time - T$_c$ [d]')
+
+        if ylim is not None:
+            setp(axs, ylim=ylim)
+
+        [ax.set_title(pb) for ax, pb in zip(axs[0], "g' r' i' z'".split())]
+        setp([a.get_xticklabels() for a in axs.flat[:-4]], visible=False)
+        setp([a.get_yticklabels() for a in axs[:, 1:].flat], visible=False)
+        fig.subplots_adjust(hspace=0, wspace=0, left=0.05, right=0.98, bottom=0.05, top=0.95)
+        return fig
