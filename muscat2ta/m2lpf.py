@@ -267,18 +267,19 @@ class M2LPF(BaseLPF):
             self._sl_tap = self.ps.blocks[-1].slice
             self._start_tap = self.ps.blocks[-1].start
 
-            c = []
-            for ilc in range(self.nlc):
-                for irf in range(self.cids.shape[1]):
-                    c.append(LParameter(f'ref_{irf:d}_{ilc:d}', f'comparison_star_{irf:d}_{ilc:d}', '', UP(0.0, 0.999), bounds=( 0.0, 0.999)))
-            self.ps.add_lightcurve_block('rstars', self.cids.shape[1], self.nlc, c)
-            self._sl_ref = self.ps.blocks[-1].slice
-            self._start_ref = self.ps.blocks[-1].start
+            if self.cids.size > 0:
+                c = []
+                for ilc in range(self.nlc):
+                    for irf in range(self.cids.shape[1]):
+                        c.append(LParameter(f'ref_{irf:d}_{ilc:d}', f'comparison_star_{irf:d}_{ilc:d}', '', UP(0.0, 0.999), bounds=( 0.0, 0.999)))
+                self.ps.add_lightcurve_block('rstars', self.cids.shape[1], self.nlc, c)
+                self._sl_ref = self.ps.blocks[-1].slice
+                self._start_ref = self.ps.blocks[-1].start
 
     def _init_p_noise(self):
         """Noise parameter initialisation.
         """
-        pns = [LParameter('loge_{:d}'.format(i), 'log10_error_{:d}'.format(i), '', UP(-3, 0), bounds=(-3, 0)) for i in
+        pns = [LParameter('loge_{:d}'.format(i), 'log10_error_{:d}'.format(i), '', UP(-4, 0), bounds=(-4, 0)) for i in
                range(self.n_noise_blocks)]
         self.ps.add_lightcurve_block('log_err', 1, self.n_noise_blocks, pns)
         self._sl_err = self.ps.blocks[-1].slice
@@ -416,15 +417,18 @@ class M2LPF(BaseLPF):
         return squeeze(off)
 
     def reference_flux(self, pv):
-        pv = atleast_2d(pv)
-        p = floor(clip(pv[:, self._sl_ref], 0., 0.999) * self.napt+1).astype('int')
-        r = zeros((pv.shape[0], self.ofluxa.size))
-        nref = self.cids.shape[1]
-        for ipb, sl in enumerate(self.lcslices):
-            for i in range(nref):
-                r[:, sl] += self.refs[ipb][i][:, p[:, ipb * nref + i]].T
-            r[:, sl] = r[:, sl] / median(r[:, sl], 1)[:, newaxis]
-        return squeeze(where(isfinite(r), r, inf))
+        if self.cids.size > 0:
+            pv = atleast_2d(pv)
+            p = floor(clip(pv[:, self._sl_ref], 0., 0.999) * self.napt+1).astype('int')
+            r = zeros((pv.shape[0], self.ofluxa.size))
+            nref = self.cids.shape[1]
+            for ipb, sl in enumerate(self.lcslices):
+                for i in range(nref):
+                    r[:, sl] += self.refs[ipb][i][:, p[:, ipb * nref + i]].T
+                r[:, sl] = r[:, sl] / median(r[:, sl], 1)[:, newaxis]
+            return squeeze(where(isfinite(r), r, inf))
+        else:
+            return 1.
 
     def extinction(self, pv):
         pv = atleast_2d(pv)

@@ -216,23 +216,26 @@ class PhotometryData:
 
     @property
     def sky(self):
-        return self._sky[self._fmask,r_[self.tid, self.cids]].mean('star')
+        return self._sky[self._fmask, r_[self.tid, self.cids].astype(int)].mean('star')
 
     @property
     def entropy(self):
-        return self._ds.obj_entropy[self._fmask, r_[self.tid, self.cids], self.iapt].mean('star')
+        return self._ds.obj_entropy[self._fmask, r_[self.tid, self.cids].astype(int), self.iapt].mean('star')
 
     @property
     def effective_fwhm(self):
-        return self._fwhm[self._fmask, r_[self.tid, self.cids], self.iapt].mean('star')
+        sids = r_[self.tid, self.cids].astype(int)
+        return self._fwhm[self._fmask, sids, self.iapt].mean('star')
 
     @property
     def xshift(self):
-        return (self._cnt[self._fmask, r_[self.tid, self.cids], 0] - self._cnt[self._fmask,r_[self.tid, self.cids],0][0]).mean('star')
+        sids = r_[self.tid, self.cids].astype(int)
+        return (self._cnt[self._fmask, sids, 0] - self._cnt[self._fmask, sids, 0][0]).mean('star')
 
     @property
     def yshift(self):
-        return (self._cnt[self._fmask, r_[self.tid, self.cids], 1] - self._cnt[self._fmask,r_[self.tid, self.cids],1][0]).mean('star')
+        sids = r_[self.tid, self.cids].astype(int)
+        return (self._cnt[self._fmask, sids, 1] - self._cnt[self._fmask, sids,1][0]).mean('star')
 
     @property
     def relative_flux(self):
