@@ -14,12 +14,15 @@
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import warnings
 from pathlib import Path
 from time import strftime
 
+from astropy.utils.exceptions import AstropyWarning
+warnings.simplefilter('ignore', category=AstropyWarning)
+
 import pandas as pd
 import xarray as xa
-import seaborn as sb
 from astropy.io import fits as pf
 from astropy.table import Table
 from corner import corner
@@ -27,7 +30,6 @@ from matplotlib.pyplot import figure, figtext, setp, subplots
 from muscat2ph.catalog import get_m2_coords
 from muscat2ph.phdata import PhotometryData
 from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze, atleast_1d, ceil)
-from tqdm.auto import tqdm
 
 from pytransit.param import NormalPrior as NP, UniformPrior as UP
 
@@ -102,6 +104,7 @@ class TransitAnalysis:
         if with_transit:
             self.lpf.set_prior(0, NP(self.lpf.times[0].mean(), 0.2*self.lpf.times[0].ptp()))
 
+        self.pbs = self.lpf.passbands
         self.pv = None
 
 
@@ -157,7 +160,7 @@ class TransitAnalysis:
 
     @property
     def savefile_name(self):
-        return f'{self.target}_{self.date}.nc'
+        return f'{self.target}_{self.date}_{self.lpf.radius_ratio}.nc'
 
     def load(self):
         ds = xa.open_dataset(self.savefile_name).load()
@@ -208,6 +211,9 @@ class TransitAnalysis:
             reference_flux = lpf._reference_flux
             relative_flux = self.lpf.ofluxa
             detrended_flux = relative_flux / baseline
+
+        if self.lpf.cids.size == 0:
+            reference_flux = ones_like(target_flux)
 
         for i, pb in enumerate(self.pbs):
             sl = lpf.lcslices[i]
