@@ -24,7 +24,7 @@ from muscat2ph.catalog import get_toi
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
-    delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort
+    delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like
 from numpy.polynomial.legendre import legvander
 from numpy.random import permutation, uniform, normal
 from pytransit import QuadraticModel, QuadraticModelCL
@@ -157,7 +157,7 @@ class M2LPF(BaseLPF):
 
         self.cids = atleast_2d(cids)
         if self.cids.shape[0] == 1:
-            self.cids = tile(self.cids, (self.nph, 1))
+            self.cids = atleast_2d(tile(self.cids, (self.nph, 1)))
 
         assert self.tid.size == self.nph
         assert self.cids.shape[0] == self.nph
@@ -352,11 +352,18 @@ class M2LPF(BaseLPF):
         pv = pv if pv is not None else self.de.minimum_location
         ps_orig = self.ps
         self._original_population = pvp = self.de.population.copy()
-        self._frozen_population = delete(pvp, s_[self._sl_tap.start: self._sl_ref.stop], 1)
+
+        if self.cids.size == 0:
+            self._frozen_population = delete(pvp, self._sl_tap, 1)
+            self._reference_flux = ones_like(self.ofluxa)
+            self.raps = []
+        else:
+            self._frozen_population = delete(pvp, s_[self._sl_tap.start: self._sl_ref.stop], 1)
+            self._reference_flux = self.reference_flux(pv)
+            self.raps = self.reference_apertures(pv)
+
         self.taps = self.target_apertures(pv)
-        self.raps = self.reference_apertures(pv)
         self._target_flux = self.target_flux(pv)
-        self._reference_flux = self.reference_flux(pv)
         self.ofluxa[:] = self.relative_flux(pv)
         self.photometry_frozen = True
         self._init_parameters()
