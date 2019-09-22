@@ -428,35 +428,37 @@ class ScienceFrame(ImageFrame):
 
 
     def cut_separation(self, target=None, max_separation=3.0, keep_n_brightest=20):
-        target = target or self._target_center
-        if isinstance(target, int):
-            sc_center = self._ref_centroids_sky[target]
-        elif isinstance(target, SkyCoord):
-            sc_center = target
-        elif isinstance(target, str):
-            sc_center = SkyCoord(target, frame=FK5, unit=(u.hourangle, u.deg))
-        self._target_center = sc_center
-        separation = sc_center.separation(self._ref_centroids_sky)
-        mask = separation.arcmin <= max_separation
-        mask[:keep_n_brightest] = True
-        stars = self._ref_centroids_sky[mask]
-        self.set_reference_stars(stars.to_pixel(self._wcs), stars)
-        self._separation_cut = max_separation*u.arcmin
+        if self._wcs is not None:
+            target = target or self._target_center
+            if isinstance(target, int):
+                sc_center = self._ref_centroids_sky[target]
+            elif isinstance(target, SkyCoord):
+                sc_center = target
+            elif isinstance(target, str):
+                sc_center = SkyCoord(target, frame=FK5, unit=(u.hourangle, u.deg))
+            self._target_center = sc_center
+            separation = sc_center.separation(self._ref_centroids_sky)
+            mask = separation.arcmin <= max_separation
+            mask[:keep_n_brightest] = True
+            stars = self._ref_centroids_sky[mask]
+            self.set_reference_stars(stars.to_pixel(self._wcs), stars)
+            self._separation_cut = max_separation*u.arcmin
 
     def remove_doubles(self, target=None, min_separation=0.1):
-        target = target or self._target_center
-        if isinstance(target, int):
-            sc_center = self._ref_centroids_sky[target]
-        elif isinstance(target, SkyCoord):
-            sc_center = target
-        elif isinstance(target, str):
-            sc_center = SkyCoord(target, frame=FK5, unit=(u.hourangle, u.deg))
-        self._target_center = sc_center
-        separation = sc_center.separation(self._ref_centroids_sky)
-        mask = separation.arcmin >= min_separation
-        mask[0] = True
-        stars = self._ref_centroids_sky[mask]
-        self.set_reference_stars(stars.to_pixel(self._wcs), stars)
+        if self._wcs is not None:
+            target = target or self._target_center
+            if isinstance(target, int):
+                sc_center = self._ref_centroids_sky[target]
+            elif isinstance(target, SkyCoord):
+                sc_center = target
+            elif isinstance(target, str):
+                sc_center = SkyCoord(target, frame=FK5, unit=(u.hourangle, u.deg))
+            self._target_center = sc_center
+            separation = sc_center.separation(self._ref_centroids_sky)
+            mask = separation.arcmin >= min_separation
+            mask[0] = True
+            stars = self._ref_centroids_sky[mask]
+            self.set_reference_stars(stars.to_pixel(self._wcs), stars)
         self._min_separation_cut = min_separation*u.arcmin
 
 

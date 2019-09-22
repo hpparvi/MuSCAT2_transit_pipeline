@@ -16,6 +16,8 @@
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import logging
+
 from argparse import ArgumentParser
 from datetime import datetime, timedelta
 from multiprocessing import Pool
@@ -36,6 +38,8 @@ from muscat2ph.photometry import ScienceFrame, COMCentroider
 from muscat2ph.catalog import get_m2_coords
 
 passbands = 'g r i z_s'.split()
+
+logging.basicConfig(level=logging.INFO)
 
 def init(root, pb, stars_file, apertures, centroider_kwargs):
     isize = 1024
@@ -109,29 +113,40 @@ if __name__ == '__main__':
     # Do the photometry for all the targets
     # -------------------------------------
     for object in objects:
-        target_sky_coords = get_m2_coords(object)
+        max_stars = args.max_stars
 
         if not args.no_tfop and (args.tfop or 'toi' in object.lower() or 'tic' in object.lower()):
-            print("Reducing a TFOP target {}.".format(object))
+            logging.info(f"Calculating photometry for a TFOP target {object}.")
             apertures = (4, 8, 12, 16, 20)
-            max_stars = 200
             TFOP = True
         else:
-            print("Reducing {}.".format(object))
+            logging.info(f"Calculating photometry for {object}.")
             apertures = (6, 8, 12, 16, 20, 24, 30, 40, 50, 60)
-            max_stars = args.max_stars
             TFOP = False
+
+        target_sky_coords = get_m2_coords(object)
+        logging.info(f"Target sky coordinates {target_sky_coords}")
 
         if args.apertures is not None:
             apertures = args.apertures
+        logging.info(f"Apertures {apertures}")
 
         all_files = {}
         for pb in pbs:
             ddir = root.joinpath('obj', object, pb)
             if ddir.exists():
                 all_files[pb] = sorted(list(ddir.glob('MCT2?_*.fits')))
+                logging.info(f"Found {len(all_files[pb])} fits files in {pb}.")
+
         if args.with_wcs_only:
             all_files = {pb : list(filter(lambda f: f.with_suffix('.wcs').exists(), all_files[pb])) for pb in all_files.keys()}
+            for pb in pbs:
+                if pb in all_files:
+                    logging.info(f"{len(all_files[pb])} left in {pb} after wcs filtering")
+
+        if sum([len(f) for f in all_files.values()]) == 0:
+            logging.warning("No files to process")
+            continue
 
         for k, it in all_files.items():
             if len(it) > 0:
@@ -149,6 +164,11 @@ if __name__ == '__main__':
             if not rdir.exists():
                 makedirs(rdir)
 
+        pbs = [pb for pb in pbs if pb in all_files]
+        logging.info(f"Found passbands {pbs}")
+
+        # Loop over passbands
+        # -------------------
         stars_file = rdir.joinpath('{}_stars.fits'.format(object))
         for ipb, pb in enumerate(pbs):
             if pb not in all_files:
@@ -157,6 +177,7 @@ if __name__ == '__main__':
             istart = max(0, args.start_frame)
             iend = min(args.end_frame, len(files))
             files = files[istart:iend]
+
             im = ScienceFrame(root, pb, aperture_radii=apertures)
             if target_sky_coords is not None:
                 im._target_center = target_sky_coords
