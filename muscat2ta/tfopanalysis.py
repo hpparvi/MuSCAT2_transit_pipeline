@@ -108,7 +108,7 @@ class TFOPAnalysis(TransitAnalysis):
         # Get the TOI information
         # -----------------------
         self.toi = get_toi(float(target.lower().strip('toi')))
-        self.ticname = 'TIC{:d}-{}'.format(self.toi.tic, str(self.toi.toi).split('.')[1])
+        self.ticname = 'TIC{:d}-{}'.format(int(self.toi.tic), str(self.toi.toi).split('.')[1])
 
         # Set priors
         # ----------
