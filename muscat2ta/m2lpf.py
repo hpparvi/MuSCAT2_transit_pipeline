@@ -27,7 +27,7 @@ from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, on
     delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like
 from numpy.polynomial.legendre import legvander
 from numpy.random import permutation, uniform, normal
-from pytransit import QuadraticModel, QuadraticModelCL
+from pytransit import QuadraticModel, QuadraticModelCL, BaseLPF, LinearModelBaseline
 from pytransit.contamination import SMContamination
 from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
 from pytransit.contamination.instrument import Instrument
@@ -121,7 +121,7 @@ def change_depth(relative_depth, flux, lcids, pbids):
             flux2[ipv, ipt] = (flux[ipv, ipt] - 1.) * relative_depth[ipv, pbids[lcids[ipt]]] + 1.
     return flux2
 
-class M2LPF(BaseLPF):
+class M2LPF(LinearModelBaseline, BaseLPF):
     def __init__(self, target: str, photometry: list, tid: int, cids: list,
                  filters: tuple, aperture_lims: tuple = (0, inf), use_opencl: bool = False,
                  n_legendre: int = 0, use_toi_info=True, with_transit=True, with_contamination=False,
@@ -190,9 +190,7 @@ class M2LPF(BaseLPF):
         else:
             tm = QuadraticModel(interpolate=True, klims=(0.005, 0.25), nk=512, nz=512)
 
-        super().__init__(target, filters, times, fluxes, wns, arange(len(photometry)), covariates, arange(len(photometry)), tm = tm)
-
-        self.legendre = [legvander((t - t.min())/(0.5*t.ptp()) - 1, self.n_legendre)[:,1:] for t in self.times]
+        BaseLPF.__init__(self, target, filters, times, fluxes, wns, arange(len(photometry)), covariates, arange(len(photometry)), tm = tm)
 
         # Create the target and reference star flux arrays
         # ------------------------------------------------
@@ -236,25 +234,7 @@ class M2LPF(BaseLPF):
 
 
     def _init_p_baseline(self):
-        c = []
-        for ilc in range(self.nlc):
-            c.append(LParameter(f'ci_{ilc:d}', 'intercept_{ilc:d}', '', NP(1.0, 0.03), bounds=( 0.5, 1.5)))
-            c.append(LParameter(f'ca_{ilc:d}', 'airmass_{ilc:d}',   '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
-            c.append(LParameter(f'cx_{ilc:d}', 'xshift_{ilc:d}',    '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
-            c.append(LParameter(f'cy_{ilc:d}', 'yshift_{ilc:d}',    '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
-            c.append(LParameter(f'ce_{ilc:d}', 'entropy_{ilc:d}',   '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
-        self.ps.add_lightcurve_block('ccoef', 5, self.nlc, c)
-        self._sl_ccoef = self.ps.blocks[-1].slice
-        self._start_ccoef = self.ps.blocks[-1].start
-
-        if self.n_legendre > 0:
-            c = []
-            for ilc in range(self.nlc):
-                for ilg in range(self.n_legendre):
-                    c.append(LParameter(f'leg_{ilc:d}_{ilg:d}', f'legendre__{ilc:d}_{ilg:d}', '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
-            self.ps.add_lightcurve_block('legendre_polynomials', self.n_legendre, self.nlc, c)
-            self._sl_leg = self.ps.blocks[-1].slice
-            self._start_leg = self.ps.blocks[-1].start
+        LinearModelBaseline._init_p_baseline(self)
 
         if not self.photometry_frozen:
             c = []
@@ -272,15 +252,6 @@ class M2LPF(BaseLPF):
                 self.ps.add_lightcurve_block('rstars', self.cids.shape[1], self.nlc, c)
                 self._sl_ref = self.ps.blocks[-1].slice
                 self._start_ref = self.ps.blocks[-1].start
-
-    def _init_p_noise(self):
-        """Noise parameter initialisation.
-        """
-        pns = [LParameter('loge_{:d}'.format(i), 'log10_error_{:d}'.format(i), '', UP(-4, 0), bounds=(-4, 0)) for i in
-               range(self.n_noise_blocks)]
-        self.ps.add_lightcurve_block('log_err', 1, self.n_noise_blocks, pns)
-        self._sl_err = self.ps.blocks[-1].slice
-        self._start_err = self.ps.blocks[-1].start
 
     def _init_instrument(self):
         self.instrument = Instrument('MuSCAT2', [sdss_g, sdss_r, sdss_i, sdss_z])
@@ -300,9 +271,7 @@ class M2LPF(BaseLPF):
 
             # With LDTk
             # ---------
-            #
             # Use LDTk to create the sample if LDTk has been initialised.
-            #
             if self.ldps:
                 istart = self._start_ld
                 cms, ces = self.ldps.coeffs_tq()
@@ -311,10 +280,8 @@ class M2LPF(BaseLPF):
 
             # No LDTk
             # -------
-            #
             # Ensure that the total limb darkening decreases towards
             # red passbands.
-            #
             else:
                 pvv = uniform(size=(npop, 2*self.npb))
                 pvv[:, ::2] = sort(pvv[:, ::2], 1)[:, ::-1]
@@ -324,6 +291,11 @@ class M2LPF(BaseLPF):
                 #    pid = argsort(pvp[i, ldsl][::2])[::-1]
                 #    pvp[i, ldsl][::2] = pvp[i, ldsl][::2][pid]
                 #    pvp[i, ldsl][1::2] = pvp[i, ldsl][1::2][pid]
+
+        # Baseline coefficients
+        # ---------------------
+        for i,p in enumerate(self.ps[self._sl_bl]):
+            pvp[:, self._start_bl+i] = normal(p.prior.mean, 0.2*p.prior.std, size=npop)
 
         # Estimate white noise from the data
         # ----------------------------------
@@ -440,21 +412,6 @@ class M2LPF(BaseLPF):
         else:
             return 1.
 
-    def baseline(self, pv):
-        pv = atleast_2d(pv)
-        bl = zeros((pv.shape[0], self.timea.size))
-        for i,sl in enumerate(self.lcslices):
-            st = self._start_ccoef + i*5
-            p = pv[:, st:st+5]
-            bl[:, sl] = (self.covariates[i] @ p.T).T
-
-        if self.n_legendre > 0:
-            for i, sl in enumerate(self.lcslices):
-                st = self._start_leg + i * self.n_legendre
-                p = pv[:, st:st + self.n_legendre]
-                bl[:, sl] += (self.legendre[i] @ p.T).T
-        return bl
-
     def lnlikelihood(self, pv):
         flux_m = self.flux_model(pv)
         wn = 10**(atleast_2d(pv)[:,self._sl_err])
@@ -479,25 +436,6 @@ class M2LPF(BaseLPF):
             lnp += self.additional_priors(pv) + self.ldprior(pv)
             #lnp += self.ldprior(pv) + self.inside_obs_prior(pv) + self.additional_priors(pv)
         return lnp
-
-    def add_t14_prior(self, mean: float, std: float) -> None:
-        """Add a normal prior on the transit duration.
-
-        Parameters
-        ----------
-        mean
-        std
-
-        Returns
-        -------
-
-        """
-        def T14(pv):
-            pv = atleast_2d(pv)
-            a = as_from_rhop(pv[:,2], pv[:,1])
-            t14 = duration_eccentric(pv[:,1], sqrt(pv[:,4]), a, arccos(pv[:,3] / a), 0, 0, 1)
-            return norm.logpdf(t14, mean, std)
-        self.lnpriors.append(T14)
 
     def add_ldtk_prior(self, teff: tuple, logg: tuple, z: tuple,
                        uncertainty_multiplier: float = 3,
@@ -592,8 +530,7 @@ class M2LPF(BaseLPF):
         if ylim_transit is not None:
             setp(axs.flat[self.nlc:3*self.nlc], ylim=ylim_transit)
         if ylim_residuals is not None:
-            setp(axs.flat[])
-
+            setp(axs.flat[3*self.nlc:], ylim=ylim_residuals)
 
         [sb.despine(ax=ax, offset=5, left=True) for ax in axs[0]]
         return fig, axs
