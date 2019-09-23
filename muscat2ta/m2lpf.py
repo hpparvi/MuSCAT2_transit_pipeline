@@ -162,8 +162,6 @@ class M2LPF(BaseLPF):
         assert self.tid.size == self.nph
         assert self.cids.shape[0] == self.nph
 
-        self.covnames = 'intercept sky airmass xshift yshift entropy'.split()
-
         times =  [array(ph.bjd) for ph in photometry]
         fluxes = [array(ph.flux[:, tid, 1]) for tid,ph in zip(self.tid, photometry)]
         fluxes = [f/nanmedian(f) for f in fluxes]
@@ -175,12 +173,12 @@ class M2LPF(BaseLPF):
         self._tmin = times[0].min()
         self._tmax = times[0].max()
 
+        self.covnames = 'intercept airmass xshift yshift entropy'.split()
         covariates = []
         for ph in photometry:
-            covs = concatenate([ones([ph._fmask.sum(), 1]), array(ph.aux)[:,[1,3,4,5]]], 1)
+            covs = concatenate([ones([ph._fmask.sum(), 1]), array(ph.aux)[:,[2,3,4,5]]], 1)
+            covs[:, 1:] = (covs[:, 1:] - median(covs[:, 1:], 0)) / covs[:, 1:].std(0)
             covariates.append(covs)
-
-        self.airmasses = [array(ph.aux[:,2]) for ph in photometry]
 
         wns = [ones(ph.nframes) for ph in photometry]
 
@@ -241,12 +239,11 @@ class M2LPF(BaseLPF):
         c = []
         for ilc in range(self.nlc):
             c.append(LParameter(f'ci_{ilc:d}', 'intercept_{ilc:d}', '', NP(1.0, 0.03), bounds=( 0.5, 1.5)))
-            c.append(LParameter(f'cs_{ilc:d}', 'sky_{ilc:d}',       '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
             c.append(LParameter(f'ca_{ilc:d}', 'airmass_{ilc:d}',   '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
             c.append(LParameter(f'cx_{ilc:d}', 'xshift_{ilc:d}',    '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
             c.append(LParameter(f'cy_{ilc:d}', 'yshift_{ilc:d}',    '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
             c.append(LParameter(f'ce_{ilc:d}', 'entropy_{ilc:d}',   '', NP(0.0, 0.01), bounds=(-0.5, 0.5)))
-        self.ps.add_lightcurve_block('ccoef', 6, self.nlc, c)
+        self.ps.add_lightcurve_block('ccoef', 5, self.nlc, c)
         self._sl_ccoef = self.ps.blocks[-1].slice
         self._start_ccoef = self.ps.blocks[-1].start
 
@@ -331,9 +328,15 @@ class M2LPF(BaseLPF):
         # Estimate white noise from the data
         # ----------------------------------
         for i in range(self.nlc):
-            wn = diff(self.ofluxa).std() / sqrt(2)
-            pvp[:, self._start_err] = log10(uniform(0.5*wn, 2*wn, size=npop))
+            pvp[:, self._start_err+i] = log10(uniform(0.5*self.wn[i], 2*self.wn[i], size=npop))
         return pvp
+
+    def set_radius_ratio_prior(self, kmin, kmax):
+        for p in self.ps[self._sl_k2]:
+            p.prior = UP(kmin ** 2, kmax ** 2)
+            p.bounds = [kmin ** 2, kmax ** 2]
+        self.ps.thaw()
+        self.ps.freeze()
 
     def target_apertures(self, pv):
         pv = atleast_2d(pv)
@@ -437,30 +440,19 @@ class M2LPF(BaseLPF):
         else:
             return 1.
 
-    def extinction(self, pv):
-        pv = atleast_2d(pv)
-        ext = zeros((pv.shape[0], self.timea.size))
-        for i, sl in enumerate(self.lcslices):
-            st = self._start_ccoef + i * 6
-            ext[:, sl] = exp(- pv[:, st + 2] * self.airmasses[i][:, newaxis]).T
-            ext[:, sl] /= mean(ext[:, sl], 1)[:, newaxis]
-        return squeeze(ext)
-
     def baseline(self, pv):
         pv = atleast_2d(pv)
         bl = zeros((pv.shape[0], self.timea.size))
         for i,sl in enumerate(self.lcslices):
-            st = self._start_ccoef + i*6
-            p = pv[:, st:st+6]
-            #bl[:, sl] = (self.covariates[i] @ p[:,[0,1,3,4,5]].T).T
-            bl[:, sl] = (self.covariates[i][:,[0,2,3]] @ p[:,[0,3,4]].T).T
+            st = self._start_ccoef + i*5
+            p = pv[:, st:st+5]
+            bl[:, sl] = (self.covariates[i] @ p.T).T
 
         if self.n_legendre > 0:
             for i, sl in enumerate(self.lcslices):
                 st = self._start_leg + i * self.n_legendre
                 p = pv[:, st:st + self.n_legendre]
                 bl[:, sl] += (self.legendre[i] @ p.T).T
-        bl = bl * self.extinction(pv)
         return bl
 
     def lnlikelihood(self, pv):
@@ -538,7 +530,7 @@ class M2LPF(BaseLPF):
             return lnl
         self.lnpriors.append(ldprior)
 
-    def plot_light_curves(self, model: str = 'de', figsize: tuple = (13, 8), fig=None, gridspec=None):
+    def plot_light_curves(self, model: str = 'de', figsize: tuple = (13, 8), fig=None, gridspec=None, ylim_transit=None, ylim_residuals=None):
         if fig is None:
             fig = figure(figsize=figsize, constrained_layout=True)
 
@@ -596,6 +588,13 @@ class M2LPF(BaseLPF):
         setp(axs[3, 0], ylabel='Residuals')
         setp(axs[3, :], xlabel=f'Time - {self.tref:9.0f} [BJD]')
         setp(axs[0, :], xlabel='Residual [ppt]', yticks=[])
+
+        if ylim_transit is not None:
+            setp(axs.flat[self.nlc:3*self.nlc], ylim=ylim_transit)
+        if ylim_residuals is not None:
+            setp(axs.flat[])
+
+
         [sb.despine(ax=ax, offset=5, left=True) for ax in axs[0]]
         return fig, axs
 
