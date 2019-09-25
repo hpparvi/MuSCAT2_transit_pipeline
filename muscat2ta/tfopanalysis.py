@@ -345,4 +345,4 @@ class TFOPAnalysis(TransitAnalysis):
                                'target': self.target,
                                'tref': self.lpf.tref})
 
-        ds.to_netcdf(self.savefile_name)
+        ds.to_netcdf(self._dres.joinpath(self.savefile_name+'nc'))

@@ -114,8 +114,11 @@ class TransitAnalysis:
         for r1, r2, pb in zip(r1s, r2s, 'g r i z'.split()):
             print('{} {:5.0f} ppm -> {:5.0f} ppm'.format(pb, 1e6 * r1, 1e6 * r2))
 
-    def set_prior(self, i, p):
-        self.lpf.set_prior(i, p)
+    def set_radius_ratio_prior(self, kmin, kmax):
+        self.lpf.set_radius_ratio_prior(kmin, kmax)
+
+    def set_prior(self, i, p, *nargs):
+        self.lpf.set_prior(i, p, *nargs)
 
     def add_t14_prior(self, mean: float, std: float):
         self.lpf.add_t14_prior(mean, std)
@@ -139,17 +142,15 @@ class TransitAnalysis:
     def sample(self, niter: int = 1000, thin: int = 5, repeats: int = None, reset=True):
         self.lpf.sample_mcmc(niter, thin=thin, repeats=repeats, label='Sampling the model', reset=reset)
 
-    def posterior_samples(self, burn: int = 0, thin: int = 1) -> pd.DataFrame:
-        return self.lpf.posterior_samples(burn, thin)
+    def posterior_samples(self, burn: int = 0, thin: int = 1, derived_parameters=True) -> pd.DataFrame:
+        return self.lpf.posterior_samples(burn, thin, derived_parameters=derived_parameters)
 
     def plot_mcmc_chains(self, pid: int = 0, alpha: float = 0.1, thin: int = 1, ax = None):
         return self.lpf.plot_mcmc_chains(pid, alpha, thin, ax)
 
     def plot_basic_posteriors(self, burn: int = 0, thin: int = 1):
         df = self.posterior_samples(burn, thin)
-        df['k'] = sqrt(df.k2)
-        df.drop(['k2'], axis=1, inplace=True)
-        return corner(df)
+        return corner(df.iloc[:,:8])
 
     def plot_light_curve(self, method='de', figsize=(13, 8), save=False):
         assert method in ('de', 'mc')
@@ -160,22 +161,25 @@ class TransitAnalysis:
 
     @property
     def savefile_name(self):
-        return f'{self.target}_{self.date}_{self.lpf.radius_ratio}.nc'
+        return f'{self.target}_{self.date}_{self.lpf.radius_ratio}_k'
 
     def load(self):
-        ds = xa.open_dataset(self.savefile_name).load()
+        ds = xa.open_dataset(self.savefile_name+'.nc').load()
         ds.close()
         return ds
 
     def save(self):
         delm = None
         if self.lpf.de:
-            delm = xa.DataArray(self.lpf.de.population, dims='pvector lm_parameter'.split(),
-                                coords={'lm_parameter': self.lpf.ps.names})
+            dep = self.lpf.de.population.copy()
+            dep[:,0] += self.lpf.tref
+            delm = xa.DataArray(dep, dims='pvector lm_parameter'.split(), coords={'lm_parameter': self.lpf.ps.names})
 
         lmmc = None
         if self.lpf.sampler is not None:
-            lmmc = xa.DataArray(self.lpf.sampler.chain, dims='pvector step lm_parameter'.split(),
+            chain = self.lpf.sampler.chain.copy()
+            chain[:,:,0] += self.lpf.tref
+            lmmc = xa.DataArray(chain, dims='pvector step lm_parameter'.split(),
                                 coords={'lm_parameter': self.lpf.ps.names},
                                 attrs={'ndim': self.lpf.de.n_par, 'npop': self.lpf.de.n_pop})
 
@@ -184,7 +188,7 @@ class TransitAnalysis:
                                'obsnight': self.date,
                                'target': self.target})
 
-        ds.to_netcdf(self._dres.joinpath(self.savefile_name))
+        ds.to_netcdf(self._dres.joinpath(self.savefile_name+'.nc'))
 
     def save_fits(self):
         phdu = pf.PrimaryHDU()
@@ -225,10 +229,10 @@ class TransitAnalysis:
             hdul.append(pf.BinTableHDU(df))
 
         for i, pb in enumerate(self.pbs):
-            df = Table(lpf.covariates[i], names='intercept sky xshift yshift entropy'.split(),
+            df = Table(lpf.covariates[i], names='sky xshift yshift entropy'.split(),
                        meta={'extname': f'aux_{pb}'})
             hdul.append(pf.BinTableHDU(df))
-        hdul.writeto(self._dres.joinpath(f'{self.target}_{self.date}_{lpf.radius_ratio}_k.fits'), overwrite=True)
+        hdul.writeto(self._dres.joinpath(self.savefile_name+'.fits'), overwrite=True)
 
     def plot_raw_light_curves(self, pb: int, sids: int, aids: int):
         sids = atleast_1d(sids)
