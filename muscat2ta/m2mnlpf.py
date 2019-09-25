@@ -18,12 +18,14 @@ from pathlib import Path
 
 import astropy.io.fits as pf
 import pandas as pd
+import xarray as xa
 
 from astropy.stats import sigma_clip
 from astropy.table import Table
 from matplotlib.artist import setp
 from matplotlib.pyplot import subplots
-from numpy import arange, newaxis, atleast_2d, zeros, sort, log10, sqrt, diff, unique, percentile, squeeze
+from numpy import arange, newaxis, atleast_2d, zeros, sort, log10, sqrt, diff, unique, percentile, squeeze, array, \
+    isfinite, digitize, nan, ceil, full
 from numpy.random import uniform, permutation
 
 from pytransit import BaseLPF, LinearModelBaseline
@@ -33,6 +35,22 @@ from pytransit.param.parameter import PParameter, UniformPrior as UP
 
 from .m2lpf import change_depth
 
+def downsample_time(time, values, inttime=30.):
+    if values.ndim == 1:
+        values = atleast_2d(values).T
+    duration = 24. * 60. * 60. * time.ptp()
+    nbins = int(ceil(duration / inttime))
+    bins = arange(nbins)
+    edges = time[0] + bins * inttime / 24 / 60 / 60
+    bids = digitize(time, edges) - 1
+    bt, bv = full(nbins, nan), zeros((nbins, values.shape[1]))
+    for i, bid in enumerate(bins):
+        bmask = bid == bids
+        if bmask.sum() > 0:
+            bt[i] = time[bmask].mean()
+            bv[i,:] = values[bmask,:].mean(0)
+    m = isfinite(bt)
+    return bt[m], squeeze(bv[m])
 
 def read_reduced_m2(datadir, pattern='*.fits'):
     files = sorted(Path(datadir).glob(pattern))
@@ -40,23 +58,40 @@ def read_reduced_m2(datadir, pattern='*.fits'):
     for f in files:
         with pf.open(f) as hdul:
             npb = (len(hdul)-1)//2
+            masks = []
             for hdu in hdul[1:1+npb]:
-                fobs = hdu.data['flux'].astype('d').copy()
+                fobs = hdu.data['flux'].astype('d').copy() * hdu.data['baseline'].astype('d').copy()
                 fmod = hdu.data['model'].astype('d').copy()
                 time = hdu.data['time_bjd'].astype('d').copy()
                 mask = ~sigma_clip(fobs-fmod, sigma=5).mask
+                masks.append(mask)
                 times.append(time[mask])
                 fluxes.append(fobs[mask])
                 pbs.append(hdu.header['filter'])
                 wns.append(hdu.header['wn'])
             for i in range(npb):
-                covs.append(Table.read(f, 1+npb+i).to_pandas().values[:, 1:])
+                covs.append(Table.read(f, 1+npb+i).to_pandas().values[masks[i],:])
     return times, fluxes, pbs, wns, covs
 
 
 class M2MultiNightLPF(LinearModelBaseline, BaseLPF):
-    def __init__(self, name: str, datadir='results', filename_pattern='*.fits', result_dir='results'):
+    def __init__(self, name: str, min_exptime=None, datadir='results', filename_pattern='*.fits', result_dir='results'):
+        self.datadir = datadir
+        self.pattern = filename_pattern
+
         times, fluxes, pbs, wns, covs = read_reduced_m2(datadir, filename_pattern)
+
+        if min_exptime is not None:
+            bts, bfs, bcs = [], [], []
+            for i in range(len(times)):
+                bt, bf = downsample_time(times[i], fluxes[i], 60.)
+                bt, bc = downsample_time(times[i], covs[i], 60.)
+                bts.append(bt)
+                bfs.append(bf)
+                bcs.append(bc)
+            times, fluxes, covs = bts, bfs, bcs
+            wns = [diff(f).std()/sqrt(2) for f in fluxes]
+
         pbs = pd.Categorical(pbs, categories='g r i z_s'.split(), ordered=True).remove_unused_categories()
         pbnames = pbs.categories.values
         pbids = pbs.codes
@@ -86,15 +121,30 @@ class M2MultiNightLPF(LinearModelBaseline, BaseLPF):
         return flux
 
     def create_pv_population(self, npop=50):
+        pattern = Path(self.pattern).with_suffix('.nc').name
+        files = sorted(Path(self.datadir).glob(pattern))
         pvp = self.ps.sample_from_prior(npop)
+
+        ibla = 0
+        for i, f in enumerate(files):
+            with xa.load_dataset(f) as ds:
+                fc = array(ds.lm_mcmc).reshape([-1, ds.lm_mcmc.shape[-1]])
+                blcs = [p for p in array(ds.lm_parameter) if 'bl' in p]
+                bl = ds.lm_mcmc.loc[:, :, blcs]
+                bl = array(bl).reshape([-1, bl.shape[-1]])
+
+            if i == 0:
+                pvp[:, 1:8] = fc[:npop, 1:8]
+
+            for ibl in range(bl.shape[1]):
+                pvp[:, self._start_bl + ibla + ibl] = bl[:npop, ibl]
+            ibla += bl.shape[1]
 
         pvv = uniform(size=(npop, 2 * self.npb))
         pvv[:, ::2] = sort(pvv[:, ::2], 1)[:, ::-1]
         pvv[:, 1::2] = sort(pvv[:, 1::2], 1)[:, ::-1]
         pvp[:, self._sl_ld] = pvv
 
-        # Estimate white noise from the data
-        # ----------------------------------
         for i in range(self.nlc):
             wn = diff(self.ofluxa).std() / sqrt(2)
             pvp[:, self._start_err] = log10(uniform(0.5 * wn, 2 * wn, size=npop))

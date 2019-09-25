@@ -173,10 +173,10 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self._tmin = times[0].min()
         self._tmax = times[0].max()
 
-        self.covnames = 'intercept airmass xshift yshift entropy'.split()
+        self.covnames = 'airmass xshift yshift entropy'.split()
         covariates = []
         for ph in photometry:
-            covs = concatenate([ones([ph._fmask.sum(), 1]), array(ph.aux)[:,[2,3,4,5]]], 1)
+            covs = array(ph.aux)[:,[2,3,4,5]]
             covs[:, 1:] = (covs[:, 1:] - median(covs[:, 1:], 0)) / covs[:, 1:].std(0)
             covariates.append(covs)
 
@@ -468,6 +468,12 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             return lnl
         self.lnpriors.append(ldprior)
 
+    def posterior_samples(self, burn: int = 0, thin: int = 1, derived_parameters: bool = True, add_tref = True):
+        df = BaseLPF.posterior_samples(self, burn, thin, derived_parameters)
+        if add_tref:
+            df.tc += self.tref
+        return df
+
     def plot_light_curves(self, model: str = 'de', figsize: tuple = (13, 8), fig=None, gridspec=None, ylim_transit=None, ylim_residuals=None):
         if fig is None:
             fig = figure(figsize=figsize, constrained_layout=True)
@@ -485,7 +491,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
                 self.set_ofluxa(pv)
 
         elif model == 'mc':
-            fc = array(self.posterior_samples(derived_parameters=False))
+            fc = array(self.posterior_samples(derived_parameters=False, add_tref=False))
             pv = permutation(fc)[:300]
             err = 10 ** median(pv[:, self._sl_err], 0)
             if not self.photometry_frozen:
@@ -500,7 +506,6 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             tm = percentile(atleast_2d(ones(self.timea.size)), ps, 0)
         fm = percentile(atleast_2d(self.flux_model(pv)), ps, 0)
         bl = percentile(atleast_2d(self.baseline(pv)), ps, 0)
-        t0 = self.tref
 
         for i, sl in enumerate(self.lcslices):
             t = self.timea[sl]
