@@ -323,7 +323,6 @@ class TFOPAnalysis(TransitAnalysis):
                                                                                                            'xshift',
                                                                                                            'yshift',
                                                                                                            'sky_entropy'])
-            df['BJD_TDB'] += self.lpf.tref
             df.to_csv(self._dres.joinpath(f'{self.ticname}_20{self.date}_MuSCAT2_{self.passbands[i]}_measurements.tbl'),
                       index=False, sep=" ")
 
