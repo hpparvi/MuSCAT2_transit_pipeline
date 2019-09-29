@@ -127,7 +127,7 @@ class M2MultiNightLPF(LinearModelBaseline, BaseLPF):
 
         ibla = 0
         for i, f in enumerate(files):
-            with xa.load_dataset(f) as ds:
+            with xa.open_dataset(f) as ds:
                 fc = array(ds.lm_mcmc).reshape([-1, ds.lm_mcmc.shape[-1]])
                 blcs = [p for p in array(ds.lm_parameter) if 'bl' in p]
                 bl = ds.lm_mcmc.loc[:, :, blcs]
