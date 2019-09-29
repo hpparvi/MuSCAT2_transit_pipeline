@@ -23,19 +23,21 @@ import pandas as pd
 import xarray as xa
 from astropy.coordinates import SkyCoord, FK5
 from astropy.io import fits as pf
+from astropy.nddata import Cutout2D
 from astropy.stats import mad_std
 from astropy.visualization import simple_norm
 from astropy.wcs import WCS
+from astroquery.mast import Catalogs
 from matplotlib import cm
 from matplotlib.backends.backend_pdf import PdfPages
-from matplotlib.pyplot import subplots, setp, figure, figtext
+from matplotlib.pyplot import subplots, setp, figure, figtext, close
 from pytransit.orbits import epoch
 from uncertainties import ufloat
 
-from muscat2ph.catalog import get_toi
+from muscat2ph.catalog import get_toi, get_toi_or_tic_coords
 from numba import njit
 from numpy import sqrt, nan, zeros, digitize, sin, arange, ceil, where, isfinite, inf, ndarray, argsort, array, \
-    floor, median, nanmedian, clip, mean, percentile, full, pi, concatenate, atleast_2d
+    floor, median, nanmedian, clip, mean, percentile, full, pi, concatenate, atleast_2d, ones
 from numpy.random import normal
 from photutils import SkyCircularAperture
 from tqdm.auto import tqdm
@@ -96,7 +98,7 @@ class TFOPAnalysis(TransitAnalysis):
                  excluded_mjd_ranges: tuple = None,
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
-                 radius_ratio: str = 'chromatic'):
+                 radius_ratio: str = 'chromatic', excluded_stars=()):
 
         super().__init__(target, date, tid, cids, dataroot=dataroot, exptime_min=exptime_min,
                  nlegendre=nlegendre,  npop=npop,  mjd_start=mjd_start, mjd_end=mjd_end,
@@ -109,14 +111,46 @@ class TFOPAnalysis(TransitAnalysis):
         # -----------------------
         self.toi = get_toi(float(target.lower().strip('toi')))
         self.ticname = 'TIC{:d}-{}'.format(int(self.toi.tic), str(self.toi.toi).split('.')[1])
+        self.lpf.toi = self.toi
+
+        self.passbands = self.lpf.passbands
+        self.excluded_stars = excluded_stars
 
         # Set priors
         # ----------
         self.t0 = ufloat(*self.toi.epoch)
         self.pr = ufloat(*self.toi.period)
+        self.t14 = ufloat(*self.toi.duration/24)
         self.ep = epoch(self.lpf.timea.mean() + self.lpf.tref, self.t0.n, self.pr.n)
         self.tc = self.t0 + self.ep * self.pr - self.lpf.tref
 
+        self.transit_start = self.tc - 0.5 * ufloat(*self.toi.duration / 24)
+        self.transit_center = self.tc
+        self.transit_end = self.tc + 0.5 * ufloat(*self.toi.duration / 24)
+
+        # Calculate transit probabilities
+        # -------------------------------
+        ns = 2000
+        tc_samples = normal(self.tc.n, self.tc.s, ns)
+        td_samples = normal(self.t14.n, self.t14.s, ns)
+
+        tmin, tmax = self.lpf.timea.min(), self.lpf.timea.max()
+
+        d_ingress_in_window = (tmin < tc_samples - 0.5 * td_samples) & (tc_samples - 0.5 * td_samples < tmax)
+        d_egress_in_window = (tmin < tc_samples + 0.5 * td_samples) & (tc_samples + 0.5 * td_samples < tmax)
+        d_full_transit_in_window = d_ingress_in_window & d_egress_in_window
+        d_transit_before_window = tmin > tc_samples + 0.5 * td_samples
+        d_transit_after_window = tmax < tc_samples - 0.5 * td_samples
+        d_transit_covers_whole_window = (tmin > tc_samples - 0.5 * td_samples) & (tc_samples + 0.5 * td_samples > tmax)
+
+        self.p_transit_not_in_window = d_transit_before_window.mean() + d_transit_after_window.mean()
+        self.p_full_transit_in_window = d_full_transit_in_window.mean()
+        self.p_ingress_in_window = d_ingress_in_window.mean()
+        self.p_egress_in_window = d_egress_in_window.mean()
+        self.p_transit_covers_whole_window = d_transit_covers_whole_window.mean()
+
+        # Set priors
+        # ----------
         self.set_prior('tc', NP(self.tc.n, self.tc.s))
         self.set_prior('p', NP(*self.toi.period))
         self.add_t14_prior(self.toi.duration[0] / 24, 0.5*self.toi.duration[1] / 24)
@@ -131,8 +165,7 @@ class TFOPAnalysis(TransitAnalysis):
         sc = SkyCoord(array(self.phs[0]._ds.centroids_sky), frame=FK5, unit=(u.deg, u.deg))
         self.distances = sc[tid].separation(sc).arcmin
 
-
-    def create_example_frame(self, plot=True, figsize=(13, 13)):
+    def create_example_frame(self, plot=True, figsize=(12, 12), markersize=25, loffset=0):
         fits_files = list(self.datadir.glob('MCT*fits'))
         assert len(fits_files) > 0, 'No example frame fits-files found.'
         f = fits_files[0]
@@ -150,22 +183,117 @@ class TFOPAnalysis(TransitAnalysis):
         if plot:
             wcs = WCS(f1[0].header)
             data = f1[0].data.astype('d')
-            norm = simple_norm(data, stretch='log')
-            fig = figure(figsize=figsize, constrained_layout=True)
-            ax = fig.add_subplot(111, projection=wcs)
-            ax.imshow(data, origin='image', norm=norm, cmap=cm.gray_r)
-            apts = SkyCircularAperture(self.phs[0].centroids_sky,
-                                       float(self.phs[0]._flux.aperture[self.lpf.aid]) * u.pixel)
-            apts.to_pixel(wcs).plot(color='w')
+            fig = self.plot_tfop_field(data, wcs, figsize, markersize, loffset, subfield_radius=None)
+            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame.pdf"))
+            fig = self.plot_tfop_field(data, wcs, figsize, markersize, loffset, subfield_radius=2.5)
+            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame_5_arcmin.pdf"))
+            close(fig)
+            fig = self.plot_tfop_field(data, wcs, figsize, markersize, loffset, subfield_radius=1)
+            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame_2_arcmin.pdf"))
+            close(fig)
 
+    def plot_tfop_field(self, data, wcs, figsize=(9, 9), markersize=25, loffset=0, subfield_radius=None):
+        sc = get_toi_or_tic_coords(self.toi.tic)
+
+        if subfield_radius:
+            r = subfield_radius * u.arcmin
+            co = Cutout2D(data, sc, (2 * r, 2 * r), mode='partial', fill_value=median(data), wcs=wcs)
+            data, wcs = co.data, co.wcs
+
+        height, width = data.shape
+
+        ct = Catalogs.query_region(sc, radius=0.033, catalog="Gaia", version=2).to_pandas()
+
+        mean_flux = ct.phot_g_mean_flux.values
+        max_depths = 1e6 * mean_flux[1:] / (mean_flux[1:] + mean_flux[0])
+        depth_mask = max_depths > self.toi.depth[0]
+
+        sc_all = SkyCoord(ct.ra.values * u.deg, ct.dec.values * u.deg)
+        xy_all = sc_all.to_pixel(wcs)
+
+        fig = figure(figsize=figsize, constrained_layout=True)
+        ax = fig.add_subplot(111, projection=wcs)
+        ax.grid()
+
+        # Plot the image
+        # --------------
+        norm = simple_norm(data, stretch='log', min_percent=40, max_percent=100)
+        ax.imshow(data, origin='image', norm=norm, cmap=cm.gray_r)
+
+        # Plot apertures
+        # --------------
+        amask = ones(self.phs[0].centroids_sky.size, bool)
+        if self.excluded_stars:
+            amask[self.excluded_stars] = 0
+        apts = SkyCircularAperture(self.phs[0].centroids_sky[amask], float(self.phs[0]._flux.aperture[self.lpf.aid]) * u.pixel)
+        apts.to_pixel(wcs).plot(color='k', linestyle='--')
+        apts_xy = apts.to_pixel(wcs)
+
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
+        for istar, (x, y) in enumerate(apts_xy.positions[1:]):
+            if (xlim[0] <= x <= xlim[1]) and (ylim[0] <= y <= ylim[1]) and istar not in self.excluded_stars:
+                ax.text(x + loffset + sqrt(2 * markersize), y + loffset + sqrt(2 * markersize), istar + 1,
+                        size='larger')
+
+        # Plot the circle of inclusion
+        # ----------------------------
+        ci = SkyCircularAperture(sc_all[0], 1 * u.arcmin).to_pixel(wcs)
+        ci.plot(ax=ax, color='0.4', ls=':', lw=2, alpha=0.5)
+        if ci.positions[0][0] + ci.r + 10 < xlim[1]:
+            ax.text(ci.positions[0][0] + ci.r + 10, ci.positions[0][1], "r = 1'", size='larger')
+
+        ci = SkyCircularAperture(sc_all[0], 2 * u.arcmin).to_pixel(wcs)
+        ci.plot(ax=ax, color='0.4', ls=':', lw=2)
+        if ci.positions[0][0] + ci.r + 10 < xlim[1]:
+            ax.text(ci.positions[0][0] + ci.r + 10, ci.positions[0][1], "r = 2'", size='larger')
+
+        # Plot the target
+        # ---------------
+        SkyCircularAperture(sc_all[0], 0.9 * markersize * u.pixel).to_pixel(wcs).plot(color='k', lw=2)
+        SkyCircularAperture(sc_all[0], 1.1 * markersize * u.pixel).to_pixel(wcs).plot(color='k', lw=2)
+
+        # Plot the possible contaminants
+        # ------------------------------
+        ap_cnt = SkyCircularAperture(sc_all[1:][depth_mask], markersize * u.pixel)
+        ap_cnt.to_pixel(wcs).plot(color='k')
+
+        # Plot the stars inside the 2' radius but too faint to create the transit signal
+        # ------------------------------------------------------------------------------
+        ap_rest = SkyCircularAperture(sc_all[1:][~depth_mask], markersize * u.pixel)
+        ap_rest.to_pixel(wcs).plot(color='k', linestyle=':')
+
+        # Plot the image scale
+        # --------------------
+        xlims = ax.get_xlim()
+        py = 0.96 * ax.get_ylim()[1]
+        x0, x1 = 0.3 * xlims[1], 0.7 * xlims[1]
+        scale = SkyCoord.from_pixel(x0, py, wcs).separation(SkyCoord.from_pixel(x1, py, wcs))
+        ax.annotate('', xy=(x0, py), xytext=(x1, py), arrowprops=dict(arrowstyle='|-|', lw=1.5, color='k'))
+        ax.text(width / 2, py - 7.5, "{:3.1f}'".format(scale.arcmin), va='top', ha='center', size='larger')
+        ax.set_title(
+            f"MuSCAT2 TIC {int(self.toi.tic)} (TOI {self.toi.toi}) {self.date[-2:]}.{self.date[2:4]}.20{self.date[:2]}",
+            size='x-large')
+        ax.set_ylabel('Dec', size='x-large')
+        ax.set_xlabel('RA', size='x-large')
+        fig.subplots_adjust(bottom=0.03, top=0.98, left=0.1, right=0.98)
+        return fig
 
     def plot_fit(self, model: str = 'de', figsize: tuple = (13, 8), save=False, plot_priors=True):
         fig, axs = self.lpf.plot_light_curves(model=model, figsize=figsize)
         npb = self.lpf.npb
         if plot_priors:
-            [ax.axvspan(self.tc.n - self.tc.s, self.tc.n + self.tc.s, alpha=0.2) for ax in fig.axes[npb:]]
-            [ax.axvline(self.tc.n) for ax in fig.axes[npb:]]
-            [ax.axhline(1 - self.toi.depth[0] * 1e-6, ls=':') for ax in fig.axes[npb:3*npb]]
+            def plot_vprior(t, ymin: float = 0, ymax: float = 1):
+                [[ax.axvspan(t.n - s * t.s, t.n + s * t.s, alpha=0.1, ymin=ymin, ymax=ymax) for s in (1, 2, 3)] for ax
+                 in fig.axes[npb:]]
+                [ax.axvline(t.n, ymin=ymin, ymax=ymax) for ax in fig.axes[npb:]]
+
+            plot_vprior(self.transit_center, 0.03, 0.9)
+            plot_vprior(self.transit_start, 0.93, 0.98)
+            plot_vprior(self.transit_end, 0.93, 0.98)
+
+            [ax.axhline(1 - self.toi.depth[0] * 1e-6, ls=':') for ax in fig.axes[npb:3 * npb]]
 
         ptype = 'fit' if model == 'de' else 'mcmc'
         if save:
@@ -174,7 +302,11 @@ class TFOPAnalysis(TransitAnalysis):
 
     def plot_possible_blends(self, ncols: int = 3, max_separation: float = 2.5, figwidth: float = 13,
                              axheight: float = 2.5, pbs: tuple = None, save: bool = True, close: bool = False):
-        m = self.distances < max_separation
+        m_excl = ones(self.distances.size, bool)
+        if self.excluded_stars:
+            m_excl[list(self.excluded_stars)] = 0
+
+        m = (self.distances < max_separation) & m_excl
         sids = where(m)[0]
         stars = sids[argsort(self.distances[m])]
         nstars = len(stars)
@@ -261,16 +393,16 @@ class TFOPAnalysis(TransitAnalysis):
                 transform=ax.transAxes)
         setp(ax, yticks=[], xlim=time[[0, -1]] - t0, ylim=(m - 6 * s, m + 4 * s))
 
-
     def plot_final_fit(self, figwidth: float = 13, save: bool = True, close: bool = False) -> None:
         lpf = self.lpf
-        fig = figure(figsize = (figwidth, 1.4142*figwidth))
-        if lpf.toi is None:
+        fig = figure(figsize=(figwidth, 1.4142 * figwidth))
+        if self.toi is None:
             figtext(0.05, 0.99, f"MuSCAT2 - {lpf.name}", size=33, weight='bold', va='top')
             figtext(0.05, 0.95, f"20{self.date[:2]}-{self.date[2:4]}-{self.date[4:]}", size=25, weight='bold', va='top')
         else:
-            figtext(0.05, 0.99, f"MuSCAT2 - TOI {lpf.toi.toi}", size=33, weight='bold', va='top')
-            figtext(0.05, 0.95, f"TIC {lpf.toi.tic}\n20{self.date[:2]}-{self.date[2:4]}-{self.date[4:]}", size=25, weight='bold',
+            figtext(0.05, 0.99, f"MuSCAT2 - TOI {self.toi.toi}", size=33, weight='bold', va='top')
+            figtext(0.05, 0.95, f"TIC {self.toi.tic}\n20{self.date[:2]}-{self.date[2:4]}-{self.date[4:]}", size=25,
+                    weight='bold',
                     va='top')
 
         # Light curve plots
@@ -280,13 +412,32 @@ class TFOPAnalysis(TransitAnalysis):
         lpf.plot_light_curves(model='mc', fig=fig,
                               gridspec=dict(top=0.82, bottom=0.39, left=0.1, right=0.95, wspace=0.03, hspace=0.5))
 
+        def plot_vprior(t, ymin: float = 0, ymax: float = 1):
+            [[ax.axvspan(t.n - s * t.s, t.n + s * t.s, alpha=0.1, ymin=ymin, ymax=ymax) for s in (1, 2, 3)] for ax
+             in fig.axes[1+self.lpf.npb:]]
+            [ax.axvline(t.n, ymin=ymin, ymax=ymax) for ax in fig.axes[1+self.lpf.npb:]]
+
+        plot_vprior(self.transit_center, 0.03, 0.9)
+        plot_vprior(self.transit_start, 0.93, 0.98)
+        plot_vprior(self.transit_end, 0.93, 0.98)
+
+        [ax.axhline(1 - self.toi.depth[0] * 1e-6, ls=':') for ax in fig.axes[1+self.lpf.npb:3 * self.lpf.npb]]
+
         # Parameter posterior plots
         # -------------------------
         figtext(0.05, 0.325, f"Parameter posteriors", size=20, weight='bold', va='bottom')
         fig.add_axes((0.03, 0.32, 0.96, 0.001), facecolor='k', xticks=[], yticks=[])
-        lpf.plot_posteriors(fig=fig, gridspec=dict(top=0.30, bottom=0.05, left=0.1, right=0.95, wspace=0.03, hspace=0.3))
+        lpf.plot_posteriors(fig=fig,
+                            gridspec=dict(top=0.30, bottom=0.05, left=0.1, right=0.95, wspace=0.03, hspace=0.3))
         fig.add_axes((0.03, 0.01, 0.96, 0.001), facecolor='k', xticks=[], yticks=[])
         plotname = self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_transit_fit.pdf")
+
+        ptext = (f"P(full transit in window) = {self.p_full_transit_in_window:4.2f},\n"
+                 f"P(ingress) = {self.p_ingress_in_window:4.2f},  "
+                 f"P(egress) = {self.p_egress_in_window:4.2f},\n"
+                 f"P(misses window) = {self.p_transit_not_in_window:4.2f},  "
+                 f"P(spans window) = {self.p_transit_covers_whole_window:4.2f}")
+        figtext(0.32, 0.95, ptext, size=16, va='top', ha='left')
 
         if save:
             fig.savefig(plotname)

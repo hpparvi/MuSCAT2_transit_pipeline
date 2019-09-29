@@ -149,6 +149,8 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.max_apt = amax = max(min(aperture_lims[1], photometry[0].flux.aperture.size), 0)
         self.napt = amax-amin
 
+        self.toi = None
+
         # Target and comparison star IDs
         # ------------------------------
         self.tid = atleast_1d(tid)
@@ -474,7 +476,8 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             df.tc += self.tref
         return df
 
-    def plot_light_curves(self, model: str = 'de', figsize: tuple = (13, 8), fig=None, gridspec=None, ylim_transit=None, ylim_residuals=None):
+    def plot_light_curves(self, model: str = 'de', figsize: tuple = (13, 8), fig=None, gridspec=None,
+                          ylim_transit=None, ylim_residuals=None, bin_width=None):
         if fig is None:
             fig = figure(figsize=figsize, constrained_layout=True)
 
@@ -517,6 +520,10 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             axs[2, i].plot(t, tm[0][sl], 'k', lw=2)
             axs[3, i].plot(t, self.ofluxa[sl] - fm[0][sl], '.', alpha=0.5)
 
+            if bin_width:
+                bt, bf, be = downsample_time(t, self.ofluxa[sl] / bl[0][sl], 300)
+                axs[2, i].plot(bt, bf, 'ok')
+
             res = self.ofluxa[sl] - fm[0][sl]
             x = linspace(-4 * err, 4 * err)
             axs[0, i].hist(1e3 * res, 'auto', density=True, alpha=0.5)
@@ -533,53 +540,83 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         setp(axs[0, :], xlabel='Residual [ppt]', yticks=[])
 
         if ylim_transit is not None:
-            setp(axs.flat[self.nlc:3*self.nlc], ylim=ylim_transit)
+            setp(axs.flat[self.nlc:3 * self.nlc], ylim=ylim_transit)
+        else:
+            setp(axs.flat[self.nlc:2 * self.nlc], ylim=array([0.995, 1.005]) * percentile(self.ofluxa, [2, 98]))
+            setp(axs.flat[2 * self.nlc:3 * self.nlc],
+                 ylim=array([0.995, 1.005]) * percentile(self.ofluxa / bl[0], [2, 98]))
+
         if ylim_residuals is not None:
-            setp(axs.flat[3*self.nlc:], ylim=ylim_residuals)
+            setp(axs.flat[3 * self.nlc:], ylim=ylim_residuals)
+        else:
+            setp(axs.flat[3 * self.nlc:], ylim=array([0.995, 1.005]) * percentile(self.ofluxa / bl[0] - tm[0], [2, 98]))
+
+        setp(axs[1:,:], xlim=(self.timea.min(), self.timea.max()))
 
         [sb.despine(ax=ax, offset=5, left=True) for ax in axs[0]]
         return fig, axs
 
-
-    def plot_posteriors(self, figsize: tuple = (13, 5), fig=None, gridspec=None):
+    def plot_posteriors(self, figsize: tuple = (13, 5), fig=None, gridspec=None, plot_k=True):
         if fig is None:
             fig = figure(figsize=figsize, constrained_layout=True)
         axs = fig.subplots(2, 3, gridspec_kw=gridspec)
 
         df = self.posterior_samples()
-        df = df.iloc[:, :5].copy()
-        df['k'] = sqrt(df.k2)
+        df = df.iloc[:, :self._sl_ld.start].copy()
 
-        names = 'stellar density, impact parameter, transit depth, radius ratio'.split(', ')
+        # Transit depth and radius ratio
+        # ------------------------------
+        k2cols = [c for c in df.columns if 'k2' in c]
+        def plot_estimates(x, p, ax, bwidth=0.8, color='k'):
+            ax.bar(x, p[4, :] - p[3, :], bwidth, p[3, :], alpha=0.25, fc=color)
+            ax.bar(x, p[2, :] - p[1, :], bwidth, p[1, :], alpha=0.25, fc=color)
+            [ax.plot((xx - 0.47 * bwidth, xx + 0.47 * bwidth), (pp[[0, 0]]), 'k') for xx, pp in zip(x, p.T)]
+
+        x = arange(self.nlc)
+        plot_estimates(x, 1e6 * df[k2cols].quantile([0.5, 0.16, 0.84, 0.025, 0.975]).values, axs[0, 0])
+        if self.toi is not None:
+            axs[0, 0].axhline(self.toi.depth[0], c='k', ls='--')
+        setp(axs[0, 0], ylabel='Transit depth [ppm]', xticks=x, xticklabels=self.passbands)
+
+        if plot_k:
+            plot_estimates(x, sqrt(df[k2cols].quantile([0.5, 0.16, 0.84, 0.025, 0.975]).values), axs[1, 0])
+            if self.toi is not None:
+                axs[1, 0].axhline(sqrt(1e-6 * self.toi.depth[0]), c='k', ls='--')
+            setp(axs[1, 0], ylabel='Radius ratio', xticks=x, xticklabels=self.passbands)
+        else:
+            axs[1, 0].remove()
 
         # Transit centre
         # --------------
         p = self.ps.priors[0]
-        t0 = floor(df.tc.mean())
-        trange = p.mean - t0 - 3 * p.std, p.mean - t0 + 3 * p.std
+        trange = p.mean - 3 * p.std, p.mean + 3 * p.std
         x = linspace(*trange)
-        axs[0, 0].hist(df.tc - t0, 50, density=True, range=trange, alpha=0.5, edgecolor='k', histtype='stepfilled')
-        axs[0, 0].set_xlabel(f'Transit center - {t0:9.0f} [BJD]')
-        axs[0, 0].fill_between(x, exp(p.logpdf(x + t0)), alpha=0.5, edgecolor='k')
+        axs[0, 1].hist(df.tc - self.tref, 50, density=True, range=trange, alpha=0.5, edgecolor='k',
+                       histtype='stepfilled')
+        axs[0, 1].set_xlabel(f'Transit center - {self.tref:9.0f} [BJD]')
+        axs[0, 1].fill_between(x, exp(p.logpdf(x)), alpha=0.5, edgecolor='k')
 
         # Period
         # ------
         p = self.ps.priors[1]
         trange = p.mean - 3 * p.std, p.mean + 3 * p.std
         x = linspace(*trange)
-        axs[0, 1].hist(df.pr, 50, density=True, range=trange, alpha=0.5, edgecolor='k', histtype='stepfilled')
-        axs[0, 1].set_xlabel('Period [days]')
-        axs[0, 1].fill_between(x, exp(p.logpdf(x)), alpha=0.5, edgecolor='k')
-        setp(axs[0, 1], xticks=df.pr.quantile([0.05, 0.5, 0.95]))
+        axs[1, 1].hist(df.p, 50, density=True, range=trange, alpha=0.5, edgecolor='k', histtype='stepfilled')
+        axs[1, 1].set_xlabel('Period [days]')
+        axs[1, 1].fill_between(x, exp(p.logpdf(x)), alpha=0.5, edgecolor='k')
+        setp(axs[1, 1], xticks=df.p.quantile([0.05, 0.5, 0.95]))
 
         # Rest without priors
         # -------------------
-        for i, ax in enumerate(axs.flat[2:]):
+        names = 'stellar density, impact parameter'.split(', ')
+        for i, ax in enumerate(axs.flat[[2, 5]]):
             ax.hist(df.iloc[:, i + 2], 50, density=True, alpha=0.5, edgecolor='k', histtype='stepfilled')
             ax.set_xlabel(names[i])
 
-        setp(axs, yticks=[])
+        sb.despine(fig, offset=10)
+        setp(axs[:, 1:], yticks=[])
         return fig, axs
+
 
     def plot_chains(self, pids=(0, 1, 2, 3, 4)):
         fig, axs = subplots(len(pids), 1, figsize=(13, 10), constrained_layout=True, sharex='all')
