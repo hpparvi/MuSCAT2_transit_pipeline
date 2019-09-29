@@ -58,14 +58,11 @@ def get_toi(toi):
 
 def get_toi_or_tic(toi_or_tic):
     df = pd.read_csv(toi_catalog_file, sep=',')
-
     if abs(remainder(toi_or_tic, 1)) < 1e-5:
-        tic = int(toi_or_tic)
-        toi = TOI(*(df[df['TIC ID'] == tic]['TIC ID, TOI, Tess Mag, RA, Dec,  Epoch (BJD), Period (days), Duration (hours), Depth (ppm)'.split(', ')].values[0]))
+        toi = float(df[df['TIC ID'] == int(toi_or_tic)]['TOI'])
     else:
         toi = toi_or_tic
-        toi = TOI(*(df[df.TOI == toi]['TIC ID, TOI, Tess Mag, RA, Dec,  Epoch (BJD), Period (days), Duration (hours), Depth (ppm)'.split(', ')].values[0]))
-    return toi
+    return get_toi(toi)
 
 def get_m2_coords(name):
     """
@@ -98,4 +95,4 @@ def get_toi_or_tic_coords(toi_or_tic):
     Astropy SkyCoord object
     """
     toi = get_toi_or_tic(toi_or_tic)
-    return SkyCoord(toi.ra, toi.dec, frame='fk5', unit=(u.hourangle, u.deg))
+    return SkyCoord(toi.ra, toi.dec, frame='fk5', unit=(u.deg, u.deg))

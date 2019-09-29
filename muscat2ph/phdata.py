@@ -195,7 +195,7 @@ class PhotometryData:
 
     @property
     def flux(self):
-        return self._flux[self._fmask, :, :]
+        return self._flux[self._fmask, :, :] / array(self._aux.loc[self._fmask, 'exptime'])[:, newaxis, newaxis]
 
     @property
     def mjd(self):
@@ -216,7 +216,7 @@ class PhotometryData:
 
     @property
     def sky(self):
-        return self._sky[self._fmask, r_[self.tid, self.cids].astype(int)].mean('star')
+        return self._sky[self._fmask, r_[self.tid, self.cids].astype(int)].mean('star') / array(self._aux.loc[self._fmask, 'exptime'])
 
     @property
     def entropy(self):
