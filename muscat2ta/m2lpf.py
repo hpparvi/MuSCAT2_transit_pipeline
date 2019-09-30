@@ -26,6 +26,7 @@ from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, on
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
     delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like
 from numpy.polynomial.legendre import legvander
+import astropy.units as u
 from numpy.random import permutation, uniform, normal
 from pytransit import QuadraticModel, QuadraticModelCL, BaseLPF, LinearModelBaseline
 from pytransit.contamination import SMContamination
@@ -239,19 +240,16 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         LinearModelBaseline._init_p_baseline(self)
 
         if not self.photometry_frozen:
-            c = []
-            for ilc in range(self.nlc):
-                c.append(LParameter(f'tap_{ilc:d}', f'target_aperture__{ilc:d}', '', UP(0.0, 0.999),  bounds=(0.0, 0.999)))
-            self.ps.add_lightcurve_block('apertures', 1, self.nlc, c)
+            c = [LParameter(f'tap', f'target_aperture', '', UP(0.0, 0.999),  bounds=(0.0, 0.999))]
+            self.ps.add_global_block('apertures', c)
             self._sl_tap = self.ps.blocks[-1].slice
             self._start_tap = self.ps.blocks[-1].start
 
             if self.cids.size > 0:
                 c = []
-                for ilc in range(self.nlc):
-                    for irf in range(self.cids.shape[1]):
-                        c.append(LParameter(f'ref_{irf:d}_{ilc:d}', f'comparison_star_{irf:d}_{ilc:d}', '', UP(0.0, 0.999), bounds=( 0.0, 0.999)))
-                self.ps.add_lightcurve_block('rstars', self.cids.shape[1], self.nlc, c)
+                for irf in range(self.cids.shape[1]):
+                    c.append(LParameter(f'ref_{irf:d}', f'comparison_star_{irf:d}', '', UP(0.0, 0.999), bounds=( 0.0, 0.999)))
+                self.ps.add_global_block('rstars', c)
                 self._sl_ref = self.ps.blocks[-1].slice
                 self._start_ref = self.ps.blocks[-1].start
 
@@ -352,6 +350,10 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.de._population[:,:] = self._frozen_population.copy()
         self.de._fitness[:] = self.lnposterior(self._frozen_population)
 
+    @property
+    def frozen_apertures(self):
+        return (float(self.phs[0]._ds.aperture[self.taps]) * 0.435 * u.arcsec,
+                array(self.phs[0]._ds.aperture[self.raps]) * 0.435 * u.arcsec)
 
     def transit_model(self, pv, copy=True):
         if self.with_transit:
@@ -397,18 +399,18 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         p = floor(clip(pv[:, self._sl_tap], 0., 0.999) * self.napt).astype('int')
         off = zeros((p.shape[0], self.timea.size))
         for i, sl in enumerate(self.lcslices):
-            off[:, sl] = self.ofluxes[i][:, p[:, i]].T
+            off[:, sl] = self.ofluxes[i][:, p].T
         return squeeze(off)
 
     def reference_flux(self, pv):
         if self.cids.size > 0:
             pv = atleast_2d(pv)
-            p = floor(clip(pv[:, self._sl_ref], 0., 0.999) * self.napt+1).astype('int')
+            p = floor(clip(pv[:, self._sl_ref], 0., 0.999) * self.napt + 1).astype('int')
             r = zeros((pv.shape[0], self.ofluxa.size))
             nref = self.cids.shape[1]
             for ipb, sl in enumerate(self.lcslices):
-                for i in range(nref):
-                    r[:, sl] += self.refs[ipb][i][:, p[:, ipb * nref + i]].T
+                for iref in range(nref):
+                    r[:, sl] += self.refs[ipb][iref][:, p[:, iref]].T
                 r[:, sl] = r[:, sl] / median(r[:, sl], 1)[:, newaxis]
             return squeeze(where(isfinite(r), r, inf))
         else:

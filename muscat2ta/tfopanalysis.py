@@ -18,6 +18,10 @@
 from pathlib import Path
 from time import strftime
 
+from astropy.utils.exceptions import AstropyDeprecationWarning
+import warnings
+warnings.simplefilter('ignore', category = AstropyDeprecationWarning)
+
 import astropy.units as u
 import pandas as pd
 import xarray as xa
@@ -300,7 +304,7 @@ class TFOPAnalysis(TransitAnalysis):
             fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{ptype}.pdf"))
         return fig, axs
 
-    def plot_possible_blends(self, ncols: int = 3, max_separation: float = 2.5, figwidth: float = 13,
+    def plot_possible_blends(self, cid, aid, ncols: int = 3, max_separation: float = 2.5, figwidth: float = 13,
                              axheight: float = 2.5, pbs: tuple = None, save: bool = True, close: bool = False):
         m_excl = ones(self.distances.size, bool)
         if self.excluded_stars:
@@ -323,9 +327,9 @@ class TFOPAnalysis(TransitAnalysis):
             fig, axs = subplots(nrows, ncols, figsize=(figwidth, nrows * axheight), constrained_layout=True,
                                 sharex='all')
             for i, istar in enumerate(tqdm(stars, leave=False)):
-                self.plot_single_raw(axs.flat[i], ph, istar)
+                self.plot_single_raw(axs.flat[i], ph, istar, cid=cid, aid=aid)
             [axs.flat[naxs - i - 1].remove() for i in range(nempty)]
-            fig.suptitle(f"{self.ticname} 20{self.date} {pb}-band MuSCAT2 raw fluxes normalised to median target flux",
+            fig.suptitle(f"{self.ticname} 20{self.date} {pb}-band MuSCAT2 relative normalised fluxes.",
                          size='large')
             if save:
                 pdf.savefig(fig)
@@ -334,17 +338,18 @@ class TFOPAnalysis(TransitAnalysis):
         if save:
             pdf.close()
 
-    def plot_single_raw(self, ax, ph, sid, aid=-1, btime=300., nsamples=500):
+    def plot_single_raw(self, ax, ph, sid, cid, aid=-1, btime=300., nsamples=500):
         """Plot the raw flux of star `sid` normalized to the median of star `tid`."""
         toi = self.toi
-        flux = array(ph.flux[:, sid, aid] / ph.flux[:, self.tid, aid].median())
         time = ph.bjd
         t0 = floor(time[0])
 
+        flux = array(ph.flux[:, sid, aid] / ph.flux[:, self.tid, aid].median())
         m = isfinite(time) & isfinite(flux)
         time, flux = time[m], flux[m]
         fratio = median(flux)
-        flux /= fratio
+        flux /= array(ph.flux[:, cid, aid])
+        flux /= median(flux)
 
         # Flux median and std for y limits and outlier marking
         # ----------------------------------------------------
@@ -369,7 +374,7 @@ class TFOPAnalysis(TransitAnalysis):
         # Plot the model
         # --------------
         if fratio > toi.depth[0] * 1e-6:
-            fmodel = tmodel(time, toi, None if sid == self.tid else fratio) - 4 * s
+            fmodel = tmodel(time, toi, None if sid == self.tid else fratio) - 3 * s
             ax.plot(time - t0, fmodel, 'k', ls='-', alpha=0.5)
 
         # Transit centre, ingress, and egress
@@ -391,7 +396,8 @@ class TFOPAnalysis(TransitAnalysis):
                 va='bottom', transform=ax.transAxes)
         ax.text(0.98, 1.01, f"F$_\star$/F$_0$ {fratio:4.3f}", size='small', ha='right', va='bottom',
                 transform=ax.transAxes)
-        setp(ax, yticks=[], xlim=time[[0, -1]] - t0, ylim=(m - 6 * s, m + 4 * s))
+        setp(ax, xlim=time[[0, -1]] - t0, ylim=(m - 6 * s, m + 4 * s))
+
 
     def plot_final_fit(self, figwidth: float = 13, save: bool = True, close: bool = False) -> None:
         lpf = self.lpf
