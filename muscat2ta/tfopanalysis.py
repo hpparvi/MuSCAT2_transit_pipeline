@@ -158,6 +158,7 @@ class TFOPAnalysis(TransitAnalysis):
         self.set_prior('tc', NP(self.tc.n, self.tc.s))
         self.set_prior('p', NP(*self.toi.period))
         self.add_t14_prior(self.toi.duration[0] / 24, 0.5*self.toi.duration[1] / 24)
+        self.lpf.add_inside_window_prior()
 
         for p in self.lpf.ps[self.lpf._sl_k2]:
             p.prior = UP(0.25 * self.toi.depth[0] * 1e-6, 4 * self.toi.depth[0] * 1e-6)
@@ -328,6 +329,7 @@ class TFOPAnalysis(TransitAnalysis):
                                 sharex='all')
             for i, istar in enumerate(tqdm(stars, leave=False)):
                 self.plot_single_raw(axs.flat[i], ph, istar, cid=cid, aid=aid)
+            setp(axs[:,0], ylabel='Normalized flux')
             [axs.flat[naxs - i - 1].remove() for i in range(nempty)]
             fig.suptitle(f"{self.ticname} 20{self.date} {pb}-band MuSCAT2 relative normalised fluxes.",
                          size='large')
@@ -398,8 +400,18 @@ class TFOPAnalysis(TransitAnalysis):
                 transform=ax.transAxes)
         setp(ax, xlim=time[[0, -1]] - t0, ylim=(m - 6 * s, m + 4 * s))
 
-
     def plot_final_fit(self, figwidth: float = 13, save: bool = True, close: bool = False) -> None:
+
+        def bic_evidence(bic):
+            if bic < 2:
+                return "no"
+            elif 2 < bic < 6:
+                return "positive"
+            elif 6 < bic < 10:
+                return "strong"
+            else:
+                return "very strong"
+
         lpf = self.lpf
         fig = figure(figsize=(figwidth, 1.4142 * figwidth))
         if self.toi is None:
@@ -420,18 +432,22 @@ class TFOPAnalysis(TransitAnalysis):
 
         def plot_vprior(t, ymin: float = 0, ymax: float = 1):
             [[ax.axvspan(t.n - s * t.s, t.n + s * t.s, alpha=0.1, ymin=ymin, ymax=ymax) for s in (1, 2, 3)] for ax
-             in fig.axes[1+self.lpf.npb:]]
-            [ax.axvline(t.n, ymin=ymin, ymax=ymax) for ax in fig.axes[1+self.lpf.npb:]]
+             in fig.axes[1 + self.lpf.npb:]]
+            [ax.axvline(t.n, ymin=ymin, ymax=ymax) for ax in fig.axes[1 + self.lpf.npb:]]
 
         plot_vprior(self.transit_center, 0.03, 0.9)
         plot_vprior(self.transit_start, 0.93, 0.98)
         plot_vprior(self.transit_end, 0.93, 0.98)
 
-        [ax.axhline(1 - self.toi.depth[0] * 1e-6, ls=':') for ax in fig.axes[1+self.lpf.npb:3 * self.lpf.npb]]
+        [ax.axhline(1 - self.toi.depth[0] * 1e-6, ls=':') for ax in fig.axes[1 + self.lpf.npb:3 * self.lpf.npb]]
+
+        bic = self.lpf.transit_bic()
 
         # Parameter posterior plots
         # -------------------------
-        figtext(0.05, 0.325, f"Parameter posteriors", size=20, weight='bold', va='bottom')
+        figtext(0.05, 0.325,
+                f"Parameter posteriors {'' if bic > 6 else '(WARNING: low BIC, no strong evidence for a transit)'}",
+                size=20, weight='bold', va='bottom')
         fig.add_axes((0.03, 0.32, 0.96, 0.001), facecolor='k', xticks=[], yticks=[])
         lpf.plot_posteriors(fig=fig,
                             gridspec=dict(top=0.30, bottom=0.05, left=0.1, right=0.95, wspace=0.03, hspace=0.3))
@@ -442,7 +458,8 @@ class TFOPAnalysis(TransitAnalysis):
                  f"P(ingress) = {self.p_ingress_in_window:4.2f},  "
                  f"P(egress) = {self.p_egress_in_window:4.2f},\n"
                  f"P(misses window) = {self.p_transit_not_in_window:4.2f},  "
-                 f"P(spans window) = {self.p_transit_covers_whole_window:4.2f}")
+                 f"P(spans window) = {self.p_transit_covers_whole_window:4.2f},\n"
+                 f"Transit model BIC: {bic:.2f} $\longmapsto$ {bic_evidence(bic)} evidence for a transit in the data")
         figtext(0.32, 0.95, ptext, size=16, va='top', ha='left')
 
         if save:

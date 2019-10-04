@@ -24,7 +24,7 @@ from muscat2ph.catalog import get_toi
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
-    delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like
+    delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like, fmin
 from numpy.polynomial.legendre import legvander
 import astropy.units as u
 from numpy.random import permutation, uniform, normal
@@ -472,6 +472,48 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             return lnl
         self.lnpriors.append(ldprior)
 
+    def add_inside_window_prior(self, min_duration=20):
+        self._iptmin = self.timea.min()
+        self._iptmax = self.timea.max()
+        self._ipmdur = min_duration / 60 / 24
+        def is_inside_window(pv):
+            pv = atleast_2d(pv)
+            tc = pv[:, 0]
+            a = as_from_rhop(pv[:, 2], pv[:, 1])
+            t14 = duration_eccentric(pv[:, 1], sqrt(pv[:, 4]), a, arccos(pv[:, 3] / a), 0, 0, 1)
+            ingress = tc - 0.5 * t14
+            egress = tc + 0.5 * t14
+            inside_limits = fmin(egress - self._iptmin - self._ipmdur, self._iptmax - ingress - self._ipmdur) > 0
+            return where(inside_limits, 0, -inf)
+        self.lnpriors.append(is_inside_window)
+
+    def transit_bic(self):
+        from scipy.optimize import minimize
+
+        def bic(ll1, ll2, d1, d2, n):
+            return ll1 - ll2 - 0.5 * (d1 - d2) * log(n)
+
+        pv_all = self.de.minimum_location.copy()
+        pv_bl = pv_all[self._sl_bl]
+        wn = atleast_2d(10 ** pv_all[self._sl_err])
+
+        def lnlikelihood_baseline(self, pv):
+            pv_all[self._sl_bl] = pv
+            flux_m = self.baseline(pv_all)
+
+            if self.photometry_frozen:
+                lnl = squeeze(lnlike_logistic_v1d(self.ofluxa, flux_m, wn, self.lcids))
+            else:
+                lnl = squeeze(lnlike_logistic_v(self.relative_flux(pv), flux_m, wn, self.lcids))
+
+            return lnl if lnl == lnl else -inf
+
+        ll_no_transit = -minimize(lambda pv: -lnlikelihood_baseline(self, pv), pv_bl).fun
+        ll_with_transit = float(self.lnlikelihood(self.de.minimum_location.copy()))
+        d_with_transit = len(self.ps)
+        d_no_transit = d_with_transit - self._start_bl
+        return bic(ll_with_transit, ll_no_transit, d_with_transit, d_no_transit, self.timea.size)
+
     def posterior_samples(self, burn: int = 0, thin: int = 1, derived_parameters: bool = True, add_tref = True):
         df = BaseLPF.posterior_samples(self, burn, thin, derived_parameters)
         if add_tref:
@@ -522,9 +564,9 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             axs[2, i].plot(t, tm[0][sl], 'k', lw=2)
             axs[3, i].plot(t, self.ofluxa[sl] - fm[0][sl], '.', alpha=0.5)
 
-            if bin_width:
-                bt, bf, be = downsample_time(t, self.ofluxa[sl] / bl[0][sl], 300)
-                axs[2, i].plot(bt, bf, 'ok')
+            #if bin_width:
+            #    bt, bf, be = downsample_time(t, self.ofluxa[sl] / bl[0][sl], 300)
+            #    axs[2, i].plot(bt, bf, 'ok')
 
             res = self.ofluxa[sl] - fm[0][sl]
             x = linspace(-4 * err, 4 * err)
