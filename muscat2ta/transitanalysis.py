@@ -164,7 +164,7 @@ class TransitAnalysis:
         return f'{self.target}_{self.date}_{self.lpf.radius_ratio}_k'
 
     def load(self):
-        ds = xa.open_dataset(self.savefile_name+'.nc').load()
+        ds = xa.open_dataset(self._dres.joinpath(self.savefile_name+'.nc')).load()
         ds.close()
         return ds
 
