@@ -102,7 +102,7 @@ class TFOPAnalysis(TransitAnalysis):
                  excluded_mjd_ranges: tuple = None,
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
-                 radius_ratio: str = 'chromatic', excluded_stars=()):
+                 radius_ratio: str = 'chromatic', excluded_stars=(), toi=None):
 
         super().__init__(target, date, tid, cids, dataroot=dataroot, exptime_min=exptime_min,
                  nlegendre=nlegendre,  npop=npop,  mjd_start=mjd_start, mjd_end=mjd_end,
@@ -113,9 +113,17 @@ class TFOPAnalysis(TransitAnalysis):
 
         # Get the TOI information
         # -----------------------
-        self.toi = get_toi(float(target.lower().strip('toi')))
-        self.ticname = 'TIC{:d}-{}'.format(int(self.toi.tic), str(self.toi.toi).split('.')[1])
-        self.lpf.toi = self.toi
+        try:
+            self.toi = get_toi(float(target.lower().strip('toi')))
+            self.ticname = 'TIC{:d}-{}'.format(int(self.toi.tic), str(self.toi.toi).split('.')[1])
+            self.lpf.toi = self.toi
+        except IndexError:
+            if toi is not None:
+                self.toi = toi
+                self.ticname = 'TIC{:d}-{}'.format(int(self.toi.tic), str(self.toi.toi).split('.')[1])
+                self.lpf.toi = self.toi
+            else:
+                warnings.warn(f"Couldn't identify {target.lower()} and no TOI given")
 
         self.passbands = self.lpf.passbands
         self.excluded_stars = excluded_stars
@@ -518,4 +526,4 @@ class TFOPAnalysis(TransitAnalysis):
                                'target': self.target,
                                'tref': self.lpf.tref})
 
-        ds.to_netcdf(self._dres.joinpath(self.savefile_name+'nc'))
+        ds.to_netcdf(self._dres.joinpath(self.savefile_name+'.nc'))

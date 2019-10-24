@@ -18,13 +18,15 @@ import warnings
 import seaborn as sb
 from os.path import join, split
 
+from astropy.stats import sigma_clip, mad_std
 from ldtk import LDPSetCreator
 from matplotlib.pyplot import subplots, setp, figure
 from muscat2ph.catalog import get_toi
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
-    delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like, fmin
+    delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like, fmin, digitize, ceil, full, \
+    nan
 from numpy.polynomial.legendre import legvander
 import astropy.units as u
 from numpy.random import permutation, uniform, normal
@@ -34,11 +36,28 @@ from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
 from pytransit.contamination.instrument import Instrument
 from pytransit.lpf.lpf import BaseLPF, map_pv, map_ldc
 from pytransit.orbits.orbits_py import as_from_rhop, duration_eccentric, i_from_ba, d_from_pkaiews, epoch
-from pytransit.param.parameter import NormalPrior as NP, UniformPrior as UP, LParameter, PParameter, ParameterSet
+from pytransit.param.parameter import NormalPrior as NP, UniformPrior as UP, LParameter, PParameter, ParameterSet, \
+    GParameter
 from pytransit.utils.de import DiffEvol
 from scipy.stats import logistic, norm
 from uncertainties import ufloat
 
+def downsample_time(time, values, inttime=30.):
+    if values.ndim == 1:
+        values = atleast_2d(values).T
+    duration = 24. * 60. * 60. * time.ptp()
+    nbins = int(ceil(duration / inttime))
+    bins = arange(nbins)
+    edges = time[0] + bins * inttime / 24 / 60 / 60
+    bids = digitize(time, edges) - 1
+    bt, bv = full(nbins, nan), zeros((nbins, values.shape[1]))
+    for i, bid in enumerate(bins):
+        bmask = bid == bids
+        if bmask.sum() > 0:
+            bt[i] = time[bmask].mean()
+            bv[i,:] = values[bmask,:].mean(0)
+    m = isfinite(bt)
+    return bt[m], squeeze(bv[m])
 
 @njit
 def running_mean(time, flux, npt, width_min):
@@ -126,8 +145,9 @@ class M2LPF(LinearModelBaseline, BaseLPF):
     def __init__(self, target: str, photometry: list, tid: int, cids: list,
                  filters: tuple, aperture_lims: tuple = (0, inf), use_opencl: bool = False,
                  n_legendre: int = 0, use_toi_info=True, with_transit=True, with_contamination=False,
-                 radius_ratio: str = 'achromatic'):
+                 radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.25)):
         assert radius_ratio in ('chromatic', 'achromatic')
+        assert noise_model in ('white', 'gp')
 
         self.use_opencl = use_opencl
         self.planet = None
@@ -136,6 +156,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.with_transit = with_transit
         self.with_contamination = with_contamination
         self.chromatic_transit = radius_ratio == 'chromatic'
+        self.noise_model = noise_model
         self.radius_ratio = radius_ratio
         self.n_legendre = n_legendre
 
@@ -189,9 +210,9 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             import pyopencl as cl
             ctx = cl.create_some_context()
             queue = cl.CommandQueue(ctx)
-            tm = QuadraticModelCL(klims=(0.005, 0.25), nk=512, nz=512, cl_ctx=ctx, cl_queue=queue)
+            tm = QuadraticModelCL(klims=klims, nk=512, nz=512, cl_ctx=ctx, cl_queue=queue)
         else:
-            tm = QuadraticModel(interpolate=True, klims=(0.005, 0.25), nk=512, nz=512)
+            tm = QuadraticModel(interpolate=True, klims=klims, nk=512, nz=512)
 
         BaseLPF.__init__(self, target, filters, times, fluxes, wns, arange(len(photometry)), covariates, arange(len(photometry)), tm = tm)
 
@@ -202,7 +223,6 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.refs = []
         for ip, ph in enumerate(photometry):
             self.refs.append([pad(array(ph.flux[:, cid, amin:amax+1]), ((0, 0), (1, 0)), mode='constant') for cid in self.cids[ip]])
-
 
     def _init_parameters(self):
         self.ps = ParameterSet()
@@ -235,7 +255,6 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
             self._sl_cn = self.ps.blocks[-1].slice
 
-
     def _init_p_baseline(self):
         LinearModelBaseline._init_p_baseline(self)
 
@@ -252,6 +271,21 @@ class M2LPF(LinearModelBaseline, BaseLPF):
                 self.ps.add_global_block('rstars', c)
                 self._sl_ref = self.ps.blocks[-1].slice
                 self._start_ref = self.ps.blocks[-1].start
+
+    def _init_p_noise(self):
+        """Noise parameter initialisation.
+        """
+
+        if self.noise_model == 'gp':
+            pgp = [GParameter('log_gpa', 'log10_gp_amplitude', '', UP(-4,  0), bounds=(-4,  0)),
+                   GParameter('log_gps', 'log10_gp_tscale',    '', UP(-5, 10), bounds=(-5, 10))]
+            self.ps.add_global_block('gp', pgp)
+            self._sl_gp = self.ps.blocks[-1].slice
+            self._start_gp = self.ps.blocks[-1].start
+        pns = [LParameter('loge_{:d}'.format(i), 'log10_error_{:d}'.format(i), '', UP(-4, 0), bounds=(-4, 0)) for i in range(self.n_noise_blocks)]
+        self.ps.add_lightcurve_block('log_err', 1, self.n_noise_blocks, pns)
+        self._sl_err = self.ps.blocks[-1].slice
+        self._start_err = self.ps.blocks[-1].start
 
     def _init_instrument(self):
         self.instrument = Instrument('MuSCAT2', [sdss_g, sdss_r, sdss_i, sdss_z])
@@ -302,6 +336,68 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         for i in range(self.nlc):
             pvp[:, self._start_err+i] = log10(uniform(0.5*self.wn[i], 2*self.wn[i], size=npop))
         return pvp
+
+    def remove_outliers(self, iapt: int, lower: float = 5, upper: float = 5, plot: bool = False, apply: bool = True) -> None:
+        fluxes = []
+        if plot:
+            fig, axs = subplots(1, self.npb, figsize=(13, 4), sharey='all')
+        for ipb in range(self.npb):
+            ft = self.ofluxes[ipb][:, iapt] / sum([r[:, iapt] for r in self.refs[ipb]], 0)
+            ft /= median(ft)
+            dft = diff(ft)
+            mask = ~sigma_clip(dft, sigma_lower=inf, sigma_upper=5, stdfunc=mad_std).mask
+            ids = where(mask)[0] + 1
+            if plot:
+                axs[ipb].plot(self.times[ipb][ids], ft[ids], '.')
+                nids = where(~mask)[0] + 1
+                axs[ipb].plot(self.times[ipb][nids], ft[nids], 'kx')
+            if apply:
+                fluxes.append(ft[ids])
+                self.times[ipb] = self.times[ipb][ids]
+                self.ofluxes[ipb] = self.ofluxes[ipb][ids, :]
+                for icid in range(self.cids.shape[1]):
+                    self.refs[ipb][icid] = self.refs[ipb][icid][ids, :]
+                self.covariates[ipb] = self.covariates[ipb][ids, :]
+        if apply:
+            self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
+        if plot:
+            fig.tight_layout()
+
+    def apply_normalized_limits(self, iapt: int, lower: float = -inf, upper: float = inf, plot: bool = False,
+                                apply: bool = True) -> None:
+        fluxes = []
+        if plot:
+            fig, axs = subplots(1, self.npb, figsize=(13, 4), sharey='all')
+        for ipb in range(self.npb):
+            ft = self.ofluxes[ipb][:, iapt] / nanmedian(self.ofluxes[ipb][:, iapt])
+            mask = (ft > lower) & (ft < upper)
+            if plot:
+                axs[ipb].plot(self.times[ipb][mask], ft[mask], '.')
+                axs[ipb].plot(self.times[ipb][~mask], ft[~mask], 'kx')
+            if apply:
+                fluxes.append(ft[mask])
+                self.times[ipb] = self.times[ipb][mask]
+                self.ofluxes[ipb] = self.ofluxes[ipb][mask, :]
+                for icid in range(self.cids.shape[1]):
+                    self.refs[ipb][icid] = self.refs[ipb][icid][mask, :]
+                self.covariates[ipb] = self.covariates[ipb][mask, :]
+        if apply:
+            self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
+        if plot:
+            fig.tight_layout()
+
+    def downsample(self, exptime: float) -> None:
+        nrefs = self.cids.shape[1]
+        fluxes = []
+        for ipb in range(self.npb):
+            bt, self.ofluxes[ipb] = downsample_time(self.times[ipb], self.ofluxes[ipb], exptime)
+            for icid in range(nrefs):
+                _, self.refs[ipb][icid] = downsample_time(self.times[ipb], self.refs[ipb][icid], exptime)
+            _, self.covariates[ipb] = downsample_time(self.times[ipb], self.covariates[ipb], exptime)
+            self.times[ipb] = bt
+            f = self.ofluxes[ipb][:, -1] / sum([r[:, -1] for r in self.refs[ipb]], 0)
+            fluxes.append(f / nanmedian(f))
+        self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
 
     def set_radius_ratio_prior(self, kmin, kmax):
         for p in self.ps[self._sl_k2]:

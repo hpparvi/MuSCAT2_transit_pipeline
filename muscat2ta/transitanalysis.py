@@ -53,7 +53,7 @@ class TransitAnalysis:
                  excluded_mjd_ranges: tuple = None,
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
-                 radius_ratio: str = 'achromatic'):
+                 radius_ratio: str = 'achromatic', klims=(0.005, 0.25)):
 
         self.target: str = target
         self.date: str = date
@@ -100,7 +100,7 @@ class TransitAnalysis:
             raise ValueError('No photometry files found.')
 
         self.lpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl,
-                         with_transit=with_transit, n_legendre=nlegendre, radius_ratio=radius_ratio)
+                         with_transit=with_transit, n_legendre=nlegendre, radius_ratio=radius_ratio, klims=klims)
         if with_transit:
             self.lpf.set_prior(0, NP(self.lpf.times[0].mean(), 0.2*self.lpf.times[0].ptp()))
 
@@ -139,7 +139,7 @@ class TransitAnalysis:
         if plot_lc:
             self.plot_light_curve()
 
-    def sample(self, niter: int = 1000, thin: int = 5, repeats: int = None, reset=True):
+    def sample(self, niter: int = 1000, thin: int = 5, repeats: int = 1, reset=True) -> None:
         self.lpf.sample_mcmc(niter, thin=thin, repeats=repeats, label='Sampling the model', reset=reset)
 
     def posterior_samples(self, burn: int = 0, thin: int = 1, derived_parameters=True) -> pd.DataFrame:
