@@ -46,15 +46,30 @@ def read_m2_catalog():
             targets.append(items[1:])
         return pd.DataFrame(targets, index=ids, columns=names[1:])
 
-def get_toi(toi):
-    df = pd.read_csv(toi_catalog_file, sep=',')
-    dtoi = df[df.TOI == toi]
-    zero_epoch = dtoi[['Epoch (BJD)', 'Epoch error']].values[0]
-    period = dtoi[['Period (days)', 'Period error']].values[0]
-    duration = dtoi[['Duration (hours)', 'Duration error']].values[0]
-    depth = dtoi[['Depth (ppm)', 'Depth (ppm) error']].values[0]
-    return TOI(*dtoi['TIC ID, TOI, TESS mag, RA (degrees), Dec (degrees)'.split(', ')].values[0], epoch=zero_epoch, period=period, duration=duration, depth=depth)
 
+def parse_toi(toi):
+    try:
+        toi = float(toi.lower().strip('toi')) if isinstance(toi, str) else float(toi)
+        if abs(toi % 1) < 1e-6:
+            toi += 0.01
+        return toi
+    except ValueError as e:
+        raise ValueError(f'Cannot parse "{toi}" into a TOI number')
+
+
+def get_toi(toi):
+    toi = parse_toi(toi)
+    df = pd.read_csv(toi_catalog_file, sep=',')
+    try:
+        dtoi = df[df.TOI == toi]
+        zero_epoch = dtoi[['Epoch (BJD)', 'Epoch error']].values[0]
+        period = dtoi[['Period (days)', 'Period error']].values[0]
+        duration = dtoi[['Duration (hours)', 'Duration error']].values[0]
+        depth = dtoi[['Depth (ppm)', 'Depth (ppm) error']].values[0]
+        return TOI(*dtoi['TIC ID, TOI, TESS mag, RA (degrees), Dec (degrees)'.split(', ')].values[0], epoch=zero_epoch,
+                   period=period, duration=duration, depth=depth)
+    except IndexError:
+        raise ValueError(f'Cannot find TOI {toi} from the catalog')
 
 def get_toi_or_tic(toi_or_tic):
     df = pd.read_csv(toi_catalog_file, sep=',')
