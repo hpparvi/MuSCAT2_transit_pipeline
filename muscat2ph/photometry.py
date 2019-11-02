@@ -15,6 +15,7 @@
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import warnings
+import logging
 
 from pathlib import Path
 
@@ -59,7 +60,7 @@ class Centroider:
         self.sids = sids if sids is not None else arange(min(image._cur_centroids_pix.shape[0], nstars))
         self.r = aperture_radius
         self.nstars = len(self.sids)
-        self.apt = CircularAperture(zeros((self.nstars, 2)), self.r)
+        self.apt = CircularAperture(list(zeros((self.nstars, 2))), self.r)
 
     def select_stars(self, min_distance=20., min_edge=50.):
         im = self.image
@@ -69,8 +70,7 @@ class Centroider:
         mask_edge = (all(xy > min_edge, 1) & all(xy < im._data.shape[0] - min_edge, 1))
         self.sids = where(mask_distance & mask_edge)[0]
         self.nstars = len(self.sids)
-        self.apt = CircularAperture(zeros((self.nstars, 2)), self.r)
-
+        self.apt = CircularAperture(list(zeros((self.nstars, 2))), self.r)
 
     def set_data(self, image, filter_footprint=4):
         self.data = mf(self.image.reduced, filter_footprint)
@@ -345,8 +345,8 @@ class ScienceFrame(ImageFrame):
             if self._wcs is not None:
                 self._ref_centroids_pix = array(self._ref_centroids_sky.to_pixel(self._wcs)).T
         self._cur_centroids_pix = cpix = self._ref_centroids_pix.copy()
-        self._apertures_obj = [CircularAperture(cpix, r) for r in self.aperture_radii]
-        self._apertures_sky = CircularAnnulus(cpix, self.aperture_radii[-1], self.aperture_radii[-1] + wsky)
+        self._apertures_obj = [CircularAperture(list(cpix), r) for r in self.aperture_radii]
+        self._apertures_sky = CircularAnnulus(list(cpix), self.aperture_radii[-1], self.aperture_radii[-1] + wsky)
         self.nstars = self._ref_centroids_pix.shape[0]
 
 
@@ -369,6 +369,8 @@ class ScienceFrame(ImageFrame):
         fids = argsort(fluxes)[::-1] + 1
         maxn = min(maxn, nl)
         self.nstars = maxn
+        logging.info(f"Found {nl} possible stars, chose {self.nstars}")
+
 
         sorted_labels = zeros_like(labels)
         for i, fid in enumerate(fids[:maxn]):
@@ -466,7 +468,7 @@ class ScienceFrame(ImageFrame):
         #if any(cpix < 0.) or any(cpix > im._data.shape[0]):
         #    self.centroid = [nan, nan]
         #    raise ValueError("Star outside the image FOV.")
-        apt = CircularAperture(self._cur_centroids_pix[star, :], r)
+        apt = CircularAperture(list(self._cur_centroids_pix[star, :]), r)
         reduced_frame = self.reduced
         for iiter in range(niter):
             mask = apt.to_mask()[0]
@@ -492,13 +494,13 @@ class ScienceFrame(ImageFrame):
         self._cur_centroids_pix[:] += r.x
         self._update_apertures(self._cur_centroids_pix)
 
-    def get_aperture(self, aid=0, rid=-1):
-        m = self._apertures_obj[rid].to_mask()[aid]
+    def get_aperture(self, aid=0, oid=0):
+        m = self._apertures_obj[aid].to_mask()[oid]
         return m.multiply(self.reduced)
 
     def plot_aperture_masks(self, radius=None, minp=0.0, maxp=99.9, cols=5, figsize=(11, 2.5)):
         if radius is not None:
-            aps = CircularAperture([self._stars.xcentroid, self._stars.ycentroid], radius)
+            aps = CircularAperture(list(array([self._stars.xcentroid, self._stars.ycentroid])), radius)
         else:
             aps = self._aps
         fig, axs = subplots(int(ceil(self.nstars / cols)), cols, figsize=figsize, sharex=True, sharey=True)
@@ -510,7 +512,7 @@ class ScienceFrame(ImageFrame):
         fig.tight_layout()
 
     def plot_sky_masks(self, r1, r2, minp=0.0, maxp=99.9, cols=5, figsize=(11, 2.5)):
-        aps = CircularAnnulus([self._stars.xcentroid, self._stars.ycentroid], r1, r2)
+        aps = CircularAnnulus(list(array([self._stars.xcentroid, self._stars.ycentroid])), r1, r2)
         fig, axs = subplots(int(ceil(self.nstars / cols)), cols, figsize=figsize, sharex=True, sharey=True)
         for m, ax in zip(aps.to_mask(), axs.flat):
             d = where(m.data.astype('bool'), m.cutout(self.reduced), nan) #m.multiply(self.reduced)
@@ -521,6 +523,7 @@ class ScienceFrame(ImageFrame):
     def plot_apertures(self, ax, offset=9, wcs=None):
         if wcs:
             cpix = self._ref_centroids_sky.to_pixel(wcs)
+            cpix = list(array(cpix).T)
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
 
@@ -529,7 +532,7 @@ class ScienceFrame(ImageFrame):
                 apertures_obj = [CircularAperture(cpix, r) for r in self.aperture_radii]
             else:
                 apertures_obj = self._apertures_obj
-            [apt.plot(ax=ax, alpha=0.25) for apt in apertures_obj]
+            [apt.plot(axes=ax, alpha=0.25) for apt in apertures_obj]
             for istar, (x,y) in enumerate(apertures_obj[0].positions):
                 if (xlim[0] <= x <= xlim[1]) and (ylim[0] <= y <= ylim[1]):
                     yoffset = offset if y < ylim[1]-10 else -offset
@@ -539,7 +542,7 @@ class ScienceFrame(ImageFrame):
                 apertures_sky = CircularAnnulus(cpix, self.aperture_radii[-1], self.aperture_radii[-1] + 15)
             else:
                 apertures_sky = self._apertures_sky
-            apertures_sky.plot(ax=ax, alpha=0.25)
+            apertures_sky.plot(axes=ax, alpha=0.25)
 
 
     def plot_psf(self, iob=0, iapt=0, max_r=15, figsize=None, ax=None):
@@ -601,11 +604,10 @@ class ScienceFrame(ImageFrame):
             from photutils import SkyCircularAperture
             sa = SkyCircularAperture(self._target_center, self._separation_cut).to_pixel(wcs)
             ax.plot(*self._target_center.to_pixel(wcs), marker='x', c='k', ms=15)
-            sa.plot(ax=ax, color='0.4', ls=':', lw=2)
-            if sa.positions[0][0] + sa.r - 20 < width:
-                ax.text(sa.positions[0][0] + sa.r + 10, sa.positions[0][1],
+            sa.plot(axes=ax, color='0.4', ls=':', lw=2)
+            if sa.positions[0] + sa.r - 20 < width:
+                ax.text(sa.positions[0] + sa.r + 10, sa.positions[1],
                         "r = {:3.1f}'".format(self._separation_cut.value), size='larger')
-
         # Plot the margins
         if self._margins_cut:
             ax.axvline(self.margin, c='k', ls='--', alpha=0.5)
@@ -676,7 +678,7 @@ class ScienceFrame(ImageFrame):
         self.estimate_sky()
         self.estimate_entropy()
         for iapt, apt in enumerate(self._apertures_obj):
-            self._flux[:, iapt] = apt.do_photometry(self.reduced)[0] - self._sky_median * apt.area()
+            self._flux[:, iapt] = apt.do_photometry(self.reduced)[0] - self._sky_median * apt.area
         self._cshift[:] = self._cur_centroids_pix - self._ref_centroids_pix
         return self.flux, self._sky_median.copy(), self.apt_entropy, self._sky_entropy.copy(), self.cshift
 

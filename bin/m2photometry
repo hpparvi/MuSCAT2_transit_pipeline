@@ -27,7 +27,7 @@ from pathlib import Path
 import xarray as xa
 from astropy.io import fits as pf
 from astropy.wcs.wcs import NoConvergence
-from numpy import zeros, inf, array, c_, nan, full_like
+from numpy import zeros, inf, array, c_, nan, full_like, float32
 from tqdm import tqdm
 
 import matplotlib as mpl
@@ -37,26 +37,33 @@ import matplotlib.pyplot as pl
 from muscat2ph.photometry import ScienceFrame, COMCentroider
 from muscat2ph.catalog import get_m2_coords
 
+from astropy.utils.exceptions import AstropyDeprecationWarning
+import warnings
+warnings.filterwarnings("error", category=AstropyDeprecationWarning)
+
 passbands = 'g r i z_s'.split()
 
 logging.basicConfig(level=logging.INFO)
 
-def init(root, pb, stars_file, apertures, centroider_kwargs):
+def init(root, pb, stars_file, apertures, centroider_kwargs, dc_obj_id=0, dc_apt_id=0):
     isize = 1024
-    global im, cc
+    global im, cc, dcoid, dcaid, cc_pmin, cc_pmax
     im = ScienceFrame(root, pb, aperture_radii=apertures)
     im.aperture_radii = apertures
     im.napt = len(apertures)
     im.load_reference_stars(stars_file)
     im._data = zeros((isize, isize))
     cc = COMCentroider(im, sids=centroider_kwargs['sids'], aperture_radius=centroider_kwargs['aperture_radius'])
+    cc_pmin, cc_pmax = centroider_kwargs['pmin'], centroider_kwargs['pmax']
     if not 'sids' in centroider_kwargs or centroider_kwargs['sids'] is None:
         cc.select_stars(20)
+    dcoid = dc_obj_id
+    dcaid = dc_apt_id
 
 def photometry(filename):
     try:
         im.load_fits(filename)
-        cc.calculate_and_apply()
+        cc.calculate_and_apply(pmin=cc_pmin, pmax=cc_pmax)
         aux = [im._header['airmass'],
                im._header['exptime'],
                im._header['mjd-strt'] + 0.5 * im._header['exptime'] / 24 / 60 / 60]
@@ -67,8 +74,8 @@ def photometry(filename):
 
 def create_datacube(filename):
     im.load_fits(filename)
-    cc.calculate_and_apply()
-    return im.get_aperture(5)
+    cc.calculate_and_apply(pmin=cc_pmin, pmax=cc_pmax)
+    return im.get_aperture(dcaid, dcoid)
 
 
 if __name__ == '__main__':
@@ -88,6 +95,8 @@ if __name__ == '__main__':
     ap.add_argument('--border-margin', type=int, default=30)
     ap.add_argument('--save-stars', action='store_true', default=False)
     ap.add_argument('--create-dc', action='store_true', default=False)
+    ap.add_argument('--dc-obj-id', type=int, default=0)
+    ap.add_argument('--dc-apt-id', type=int, default=0)
     ap.add_argument('--apply-separation-cut', action='store_true', default=False)
     ap.add_argument('--separation-cut-distance', type=float, default=2.0)
     ap.add_argument('--tfop', action='store_true', default=False)
@@ -182,22 +191,24 @@ if __name__ == '__main__':
             if target_sky_coords is not None:
                 im._target_center = target_sky_coords
             im.load_fits(files[0])
-            
+
             # Find, cut, save, and load the stars
             # -----------------------------------
             if (args.save_stars and ipb==0) or not stars_file.exists():
+                logging.info("Searching for stars")
                 im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords,
                               treshold=args.find_treshold, mf_size=args.find_mf)
                 im.cut_margin(args.border_margin)
                 if TFOP or args.apply_separation_cut:
                     im.cut_separation(target_sky_coords, args.separation_cut_distance)
                     im.remove_doubles(target_sky_coords, 0.1)
+                    logging.info(f"Applying separation cut and double removal: {im.nstars} left")
                 im.save_reference_stars(stars_file)
 
             im.load_reference_stars(stars_file)
             if TFOP or args.apply_separation_cut:
                 im.cut_separation(target_sky_coords, args.separation_cut_distance)
-            
+
             cc = COMCentroider(im, None, aperture_radius=apertures[0])
             if not 'sids' in centroider_kwargs or centroider_kwargs['sids'] is None:
                 cc.select_stars(20)
@@ -219,6 +230,7 @@ if __name__ == '__main__':
                         fig_field.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_field_{:d}am.png'.format(object, obsdate, pb, r))))
                     else:
                         fig_field.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_field.png'.format(object, obsdate, pb))))
+                    pl.close(fig_field)
             else:
                 fig_field, ax_field = pl.subplots(figsize=(9, 9))
                 im.plot_reduced(minp=90, offset=10, ax=ax_field)
@@ -226,16 +238,19 @@ if __name__ == '__main__':
                 pl.setp(ax_field, ylabel='Y [pix]', xlabel='X [pix]')
                 fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
                 fig_field.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_field.png'.format(object, obsdate, pb))))
+                pl.close(fig_field)
 
             fig_psf, _ = im.plot_psf(figsize=(9, 4.5))
             fig_psf.tight_layout()
             fig_psf.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_seeing_profile.png'.format(object, obsdate, pb))))
+            pl.close(fig_psf)
 
             # Datacube creation
             # -----------------
             if args.create_dc:
-                with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file, apertures,  centroider_kwargs)) as pool:
-                    dc = array(list(tqdm(pool.imap(create_datacube, files, chunksize=args.chunksize), total=len(files))))
+                with Pool(processes=args.n_processes,
+                          initializer=init, initargs=(root, pb, stars_file, apertures,  centroider_kwargs, args.dc_obj_id, args.dc_apt_id)) as pool:
+                    dc = array(list(tqdm(pool.imap(create_datacube, files, chunksize=args.chunksize), total=len(files)))).astype(float32)
                     hdu = pf.PrimaryHDU(dc)
                     hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, obsdate, pb))), overwrite=True)
 
