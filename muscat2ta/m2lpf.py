@@ -27,6 +27,7 @@ from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, on
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
     delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like, fmin, digitize, ceil, full, \
     nan
+from numpy.polynomial import Polynomial
 from numpy.polynomial.legendre import legvander
 import astropy.units as u
 from numpy.random import permutation, uniform, normal
@@ -39,6 +40,7 @@ from pytransit.orbits.orbits_py import as_from_rhop, duration_eccentric, i_from_
 from pytransit.param.parameter import NormalPrior as NP, UniformPrior as UP, LParameter, PParameter, ParameterSet, \
     GParameter
 from pytransit.utils.de import DiffEvol
+from scipy.ndimage import binary_erosion
 from scipy.stats import logistic, norm
 from uncertainties import ufloat
 
@@ -364,16 +366,32 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             fig.tight_layout()
 
     def apply_normalized_limits(self, iapt: int, lower: float = -inf, upper: float = inf, plot: bool = False,
-                                apply: bool = True) -> None:
+                                apply: bool = True, npoly: int = 0, iterations: int = 5, erosion: int = 0) -> None:
         fluxes = []
         if plot:
             fig, axs = subplots(1, self.npb, figsize=(13, 4), sharey='all')
         for ipb in range(self.npb):
             ft = self.ofluxes[ipb][:, iapt] / nanmedian(self.ofluxes[ipb][:, iapt])
-            mask = (ft > lower) & (ft < upper)
+            mask = ones(ft.size, bool)
+
+            if npoly > 0:
+                for i in range(iterations):
+                    p = Polynomial.fit(self.times[ipb][mask], ft[mask], npoly)
+                    baseline = p(self.times[ipb])
+                    mask[mask] &= ((ft / baseline)[mask] > lower) & ((ft / baseline)[mask] < upper)
+            else:
+                baseline = ones_like(ft)
+                mask &= (ft > lower) & (ft < upper)
+
+            if erosion > 0:
+                mask = binary_erosion(mask, iterations=erosion)
+
             if plot:
                 axs[ipb].plot(self.times[ipb][mask], ft[mask], '.')
                 axs[ipb].plot(self.times[ipb][~mask], ft[~mask], 'kx')
+                axs[ipb].plot(self.times[ipb], baseline, 'k-')
+                axs[ipb].plot(self.times[ipb], baseline * upper, 'k--')
+                axs[ipb].plot(self.times[ipb], baseline * lower, 'k--')
             if apply:
                 fluxes.append(ft[mask])
                 self.times[ipb] = self.times[ipb][mask]
@@ -587,7 +605,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         from scipy.optimize import minimize
 
         def bic(ll1, ll2, d1, d2, n):
-            return ll1 - ll2 - 0.5 * (d1 - d2) * log(n)
+            return ll2 - ll1 + 0.5 * (d1 - d2) * log(n)
 
         pv_all = self.de.minimum_location.copy()
         pv_bl = pv_all[self._sl_bl]
@@ -608,7 +626,8 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         ll_with_transit = float(self.lnlikelihood(self.de.minimum_location.copy()))
         d_with_transit = len(self.ps)
         d_no_transit = d_with_transit - self._start_bl
-        return bic(ll_with_transit, ll_no_transit, d_with_transit, d_no_transit, self.timea.size)
+        #return bic(ll_with_transit, ll_no_transit, d_with_transit, d_no_transit, self.timea.size)
+        return bic(ll_no_transit, ll_with_transit, d_no_transit, d_with_transit, self.timea.size)
 
     def posterior_samples(self, burn: int = 0, thin: int = 1, derived_parameters: bool = True, add_tref = True):
         df = BaseLPF.posterior_samples(self, burn, thin, derived_parameters)
