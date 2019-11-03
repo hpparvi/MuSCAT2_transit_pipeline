@@ -21,13 +21,48 @@ from collections import namedtuple
 import astropy.units as u
 import pandas as pd
 from astropy.coordinates import SkyCoord
-from numpy.ma import remainder
+from numpy import remainder, array
 from pkg_resources import resource_filename
 
 TOI = namedtuple('TOI', 'tic toi tmag ra dec epoch period duration depth'.split())
 
 m2_catalog_file = Path(resource_filename('muscat2ph', '../data/m2_catalog.csv')).resolve()
 toi_catalog_file = Path(resource_filename('muscat2ph', '../data/toi_catalog.csv')).resolve()
+
+
+def update_toi_catalog(remove_fp: bool = False, remove_known_planets: bool = False) -> None:
+    """Download TOI list from TESS Alert/TOI Release.
+
+    Parameters
+    ----------
+    remove_fp : bool
+        remove false positive from the catalog if `True`
+    remove_known_planets: bool
+        remove known planets from the catalog if `True`
+    """
+    dl_link = 'https://exofop.ipac.caltech.edu/tess/download_toi.php?sort=toi&output=csv'
+    fp = Path('toi_catalog.csv')
+
+    d = pd.read_csv(dl_link)
+    ntois = len(d)
+
+    if remove_fp:
+        d = d[d['TFOPWG Disposition'] != 'FP']
+        print(f'Removed {ntois - len(d)} TOIs marked as FP')
+        ntois = len(d)
+
+    if remove_known_planets:
+        planet_keys = ['WASP', 'SWASP', 'HAT', 'HATS', 'KELT', 'QATAR', 'K2', 'Kepler']
+        keys = []
+        for key in planet_keys:
+            idx = ~array(d['Comments'].str.contains(key).tolist(), dtype=bool)
+            d = d[idx]
+            if idx.sum() > 0:
+                keys.append(key)
+        print(f'Removed {ntois - len(d)} TOIs marked as known planets')
+
+    d.to_csv(toi_catalog_file, index=False)
+
 
 def read_m2_catalog():
     with open(m2_catalog_file, 'r') as f:
@@ -62,11 +97,11 @@ def get_toi(toi):
     df = pd.read_csv(toi_catalog_file, sep=',')
     try:
         dtoi = df[df.TOI == toi]
-        zero_epoch = dtoi[['Epoch (BJD)', 'Epoch error']].values[0]
-        period = dtoi[['Period (days)', 'Period error']].values[0]
-        duration = dtoi[['Duration (hours)', 'Duration error']].values[0]
-        depth = dtoi[['Depth (ppm)', 'Depth (ppm) error']].values[0]
-        return TOI(*dtoi['TIC ID, TOI, TESS mag, RA (degrees), Dec (degrees)'.split(', ')].values[0], epoch=zero_epoch,
+        zero_epoch = dtoi[['Epoch (BJD)', 'Epoch (BJD) err']].values[0]
+        period = dtoi[['Period (days)', 'Period (days) err']].values[0]
+        duration = dtoi[['Duration (hours)', 'Duration (hours) err']].values[0]
+        depth = dtoi[['Depth (ppm)', 'Depth (ppm) err']].values[0]
+        return TOI(*dtoi['TIC ID, TOI, TESS Mag, RA, Dec'.split(', ')].values[0], epoch=zero_epoch,
                    period=period, duration=duration, depth=depth)
     except IndexError:
         raise ValueError(f'Cannot find TOI {toi} from the catalog')
@@ -110,4 +145,4 @@ def get_toi_or_tic_coords(toi_or_tic):
     Astropy SkyCoord object
     """
     toi = get_toi_or_tic(toi_or_tic)
-    return SkyCoord(toi.ra, toi.dec, frame='fk5', unit=(u.deg, u.deg))
+    return SkyCoord(toi.ra, toi.dec, frame='fk5', unit=(u.hourangle, u.deg))

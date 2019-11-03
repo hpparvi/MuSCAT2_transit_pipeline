@@ -27,7 +27,7 @@ setup(name='MuSCAT2TA',
       install_requires=["numpy", "scipy>=0.16", "astropy", "tqdm", "traitlets", 'pandas', 'xarray', 'photutils', 'matplotlib', 'astroquery',
                         'corner', 'seaborn', 'numba', 'george', 'pytransit', 'ldtk', 'uncertainties'],
       include_package_data=True,
-      scripts=['bin/m2organize', 'bin/m2photometry', 'bin/m2astrometry', 'bin/m2nbtemplate', 'bin/m2init'],
+      scripts=['bin/m2organize', 'bin/m2photometry', 'bin/m2astrometry', 'bin/m2nbtemplate', 'bin/m2init', 'bin/m2update'],
       license='GPLv2',
       classifiers=[
           "Topic :: Scientific/Engineering",
