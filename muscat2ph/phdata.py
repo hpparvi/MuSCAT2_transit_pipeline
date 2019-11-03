@@ -159,7 +159,7 @@ class PhotometryData:
 
         for i, ar in enumerate(array(self._ds.aperture)):
             apt = CircularAperture((0, 0), ar)
-            msk = apt.to_mask()[0]
+            msk = apt.to_mask()
             mb = msk.data.astype('bool')
             x, y = meshgrid(arange(mb.shape[0]), arange(mb.shape[1]))
             r = sqrt((x - ar)**2 + (y - ar)**2)
@@ -173,9 +173,8 @@ class PhotometryData:
             ip = interp1d(self._entropy_table.loc[aperture, :], self._entropy_table.fwhm, bounds_error=False,
                           fill_value=tuple(self._entropy_table.loc[aperture][[0, -1]]))
             for star in self._fwhm.star:
-                m = self._fwhm.loc[:, star, aperture].notnull()
+                m = self._fwhm.mjd[self._fwhm.loc[:, star, aperture].notnull()]
                 self._fwhm.loc[m, star, aperture] = ip(self._ds.obj_entropy.loc[m, star, aperture])
-
 
     def select_aperture(self):
         self.iapt = int(self.normalized_relative_flux_ptps.argmin())
