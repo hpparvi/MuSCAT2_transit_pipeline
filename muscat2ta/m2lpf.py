@@ -644,7 +644,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         if gridspec:
             gs.update(gridspec)
 
-        axs = fig.subplots(4, self.nlc, sharey='row', gridspec_kw=gs)
+        axs = fig.subplots(4, self.nlc, sharey='row', gridspec_kw=gs, squeeze=False)
 
         if model == 'de':
             pv = self.de.minimum_location
