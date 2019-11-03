@@ -117,7 +117,7 @@ class TFOPAnalysis(TransitAnalysis):
             self.toi = get_toi(float(target.lower().strip('toi')))
             self.ticname = 'TIC{:d}-{}'.format(int(self.toi.tic), str(self.toi.toi).split('.')[1])
             self.lpf.toi = self.toi
-        except IndexError:
+        except ValueError:
             if toi is not None:
                 self.toi = toi
                 self.ticname = 'TIC{:d}-{}'.format(int(self.toi.tic), str(self.toi.toi).split('.')[1])
@@ -182,18 +182,19 @@ class TFOPAnalysis(TransitAnalysis):
         fits_files = list(self.datadir.glob('MCT*fits'))
         assert len(fits_files) > 0, 'No example frame fits-files found.'
         f = fits_files[0]
-        f1 = pf.open(f)
-        f2 = pf.open(f.with_suffix('.wcs'))
-        h1 = f1[0].header.copy()
-        h1.append(('COMMENT', '*********************'))
-        h1.append(('COMMENT', '  WCS '))
-        h1.append(('COMMENT', '*********************'))
-        h1.extend(f2[0].header, unique=True, bottom=True)
-        f1[0].header = h1
-        filter = h1['filter']
-        f1.writeto(self._dres.joinpath(f'{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame.fits'), overwrite=True)
+        with pf.open(f) as f1:
+            filter = f1[0].header['filter']
+            if f.with_suffix('.wcs').exists():
+                with pf.open(f.with_suffix('.wcs')) as f2:
+                    h1 = f1[0].header.copy()
+                    h1.append(('COMMENT', '*********************'))
+                    h1.append(('COMMENT', '  WCS '))
+                    h1.append(('COMMENT', '*********************'))
+                    h1.extend(f2[0].header, unique=True, bottom=True)
+                    f1[0].header = h1
+            f1.writeto(self._dres.joinpath(f'{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame.fits'), overwrite=True)
 
-        if plot:
+        if plot and f.with_suffix('.wcs').exists():
             wcs = WCS(f1[0].header)
             data = f1[0].data.astype('d')
             fig = self.plot_tfop_field(data, wcs, figsize, markersize, loffset, subfield_radius=None)
@@ -206,7 +207,7 @@ class TFOPAnalysis(TransitAnalysis):
             close(fig)
 
     def plot_tfop_field(self, data, wcs, figsize=(9, 9), markersize=25, loffset=0, subfield_radius=None):
-        sc = get_toi_or_tic_coords(self.toi.tic)
+        sc = self.target_coordinates or get_toi_or_tic_coords(self.toi.tic)
 
         if subfield_radius:
             r = subfield_radius * u.arcmin
@@ -314,7 +315,7 @@ class TFOPAnalysis(TransitAnalysis):
         return fig, axs
 
     def plot_possible_blends(self, cid, aid, ncols: int = 3, max_separation: float = 2.5, figwidth: float = 13,
-                             axheight: float = 2.5, pbs: tuple = None, save: bool = True, close: bool = False):
+                             axheight: float = 2.5, pbs: tuple = None, save: bool = True, close_figures: bool = False):
         m_excl = ones(self.distances.size, bool)
         if self.excluded_stars:
             m_excl[list(self.excluded_stars)] = 0
@@ -343,8 +344,8 @@ class TFOPAnalysis(TransitAnalysis):
                          size='large')
             if save:
                 pdf.savefig(fig)
-            if close:
-                fig.close()
+            if close_figures:
+                close(fig)
         if save:
             pdf.close()
 
