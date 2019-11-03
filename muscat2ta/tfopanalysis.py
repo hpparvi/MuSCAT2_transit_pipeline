@@ -113,16 +113,16 @@ class TFOPAnalysis(TransitAnalysis):
 
         # Get the TOI information
         # -----------------------
-        try:
-            self.toi = get_toi(float(target.lower().strip('toi')))
+        if toi is not None:
+            self.toi = toi
             self.ticname = 'TIC{:d}-{}'.format(int(self.toi.tic), str(self.toi.toi).split('.')[1])
             self.lpf.toi = self.toi
-        except ValueError:
-            if toi is not None:
-                self.toi = toi
+        else:
+            try:
+                self.toi = get_toi(float(target.lower().strip('toi')))
                 self.ticname = 'TIC{:d}-{}'.format(int(self.toi.tic), str(self.toi.toi).split('.')[1])
                 self.lpf.toi = self.toi
-            else:
+            except ValueError:
                 warnings.warn(f"Couldn't identify {target.lower()} and no TOI given")
 
         self.passbands = self.lpf.passbands
