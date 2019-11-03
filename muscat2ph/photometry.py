@@ -551,7 +551,9 @@ class ScienceFrame(ImageFrame):
         d = m.cutout(self.reduced)
         _, dmedian, _ = sigma_clipped_stats(d)
         d -= dmedian
-        xc, yc = centroid_2dg(d)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            xc, yc = centroid_2dg(d)
 
         X, Y = meshgrid(arange(d.shape[1]), arange(d.shape[0]))
         r = sqrt((X - xc) ** 2 + (Y - yc) ** 2)

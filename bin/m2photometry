@@ -204,7 +204,7 @@ if __name__ == '__main__':
                 fits_name = f'{ticname}_20{obsdate}_MuSCAT2_{pb}_frame.fits'
             else:
                 fits_name = f'{object}_20{obsdate}_MuSCAT2_{pb}_frame.fits'
-                
+
             if len(files_with_wcs[pb]) > 0:
                 f = files_with_wcs[pb][0]
                 im.load_fits(f)
@@ -280,7 +280,7 @@ if __name__ == '__main__':
             if args.create_dc:
                 with Pool(processes=args.n_processes,
                           initializer=init, initargs=(root, pb, stars_file, apertures,  centroider_kwargs, args.dc_obj_id, args.dc_apt_id)) as pool:
-                    dc = array(list(tqdm(pool.imap(create_datacube, files, chunksize=args.chunksize), total=len(files)))).astype(float32)
+                    dc = array(list(tqdm(pool.imap(create_datacube, files, chunksize=args.chunksize), total=len(files),desc='Creating a datacube'))).astype(float32)
                     hdu = pf.PrimaryHDU(dc)
                     hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, obsdate, pb))), overwrite=True)
 
