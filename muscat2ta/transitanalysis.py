@@ -100,7 +100,8 @@ class TransitAnalysis:
             raise ValueError('No photometry files found.')
 
         self.lpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl,
-                         with_transit=with_transit, n_legendre=nlegendre, radius_ratio=radius_ratio, klims=klims)
+                         with_transit=with_transit, with_contamination=with_contamination,
+                         n_legendre=nlegendre, radius_ratio=radius_ratio, klims=klims)
         if with_transit:
             self.lpf.set_prior(0, NP(self.lpf.times[0].mean(), 0.2*self.lpf.times[0].ptp()))
 
