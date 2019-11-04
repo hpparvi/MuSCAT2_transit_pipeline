@@ -131,7 +131,6 @@ def contaminate(flux, cnt, lcids, pbids):
             flux[ipv, ipt] = c + (1.-c)*flux[ipv, ipt]
     return flux
 
-
 @njit
 def change_depth(relative_depth, flux, lcids, pbids):
     npt = lcids.size
@@ -251,9 +250,10 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self._sl_k2 = self.ps.blocks[-1].slice
 
         if self.with_contamination:
-            pcn = [PParameter('cnt_ref', 'Reference contamination', '', UP(0., 1.), (0., 1.))]
-            pcn.extend([PParameter(f'cnt_{pb}', 'contamination', '', UP(-1., 1.), (-1., 1.)) for pb in self.passbands[1:]])
-            self.ps.add_passband_block('contamination', 1, self.npb, pcn)
+            pcn = [GParameter('cnt_ref', 'Reference contamination', '', UP(0., 1.), (0., 1.)),
+                   GParameter('teff_h', 'host_teff', 'K', UP(2500, 12000), bounds=(2500, 12000)),
+                   GParameter('teff_c', 'contaminant_teff', 'K', UP(2500, 12000), bounds=(2500, 12000))]
+            self.ps.add_global_block('contamination', pcn)
             self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
             self._sl_cn = self.ps.blocks[-1].slice
 
@@ -290,20 +290,13 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self._start_err = self.ps.blocks[-1].start
 
     def _init_instrument(self):
-        self.instrument = Instrument('MuSCAT2', [sdss_g, sdss_r, sdss_i, sdss_z])
-        self.cm = SMContamination(self.instrument, "i'")
+        filters = {'g': sdss_g, 'r': sdss_r, 'i':sdss_i, 'z_s':sdss_z}
+        self.instrument = Instrument('MuSCAT2', [filters[pb] for pb in self.passbands])
+        self.cm = SMContamination(self.instrument, self.instrument.filters[0].name)
 
     def create_pv_population(self, npop=50):
         pvp = self.ps.sample_from_prior(npop)
         if self.with_transit:
-            #for sl in self.ps.blocks[1].slices:
-            #    pvp[:,sl] = uniform(0.01**2, 0.25**2, size=(npop, 1))
-
-            if self.with_contamination:
-                p = pvp[:, self._sl_cn]
-                p[:, 1]  = uniform(size=npop)
-                p[:, 1:] = normal(0, 0.2, size=(npop, self.npb - 1))
-                p[:, 1:] = clip(p[:, 0][:, newaxis] + p[:, 1:], 0.001, 0.999) - p[:, 0][:, newaxis]
 
             # With LDTk
             # ---------
@@ -499,13 +492,14 @@ class M2LPF(LinearModelBaseline, BaseLPF):
                 flux = super().transit_model(pv, copy)
 
             if self.with_contamination:
-                p = pv[:, self._sl_cn]
-                pv_cnt = zeros((pv.shape[0], self.npb))
-                pv_cnt[:,0] = p[:,0]
-                pv_cnt[:,1:] = p[:,1:] + p[:,0][:, newaxis]
-                bad = any(pv_cnt < 0.0, 1)
-                flux = contaminate(flux, pv_cnt, self.lcids, self.pbids)
-                flux[bad,0] = inf
+                cnt = zeros((pv.shape[0], self.npb))
+                for i, (cnref, teffh, teffc) in enumerate(pv[:,self._sl_cn]):
+                    if (0. <= cnref <= 1.) and (2500 < teffh < 12000) and (2500 < teffc < 12000):
+                        cnt[i, :] = self.cm.contamination(cnref, teffh, teffc)
+                    else:
+                        cnt[i, :] = -inf
+                flux = contaminate(flux, cnt, self.lcids, self.pbids)
+
             return flux
         else:
             return 1.

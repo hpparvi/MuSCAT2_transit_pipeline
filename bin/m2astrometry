@@ -29,7 +29,7 @@ from astropy.io import fits as pf
 from numpy import nan, inf
 from tqdm import tqdm
 
-from muscat2ph.catalog import get_m2_coords
+from muscat2ph.catalog import get_m2_coords, get_toi, get_toi_or_tic_coords
 
 TMPEXTS = ".match .axy .rdls .solved -indx.xyls .corr".split()
 MAX_TIMEOUT = 60
@@ -37,7 +37,12 @@ MAX_TIMEOUT = 60
 
 def run_astrometry(filename, overwrite=True):
     object = pf.getval(filename, 'object').lower()
-    sc = get_m2_coords(object)
+
+    try:
+        toi = get_toi(object)
+        sc = get_toi_or_tic_coords(toi.toi)
+    except ValueError:
+        sc = get_m2_coords(object)
 
     logging.info(" Solving {} {} - RA: {:6.3f} DEC: {:6.3f}".format(filename.stem, object, sc.ra.deg, sc.dec.deg))
 
