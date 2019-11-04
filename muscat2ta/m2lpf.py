@@ -438,6 +438,10 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.ofluxa[:] = self.relative_flux(pv)
 
     def freeze_photometry(self, pv=None):
+        if self.photometry_frozen:
+            warnings.warn('Trying to freeze already frozen photometry')
+            return
+
         pv = pv if pv is not None else self.de.minimum_location
         ps_orig = self.ps
         self._original_population = pvp = self.de.population.copy()
@@ -454,12 +458,19 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.taps = self.target_apertures(pv)
         self._target_flux = self.target_flux(pv)
         self.ofluxa[:] = self.relative_flux(pv)
+        start_tap = self._start_tap
+        start_err = self._start_err
+        npar_orig = len(ps_orig)
+
         self.photometry_frozen = True
         self._init_parameters()
         if self.with_transit:
-            for i in range(self._start_ld):
+            for i in range(0, start_tap):
                 self.ps[i].prior = ps_orig[i].prior
                 self.ps[i].bounds = ps_orig[i].bounds
+            for i,j in enumerate(range(start_err, npar_orig)):
+                self.ps[start_tap + i].prior = ps_orig[j].prior
+                self.ps[start_tap + i].bounds = ps_orig[j].bounds
         self.de = DiffEvol(self.lnposterior, clip(self.ps.bounds, -1, 1), self.de.n_pop, maximize=True, vectorize=True)
         self.de._population[:,:] = self._frozen_population.copy()
         self.de._fitness[:] = self.lnposterior(self._frozen_population)
