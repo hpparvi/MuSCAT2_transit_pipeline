@@ -97,7 +97,12 @@ def get_toi(toi):
     df = pd.read_csv(toi_catalog_file, sep=',')
     try:
         dtoi = df[df.TOI == toi]
+
         zero_epoch = dtoi[['Epoch (BJD)', 'Epoch (BJD) err']].values[0]
+        if zero_epoch.dtype == 'O':
+            zero_epoch[1] = float(zero_epoch[1].rstrip('.0'))
+            zero_epoch = zero_epoch.astype('d')
+
         period = dtoi[['Period (days)', 'Period (days) err']].values[0]
         duration = dtoi[['Duration (hours)', 'Duration (hours) err']].values[0]
         depth = dtoi[['Depth (ppm)', 'Depth (ppm) err']].values[0]
@@ -105,6 +110,7 @@ def get_toi(toi):
                    period=period, duration=duration, depth=depth)
     except IndexError:
         raise ValueError(f'Cannot find TOI {toi} from the catalog')
+
 
 def get_toi_or_tic(toi_or_tic):
     df = pd.read_csv(toi_catalog_file, sep=',')
