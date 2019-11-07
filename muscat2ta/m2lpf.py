@@ -562,7 +562,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
 
     def add_ldtk_prior(self, teff: tuple, logg: tuple, z: tuple,
                        uncertainty_multiplier: float = 3,
-                       pbs: tuple = ('g', 'r', 'i', 'z')) -> None:
+                       pbs: tuple = ('g', 'r', 'i', 'z'), cache = None) -> None:
         """Add a LDTk-based prior on the limb darkening.
 
         Parameters
@@ -579,7 +579,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         """
         fs = {n: f for n, f in zip('g r i z'.split(), (sdss_g, sdss_r, sdss_i, sdss_z))}
         filters = [fs[k] for k in pbs]
-        self.ldsc = LDPSetCreator(teff, logg, z, filters)
+        self.ldsc = LDPSetCreator(teff, logg, z, filters,cache=cache)
         self.ldps = self.ldsc.create_profiles(1000)
         self.ldps.resample_linear_z()
         self.ldps.set_uncertainty_multiplier(uncertainty_multiplier)
