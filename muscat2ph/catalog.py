@@ -99,10 +99,6 @@ def get_toi(toi):
         dtoi = df[df.TOI == toi]
 
         zero_epoch = dtoi[['Epoch (BJD)', 'Epoch (BJD) err']].values[0]
-        if zero_epoch.dtype == 'O':
-            zero_epoch[1] = float(zero_epoch[1].rstrip('.0'))
-            zero_epoch = zero_epoch.astype('d')
-
         period = dtoi[['Period (days)', 'Period (days) err']].values[0]
         duration = dtoi[['Duration (hours)', 'Duration (hours) err']].values[0]
         depth = dtoi[['Depth (ppm)', 'Depth (ppm) err']].values[0]
