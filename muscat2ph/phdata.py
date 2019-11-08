@@ -5,7 +5,7 @@ from astroquery.simbad import Simbad
 from matplotlib.pyplot import subplots, setp
 
 from numpy import inf, sqrt, dot, exp, linspace, log, zeros, array, arange, meshgrid, ones, r_, isin, ceil, ones_like, \
-    newaxis, c_, all, percentile
+    newaxis, c_, all, percentile, isnan
 import patsy
 from numpy.linalg import lstsq
 from numpy.polynomial.legendre import legvander
@@ -85,7 +85,6 @@ class ReferenceStarSet:
         return N(self.ph.flux[:, self.tid, self.tap] / self.reference_flux)
 
 
-
 class PhotometryData:
     def __init__(self, fname, tid, cids, objname=None, objskycoords=None, excluded_ranges=None, **kwargs):
         with xa.open_dataset(fname) as ds:
@@ -112,6 +111,9 @@ class PhotometryData:
         self.apt = self._flux.aperture[self.iapt]
         self.lin_formula = 'mjd + sky + xshift + yshift + entropy + airmass'
 
+        self.centroids_pix = cpix = self._ds.centroids_pix.values
+        self.distances_pix = sqrt(((cpix - cpix[tid])**2).sum(1))
+
         try:
             self.centroids_sky = SkyCoord(array(self._ds.centroids_sky), frame=FK5, unit=(u.deg, u.deg))
             self.distances_arcmin = self.centroids_sky[tid].separation(self.centroids_sky).arcmin
@@ -120,6 +122,9 @@ class PhotometryData:
         except:
             self.centroids_sky = None
             self.distances_arcmin = None
+
+        if self.centroids_sky is None or all(isnan(self.distances_arcmin)):
+            self.distances_arcmin = self.distances_pix * (0.44 * u.arcsec).to(u.arcmin).value
 
         if not self.objskycoords:
             try:
