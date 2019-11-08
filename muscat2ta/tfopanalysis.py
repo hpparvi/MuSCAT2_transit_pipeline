@@ -41,7 +41,7 @@ from uncertainties import ufloat
 from muscat2ph.catalog import get_toi, get_toi_or_tic_coords
 from numba import njit
 from numpy import sqrt, nan, zeros, digitize, sin, arange, ceil, where, isfinite, inf, ndarray, argsort, array, \
-    floor, median, nanmedian, clip, mean, percentile, full, pi, concatenate, atleast_2d, ones
+    floor, median, nanmedian, clip, mean, percentile, full, pi, concatenate, atleast_2d, ones, asarray
 from numpy.random import normal
 from photutils import SkyCircularAperture
 from tqdm.auto import tqdm
@@ -173,10 +173,7 @@ class TFOPAnalysis(TransitAnalysis):
 
         self.lpf.aid = 4
 
-        # Calculate star separations
-        # --------------------------
-        sc = SkyCoord(array(self.phs[0]._ds.centroids_sky), frame=FK5, unit=(u.deg, u.deg))
-        self.distances = sc[tid].separation(sc).arcmin
+        self.distances = self.phs[0].distances_arcmin
 
     def create_example_frame(self, plot=True, figsize=(12, 12), markersize=25, loffset=0):
         fits_files = list(self.datadir.glob('MCT*fits'))
@@ -314,40 +311,85 @@ class TFOPAnalysis(TransitAnalysis):
             fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{ptype}.pdf"))
         return fig, axs
 
-    def plot_possible_blends(self, cid, aid, ncols: int = 3, max_separation: float = 2.5, figwidth: float = 13,
-                             axheight: float = 2.5, pbs: tuple = None, save: bool = True, close_figures: bool = False):
-        m_excl = ones(self.distances.size, bool)
-        if self.excluded_stars:
-            m_excl[list(self.excluded_stars)] = 0
+    def plot_possible_blends(self, cid: int, aid: int, stars: list = None, ncols: int = 3, nrows: int = 4,
+                             max_separation: float = 2.5, figwidth: float = 13, axheight: float = 2.5,
+                             pbs: tuple = None, save: bool = True, close_figures: bool = False) -> None:
+        """
+        Plots the normalised relative fluxes for the possible contaminant stars.
 
-        m = (self.distances < max_separation) & m_excl
-        sids = where(m)[0]
-        stars = sids[argsort(self.distances[m])]
-        nstars = len(stars)
-        nrows = int(ceil(nstars / ncols))
-        naxs = nrows * ncols
-        nempty = naxs - nstars
+        Plots the normalised relative fluxes for stars within `max_separation` (in arcmin) radius of the target star.
+        Also plots the expected times for ingress, egress, and transit centre, and the transit depth required to cause
+        the observed signal if blended with the target star.
+
+        Parameters
+        ----------
+        cid: int
+            Comparison star ID.
+        aid: int
+            Aperture ID.
+        stars: array-like, optional
+            Optional list of star IDs to include into the plot.
+        ncols: int, optional
+            Number of columns per page.
+        nrows: int, optional
+            Number of rows per page.
+        max_separation: float, optional
+            Maximum separation in arcmin.
+        figwidth: float, optional
+            Figure width.
+        axheight: float, optional
+            Height of a single axis.
+        pbs: array-like, optional
+            Passbands
+        save: bool, optional
+            Save the figures if `True`
+        close_figures: bool, optional
+            Close the figures if `True`
+
+        Returns
+        -------
+            None
+        """
+
+        if stars is None:
+            m_excl = ones(self.distances.size, bool)
+            if self.excluded_stars:
+                m_excl[list(self.excluded_stars)] = 0
+            m = (self.distances < max_separation) & m_excl
+            sids = where(m)[0]
+            stars = sids[argsort(self.distances[m])]
+        stars = asarray(stars)
 
         phs = self.phs if pbs is None else [self.phs[i] for i in pbs]
         passbands = self.passbands if pbs is None else [self.passbands[i] for i in pbs]
-        plotname = self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_raw_lcs.pdf")
-        pdf = PdfPages(plotname) if save else None
+
+        nstars = len(stars)
+        stars_per_page = nrows * ncols
 
         for pb, ph in zip(passbands, phs):
-            fig, axs = subplots(nrows, ncols, figsize=(figwidth, nrows * axheight), constrained_layout=True,
-                                sharex='all')
+            plotname = self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{pb}_possible_blends.pdf")
+            pdf = PdfPages(plotname) if save else None
+
             for i, istar in enumerate(tqdm(stars, leave=False)):
-                self.plot_single_raw(axs.flat[i], ph, istar, cid=cid, aid=aid)
-            setp(axs[:,0], ylabel='Normalized flux')
-            [axs.flat[naxs - i - 1].remove() for i in range(nempty)]
-            fig.suptitle(f"{self.ticname} 20{self.date} {pb}-band MuSCAT2 relative normalised fluxes.",
-                         size='large')
+                if i % stars_per_page == 0:
+                    fig, axs = subplots(nrows, ncols, figsize=(figwidth, nrows * axheight), sharex='all')
+                    iax = 0
+                self.plot_single_raw(axs.flat[iax], ph, istar, cid=cid, aid=aid)
+                iax += 1
+
+                if ((i+1) % stars_per_page == 0) or i == nstars - 1:
+                    setp(axs[:,0], ylabel='Normalized flux')
+                    fig.suptitle(f"{self.ticname} 20{self.date} {pb}-band MuSCAT2 relative normalised fluxes", size='large')
+                    fig.tight_layout(rect=(0, 0, 1, 0.95))
+                    if i == nstars - 1:
+                        for j in range(stars_per_page - iax):
+                            axs.flat[iax+j].remove()
+                    if save:
+                        pdf.savefig(fig)
+                    if close_figures:
+                        close(fig)
             if save:
-                pdf.savefig(fig)
-            if close_figures:
-                close(fig)
-        if save:
-            pdf.close()
+                pdf.close()
 
     def plot_single_raw(self, ax, ph, sid, cid, aid=-1, btime=300., nsamples=500):
         """Plot the raw flux of star `sid` normalized to the median of star `tid`."""
