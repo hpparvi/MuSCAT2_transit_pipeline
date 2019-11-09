@@ -43,7 +43,7 @@ from numba import njit
 from numpy import sqrt, nan, zeros, digitize, sin, arange, ceil, where, isfinite, inf, ndarray, argsort, array, \
     floor, median, nanmedian, clip, mean, percentile, full, pi, concatenate, atleast_2d, ones, asarray
 from numpy.random import normal
-from photutils import SkyCircularAperture
+from photutils import SkyCircularAperture, CircularAperture
 from tqdm.auto import tqdm
 
 from pytransit import NormalPrior as NP, UniformPrior as UP
@@ -176,20 +176,8 @@ class TFOPAnalysis(TransitAnalysis):
         self.distances = self.phs[0].distances_arcmin
 
     def create_example_frame(self, plot=True, figsize=(12, 12), markersize=25, loffset=0):
-        fits_files = list(self.datadir.glob('MCT*fits'))
+        fits_files = list(self.datadir.glob('*_frame.fits'))
         assert len(fits_files) > 0, 'No example frame fits-files found.'
-        f = fits_files[0]
-        with pf.open(f) as f1:
-            filter = f1[0].header['filter']
-            if f.with_suffix('.wcs').exists():
-                with pf.open(f.with_suffix('.wcs')) as f2:
-                    h1 = f1[0].header.copy()
-                    h1.append(('COMMENT', '*********************'))
-                    h1.append(('COMMENT', '  WCS '))
-                    h1.append(('COMMENT', '*********************'))
-                    h1.extend(f2[0].header, unique=True, bottom=True)
-                    f1[0].header = h1
-            f1.writeto(self._dres.joinpath(f'{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame.fits'), overwrite=True)
 
         if plot and f.with_suffix('.wcs').exists():
             wcs = WCS(f1[0].header)
@@ -203,7 +191,7 @@ class TFOPAnalysis(TransitAnalysis):
             fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame_2_arcmin.pdf"))
             close(fig)
 
-    def plot_tfop_field(self, data, wcs, figsize=(9, 9), markersize=25, loffset=0, subfield_radius=None):
+    def plot_tfop_field(self, data, wcs=None, figsize=(9, 9), markersize=25, loffset=0, subfield_radius=None):
         sc = self.target_coordinates or get_toi_or_tic_coords(self.toi.tic)
 
         if subfield_radius:
@@ -219,8 +207,11 @@ class TFOPAnalysis(TransitAnalysis):
         max_depths = 1e6 * mean_flux[1:] / (mean_flux[1:] + mean_flux[0])
         depth_mask = max_depths > self.toi.depth[0]
 
-        sc_all = SkyCoord(ct.ra.values * u.deg, ct.dec.values * u.deg)
-        xy_all = sc_all.to_pixel(wcs)
+        if wcs is not None:
+            sc_all = SkyCoord(ct.ra.values * u.deg, ct.dec.values * u.deg)
+            xy_all = sc_all.to_pixel(wcs)
+        else:
+            xy_all = self.phs[0].centroids_pix
 
         fig = figure(figsize=figsize, constrained_layout=True)
         ax = fig.add_subplot(111, projection=wcs)
@@ -233,12 +224,17 @@ class TFOPAnalysis(TransitAnalysis):
 
         # Plot apertures
         # --------------
-        amask = ones(self.phs[0].centroids_sky.size, bool)
+        amask = ones(self.phs[0].centroids_pix.shape[0], bool)
         if self.excluded_stars:
             amask[self.excluded_stars] = 0
-        apts = SkyCircularAperture(self.phs[0].centroids_sky[amask], float(self.phs[0]._flux.aperture[self.lpf.aid]) * u.pixel)
-        apts.to_pixel(wcs).plot(color='k', linestyle='--')
-        apts_xy = apts.to_pixel(wcs)
+
+        if wcs is not None:
+            apts = SkyCircularAperture(self.phs[0].centroids_sky[amask],
+                                       float(self.phs[0]._flux.aperture[self.lpf.aid]) * u.pixel)
+            apts.to_pixel(wcs).plot(color='k', linestyle='--')
+            apts_xy = apts.to_pixel(wcs)
+        else:
+            apts_xy = CircularAperture(xy_all[amask], float(self.phs[0]._flux.aperture[self.lpf.aid]))
 
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
@@ -250,39 +246,43 @@ class TFOPAnalysis(TransitAnalysis):
 
         # Plot the circle of inclusion
         # ----------------------------
-        ci = SkyCircularAperture(sc_all[0], 1 * u.arcmin).to_pixel(wcs)
+        ci = CircularAperture(xy_all[0], 1 / (0.44 * u.arcsec).to(u.arcmin).value)
         ci.plot(ax=ax, color='0.4', ls=':', lw=2, alpha=0.5)
-        if ci.positions[0][0] + ci.r + 10 < xlim[1]:
-            ax.text(ci.positions[0][0] + ci.r + 10, ci.positions[0][1], "r = 1'", size='larger')
+        if ci.positions[0] + ci.r + 10 < xlim[1]:
+            ax.text(ci.positions[0] + ci.r + 10, ci.positions[1], "r = 1'", size='larger')
 
-        ci = SkyCircularAperture(sc_all[0], 2 * u.arcmin).to_pixel(wcs)
+        ci = CircularAperture(xy_all[0], 2 / (0.44 * u.arcsec).to(u.arcmin).value)
         ci.plot(ax=ax, color='0.4', ls=':', lw=2)
-        if ci.positions[0][0] + ci.r + 10 < xlim[1]:
-            ax.text(ci.positions[0][0] + ci.r + 10, ci.positions[0][1], "r = 2'", size='larger')
+        if ci.positions[0] + ci.r + 10 < xlim[1]:
+            ax.text(ci.positions[0] + ci.r + 10, ci.positions[1], "r = 2'", size='larger')
 
         # Plot the target
         # ---------------
-        SkyCircularAperture(sc_all[0], 0.9 * markersize * u.pixel).to_pixel(wcs).plot(color='k', lw=2)
-        SkyCircularAperture(sc_all[0], 1.1 * markersize * u.pixel).to_pixel(wcs).plot(color='k', lw=2)
+        CircularAperture(xy_all[0], 0.9 * markersize).plot(color='k', lw=2)
+        CircularAperture(xy_all[0], 1.1 * markersize).plot(color='k', lw=2)
 
-        # Plot the possible contaminants
-        # ------------------------------
-        ap_cnt = SkyCircularAperture(sc_all[1:][depth_mask], markersize * u.pixel)
-        ap_cnt.to_pixel(wcs).plot(color='k')
+        if wcs is not None:
+            # Plot the possible contaminants
+            # ------------------------------
+            ap_cnt = SkyCircularAperture(sc_all[1:][depth_mask], markersize * u.pixel)
+            ap_cnt.to_pixel(wcs).plot(color='k')
 
-        # Plot the stars inside the 2' radius but too faint to create the transit signal
-        # ------------------------------------------------------------------------------
-        ap_rest = SkyCircularAperture(sc_all[1:][~depth_mask], markersize * u.pixel)
-        ap_rest.to_pixel(wcs).plot(color='k', linestyle=':')
+            # Plot the stars inside the 2' radius but too faint to create the transit signal
+            # ------------------------------------------------------------------------------
+            ap_rest = SkyCircularAperture(sc_all[1:][~depth_mask], markersize * u.pixel)
+            ap_rest.to_pixel(wcs).plot(color='k', linestyle=':')
+        else:
+            CircularAperture(xy_all[1:], markersize).plot(color='k', lw=1, ls='--')
 
         # Plot the image scale
         # --------------------
         xlims = ax.get_xlim()
         py = 0.96 * ax.get_ylim()[1]
         x0, x1 = 0.3 * xlims[1], 0.7 * xlims[1]
-        scale = SkyCoord.from_pixel(x0, py, wcs).separation(SkyCoord.from_pixel(x1, py, wcs))
-        ax.annotate('', xy=(x0, py), xytext=(x1, py), arrowprops=dict(arrowstyle='|-|', lw=1.5, color='k'))
-        ax.text(width / 2, py - 7.5, "{:3.1f}'".format(scale.arcmin), va='top', ha='center', size='larger')
+        if wcs is not None:
+            scale = SkyCoord.from_pixel(x0, py, wcs).separation(SkyCoord.from_pixel(x1, py, wcs))
+            ax.annotate('', xy=(x0, py), xytext=(x1, py), arrowprops=dict(arrowstyle='|-|', lw=1.5, color='k'))
+            ax.text(width / 2, py - 7.5, "{:3.1f}'".format(scale.arcmin), va='top', ha='center', size='larger')
         ax.set_title(
             f"MuSCAT2 TIC {int(self.toi.tic)} (TOI {self.toi.toi}) {self.date[-2:]}.{self.date[2:4]}.20{self.date[:2]}",
             size='x-large')
