@@ -118,8 +118,8 @@ class TransitAnalysis:
     def set_radius_ratio_prior(self, kmin, kmax):
         self.lpf.set_radius_ratio_prior(kmin, kmax)
 
-    def set_prior(self, i, p, *nargs):
-        self.lpf.set_prior(i, p, *nargs)
+    def set_prior(self, parameter, prior, *nargs) -> None:
+        self.lpf.set_prior(parameter, prior, *nargs)
 
     def add_t14_prior(self, mean: float, std: float):
         self.lpf.add_t14_prior(mean, std)
@@ -127,7 +127,7 @@ class TransitAnalysis:
     def add_as_prior(self, mean: float, std: float):
         self.lpf.add_as_prior(mean, std)
 
-    def add_ldtk_prior(self, teff: float, logg: float, z: float, uncertainty_multiplier: float = 3., pbs: tuple = ('g', 'r', 'i', 'z')):
+    def add_ldtk_prior(self, teff: tuple, logg: tuple, z: tuple, uncertainty_multiplier: float = 3., pbs: tuple = ('g', 'r', 'i', 'z')):
         self.lpf.add_ldtk_prior(teff, logg, z, uncertainty_multiplier, pbs)
 
     def freeze_photometry(self):
