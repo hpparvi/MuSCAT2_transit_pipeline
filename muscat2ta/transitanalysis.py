@@ -115,6 +115,13 @@ class TransitAnalysis:
         for r1, r2, pb in zip(r1s, r2s, 'g r i z'.split()):
             print('{} {:5.0f} ppm -> {:5.0f} ppm'.format(pb, 1e6 * r1, 1e6 * r2))
 
+    def apply_normalized_limits(self, iapt: int, lower: float = -inf, upper: float = inf, plot: bool = True,
+                                apply: bool = True, npoly: int = 0, iterations: int = 5, erosion: int = 0) -> None:
+        self.lpf.apply_normalized_limits(iapt, lower, upper, plot, apply, npoly, iterations, erosion)
+
+    def downsample(self, exptime: float) -> None:
+        self.lpf.downsample(exptime)
+
     def set_radius_ratio_prior(self, kmin, kmax):
         self.lpf.set_radius_ratio_prior(kmin, kmax)
 
