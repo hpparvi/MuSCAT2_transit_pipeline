@@ -102,14 +102,14 @@ class TFOPAnalysis(TransitAnalysis):
                  excluded_mjd_ranges: tuple = None,
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
-                 radius_ratio: str = 'chromatic', excluded_stars=(), toi=None):
+                 radius_ratio: str = 'chromatic', excluded_stars=(), toi=None, klims=(0.005, 0.25)):
 
         super().__init__(target, date, tid, cids, dataroot=dataroot,
                  nlegendre=nlegendre,  npop=npop,  mjd_start=mjd_start, mjd_end=mjd_end,
                  excluded_mjd_ranges=excluded_mjd_ranges,
                  aperture_lims=aperture_lims, passbands=passbands,
                  use_opencl=use_opencl, with_transit=with_transit, with_contamination=with_contamination,
-                 radius_ratio=radius_ratio)
+                 radius_ratio=radius_ratio, klims=klims)
 
         # Get the TOI information
         # -----------------------
@@ -550,6 +550,18 @@ class TFOPAnalysis(TransitAnalysis):
                                                                                                            'sky_entropy'])
             df.to_csv(self._dres.joinpath(f'{self.ticname}_20{self.date}_MuSCAT2_{self.passbands[i]}_measurements.tbl'),
                       index=False, sep=" ")
+
+    def finalize(self):
+        from shutil import copy2
+        files = list(self.datadir.glob('*.png'))
+        for src_path in files:
+            trg_path = self._dres.joinpath(src_path.name.replace(self.target, self.ticname))
+            copy2(src_path, trg_path)
+
+        files = list(self.datadir.glob('*frame.fits'))
+        for src_path in files:
+            trg_path = self._dres.joinpath(src_path.name)
+            copy2(src_path, trg_path)
 
     def save(self):
         delm = None
