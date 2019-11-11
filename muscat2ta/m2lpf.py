@@ -142,11 +142,32 @@ def change_depth(relative_depth, flux, lcids, pbids):
             flux2[ipv, ipt] = (flux[ipv, ipt] - 1.) * relative_depth[ipv, pbids[lcids[ipt]]] + 1.
     return flux2
 
+@njit(fastmath=True)
+def map_pv_achromatic_nocnt(pv):
+    pv = atleast_2d(pv)
+    pvt = zeros((pv.shape[0], 7))
+    pvt[:,0]   = sqrt(pv[:,4])
+    pvt[:,1:3] = pv[:,0:2]
+    pvt[:,  3] = as_from_rhop(pv[:,2], pv[:,1])
+    pvt[:,  4] = i_from_ba(pv[:,3], pvt[:,3])
+    return pvt
+
+@njit(fastmath=True)
+def map_pv_achromatic_cnt(pv):
+    pv = atleast_2d(pv)
+    pvt = zeros((pv.shape[0], 7))
+    pvt[:, 0] = sqrt(pv[:, 5])
+    pvt[:, 1:3] = pv[:, 0:2]
+    pvt[:, 3] = as_from_rhop(pv[:, 2], pv[:, 1])
+    pvt[:, 4] = i_from_ba(pv[:, 3], pvt[:, 3])
+    return pvt
+
+
 class M2LPF(LinearModelBaseline, BaseLPF):
     def __init__(self, target: str, photometry: list, tid: int, cids: list,
                  filters: tuple, aperture_lims: tuple = (0, inf), use_opencl: bool = False,
                  n_legendre: int = 0, use_toi_info=True, with_transit=True, with_contamination=False,
-                 radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.25)):
+                 radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.75)):
         assert radius_ratio in ('chromatic', 'achromatic')
         assert noise_model in ('white', 'gp')
 
@@ -156,7 +177,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.photometry_frozen = False
         self.with_transit = with_transit
         self.with_contamination = with_contamination
-        self.chromatic_transit = radius_ratio == 'chromatic'
+        self.achromatic_transit = radius_ratio == 'achromatic'
         self.noise_model = noise_model
         self.radius_ratio = radius_ratio
         self.n_legendre = n_legendre
@@ -211,9 +232,9 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             import pyopencl as cl
             ctx = cl.create_some_context()
             queue = cl.CommandQueue(ctx)
-            tm = QuadraticModelCL(klims=klims, nk=512, nz=512, cl_ctx=ctx, cl_queue=queue)
+            tm = QuadraticModelCL(klims=klims, nk=1024, nz=1024, cl_ctx=ctx, cl_queue=queue)
         else:
-            tm = QuadraticModel(interpolate=True, klims=klims, nk=512, nz=512)
+            tm = QuadraticModel(interpolate=True, klims=klims, nk=1024, nz=1024)
 
         BaseLPF.__init__(self, target, filters, times, fluxes, wns, arange(len(photometry)), covariates, arange(len(photometry)), tm = tm)
 
@@ -238,24 +259,45 @@ class M2LPF(LinearModelBaseline, BaseLPF):
     def _init_p_planet(self):
         """Planet parameter initialisation.
         """
+
+        # 1. Achromatic radius ratio
+        # --------------------------
         if self.radius_ratio == 'achromatic':
-            pk2 = [PParameter('k2', 'area_ratio', 'A_s', UP(0.005**2, 0.25**2), (0.005**2, 0.25**2))]
-            self.ps.add_passband_block('k2', 1, 1, pk2)
-            self._pid_k2 = repeat(self.ps.blocks[-1].start, self.npb)
+            if not self.with_contamination:
+                pk2 = [PParameter('k2', 'area_ratio', 'A_s', UP(0.005**2, 0.25**2), (0.005**2, 0.25**2))]
+                self.ps.add_passband_block('k2', 1, 1, pk2)
+                self._pid_k2 = repeat(self.ps.blocks[-1].start, self.npb)
+                self._start_k2 = self.ps.blocks[-1].start
+                self._sl_k2 = self.ps.blocks[-1].slice
+            else:
+                pk2 = [PParameter('k2_app', 'apparent_area_ratio', 'A_s', UP(0.005**2, 0.25**2), (0.005**2, 0.25**2))]
+                pcn = [GParameter('k2_true', 'true_area_ratio', 'A_s', UP(0.005**2, 0.75**2), bounds=(1e-8, inf)),
+                       GParameter('teff_h', 'host_teff', 'K', UP(2500, 12000), bounds=(2500, 12000)),
+                       GParameter('teff_c', 'contaminant_teff', 'K', UP(2500, 12000), bounds=(2500, 12000))]
+                self.ps.add_passband_block('k2', 1, 1, pk2)
+                self._pid_k2 = repeat(self.ps.blocks[-1].start, self.npb)
+                self._start_k2 = self.ps.blocks[-1].start
+                self._sl_k2 = self.ps.blocks[-1].slice
+                self.ps.add_global_block('contamination', pcn)
+                self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
+                self._sl_cn = self.ps.blocks[-1].slice
+
+        # 2. Chromatic radius ratio
+        # -------------------------
         else:
             pk2 = [PParameter(f'k2_{pb}', f'area_ratio {pb}', 'A_s', UP(0.005**2, 0.25**2), (0.005**2, 0.25**2)) for pb in self.passbands]
             self.ps.add_passband_block('k2', 1, self.npb, pk2)
             self._pid_k2 = arange(self.npb) + self.ps.blocks[-1].start
-        self._start_k2 = self.ps.blocks[-1].start
-        self._sl_k2 = self.ps.blocks[-1].slice
+            self._start_k2 = self.ps.blocks[-1].start
+            self._sl_k2 = self.ps.blocks[-1].slice
 
-        if self.with_contamination:
-            pcn = [GParameter('cnt_ref', 'Reference contamination', '', UP(0., 1.), (0., 1.)),
-                   GParameter('teff_h', 'host_teff', 'K', UP(2500, 12000), bounds=(2500, 12000)),
-                   GParameter('teff_c', 'contaminant_teff', 'K', UP(2500, 12000), bounds=(2500, 12000))]
-            self.ps.add_global_block('contamination', pcn)
-            self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
-            self._sl_cn = self.ps.blocks[-1].slice
+            if self.with_contamination:
+                pcn = [GParameter('cnt_ref', 'Reference contamination', '', UP(0., 1.), (0., 1.)),
+                       GParameter('teff_h', 'host_teff', 'K', UP(2500, 12000), bounds=(2500, 12000)),
+                       GParameter('teff_c', 'contaminant_teff', 'K', UP(2500, 12000), bounds=(2500, 12000))]
+                self.ps.add_global_block('contamination', pcn)
+                self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
+                self._sl_cn = self.ps.blocks[-1].slice
 
     def _init_p_baseline(self):
         LinearModelBaseline._init_p_baseline(self)
@@ -358,7 +400,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         if plot:
             fig.tight_layout()
 
-    def apply_normalized_limits(self, iapt: int, lower: float = -inf, upper: float = inf, plot: bool = False,
+    def apply_normalized_limits(self, iapt: int, lower: float = -inf, upper: float = inf, plot: bool = True,
                                 apply: bool = True, npoly: int = 0, iterations: int = 5, erosion: int = 0) -> None:
         fluxes = []
         if plot:
@@ -458,12 +500,14 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.photometry_frozen = True
         self._init_parameters()
         if self.with_transit:
+            self.ps.thaw()
             for i in range(0, start_tap):
                 self.ps[i].prior = ps_orig[i].prior
                 self.ps[i].bounds = ps_orig[i].bounds
             for i,j in enumerate(range(start_err, npar_orig)):
                 self.ps[start_tap + i].prior = ps_orig[j].prior
                 self.ps[start_tap + i].bounds = ps_orig[j].bounds
+            self.ps.freeze()
         self.de = DiffEvol(self.lnposterior, clip(self.ps.bounds, -1, 1), self.de.n_pop, maximize=True, vectorize=True)
         self.de._population[:,:] = self._frozen_population.copy()
         self.de._fitness[:] = self.lnposterior(self._frozen_population)
@@ -473,34 +517,59 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         return (float(self.phs[0]._ds.aperture[self.taps]) * 0.435 * u.arcsec,
                 array(self.phs[0]._ds.aperture[self.raps]) * 0.435 * u.arcsec)
 
+    def _transit_model_achromatic_nocnt(self, pvp, copy=True):
+        return super().transit_model(pvp, copy)
+
+    def _transit_model_achromatic_cnt(self, pvp, copy=True):
+        pvp = atleast_2d(pvp)
+        cnt = zeros((pvp.shape[0], self.npb))
+        pvt = map_pv_achromatic_cnt(pvp)
+        ldc = map_ldc(pvp[:, self._sl_ld])
+        flux = self.tm.evaluate_pv(pvt, ldc, copy=copy)
+        for i, pv in enumerate(pvp):
+            if (2500 < pv[6] < 12000) and (2500 < pv[7] < 12000):
+                cnref = 1. - pv[4] / pv[5]
+                cnt[i, :] = self.cm.contamination(cnref, pv[6], pv[7])
+            else:
+                cnt[i, :] = -inf
+        return contaminate(flux, cnt, self.lcids, self.pbids)
+
+    def _transit_model_chromatic_nocnt(self, pvp, copy=True):
+        pvp = atleast_2d(pvp)
+        mean_ar = pvp[:, self._sl_k2].mean(1)
+        pvv = zeros((pvp.shape[0], pvp.shape[1] - self.npb + 1))
+        pvv[:, :4] = pvp[:, :4]
+        pvv[:, 4] = mean_ar
+        pvv[:, 5:] = pvp[:, 4 + self.npb:]
+        pvt = map_pv(pvv)
+        ldc = map_ldc(pvp[:, self._sl_ld])
+        flux = self.tm.evaluate_pv(pvt, ldc, copy)
+        rel_ar = pvp[:, self._sl_k2] / mean_ar[:, newaxis]
+        return change_depth(rel_ar, flux, self.lcids, self.pbids)
+
+    def _transit_model_chromatic_cnt(self, pvp, copy=True):
+        pvp = atleast_2d(pvp)
+        flux = self._transit_model_chromatic_nocnt(pvp, copy)
+        cnt = zeros((pvp.shape[0], self.npb))
+        for i, (cnref, teffh, teffc) in enumerate(pvp[:, self._sl_cn]):
+            if (0. <= cnref <= 1.) and (2500 < teffh < 12000) and (2500 < teffc < 12000):
+                cnt[i, :] = self.cm.contamination(cnref, teffh, teffc)
+            else:
+                cnt[i, :] = -inf
+        return contaminate(flux, cnt, self.lcids, self.pbids)
+
     def transit_model(self, pv, copy=True):
         if self.with_transit:
-            pv = atleast_2d(pv)
-            if self.chromatic_transit:
-                mean_ar = pv[:, self._sl_k2].mean(1)
-                pvv = zeros((pv.shape[0], pv.shape[1]-self.npb+1))
-                pvv[:, :4] = pv[:, :4]
-                pvv[:, 4] = mean_ar
-                pvv[:, 5:] = pv[:, 4+self.npb:]
-
-                pvp = map_pv(pvv)
-                ldc = map_ldc(pvv[:, 5:5 + 2 * self.npb])
-                flux = self.tm.evaluate_pv(pvp, ldc, copy)
-                rel_ar = pv[:, self._sl_k2] / mean_ar[:,newaxis]
-                flux = change_depth(rel_ar, flux, self.lcids, self.pbids)
+            if self.achromatic_transit:
+                if self.with_contamination:
+                    return self._transit_model_achromatic_cnt(pv, copy)
+                else:
+                    return  self._transit_model_achromatic_nocnt(pv, copy)
             else:
-                flux = super().transit_model(pv, copy)
-
-            if self.with_contamination:
-                cnt = zeros((pv.shape[0], self.npb))
-                for i, (cnref, teffh, teffc) in enumerate(pv[:,self._sl_cn]):
-                    if (0. <= cnref <= 1.) and (2500 < teffh < 12000) and (2500 < teffc < 12000):
-                        cnt[i, :] = self.cm.contamination(cnref, teffh, teffc)
-                    else:
-                        cnt[i, :] = -inf
-                flux = contaminate(flux, cnt, self.lcids, self.pbids)
-
-            return flux
+                if self.with_contamination:
+                    return self._transit_model_chromatic_cnt(pv, copy)
+                else:
+                    return self._transit_model_chromatic_nocnt(pv, copy)
         else:
             return 1.
 
