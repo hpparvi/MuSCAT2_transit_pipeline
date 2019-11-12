@@ -102,7 +102,7 @@ if __name__ == '__main__':
     ap.add_argument('--tfop', action='store_true', default=False)
     ap.add_argument('--no-tfop', action='store_true', default=False)
     ap.add_argument('--find-mf', type=int, default=6)
-    ap.add_argument('--find-treshold', type=float, default=99.5)
+    ap.add_argument('--find-treshold', type=float, default=None)
     ap.add_argument('--apertures', nargs='+', type=float, default=None)
     ap.add_argument('--cnt-aperture', type=float, default=25)
     ap.add_argument('--cnt-sids', type=int, nargs='+', default=None)
@@ -135,19 +135,24 @@ if __name__ == '__main__':
         except ValueError:
             toi = None
 
+        find_treshold = args.find_treshold
         if not args.no_tfop and toi is not None:
             logging.info(f"Calculating photometry for a TFOP target {object} (TIC {toi.tic}).")
+            find_treshold = find_treshold or 97.5
+            max_stars = max_stars or 150
             target_sky_coords = get_toi_or_tic_coords(toi.toi)
             ticname = 'TIC{:d}-{}'.format(int(toi.tic), str(toi.toi).split('.')[1])
             TFOP = True
         else:
             logging.info(f"Calculating photometry for {object}.")
+            find_treshold = find_treshold or 99.
+            max_stars = max_stars or 20
             target_sky_coords = get_m2_coords(object)
             TFOP = False
         logging.info(f"Target sky coordinates {target_sky_coords}")
 
         if args.apertures is None:
-            apertures = (4, 8, 12, 16, 20, 25, 30, 40, 50)
+            apertures = (4, 6, 8, 10, 12, 14, 16, 18, 20, 23, 27, 32)
         else:
             apertures = args.apertures
         logging.info(f"Apertures {apertures}")
@@ -228,7 +233,7 @@ if __name__ == '__main__':
             if (args.save_stars and ipb==0) or not stars_file.exists():
                 logging.info("Searching for stars")
                 im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords,
-                              treshold=args.find_treshold, mf_size=args.find_mf)
+                              treshold=find_treshold, mf_size=args.find_mf)
                 im.cut_margin(args.border_margin)
                 if TFOP or args.apply_separation_cut:
                     im.cut_separation(target_sky_coords, args.separation_cut_distance)
