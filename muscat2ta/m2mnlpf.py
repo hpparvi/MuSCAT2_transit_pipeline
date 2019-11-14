@@ -19,38 +19,16 @@ from pathlib import Path
 import astropy.io.fits as pf
 import pandas as pd
 import xarray as xa
-
 from astropy.stats import sigma_clip
 from astropy.table import Table
 from matplotlib.artist import setp
 from matplotlib.pyplot import subplots
-from numpy import arange, newaxis, atleast_2d, zeros, sort, log10, sqrt, diff, unique, percentile, squeeze, array, \
-    isfinite, digitize, nan, ceil, full
+from numpy import arange, sort, log10, sqrt, diff, unique, percentile, squeeze, array
 from numpy.random import uniform, permutation
-
-from pytransit import BaseLPF, LinearModelBaseline
-from pytransit.lpf.lpf import map_pv, map_ldc
 from pytransit.orbits import epoch
-from pytransit.param.parameter import PParameter, UniformPrior as UP
 
-from .m2lpf import change_depth
+from .m2baselpf import M2BaseLPF, downsample_time
 
-def downsample_time(time, values, inttime=30.):
-    if values.ndim == 1:
-        values = atleast_2d(values).T
-    duration = 24. * 60. * 60. * time.ptp()
-    nbins = int(ceil(duration / inttime))
-    bins = arange(nbins)
-    edges = time[0] + bins * inttime / 24 / 60 / 60
-    bids = digitize(time, edges) - 1
-    bt, bv = full(nbins, nan), zeros((nbins, values.shape[1]))
-    for i, bid in enumerate(bins):
-        bmask = bid == bids
-        if bmask.sum() > 0:
-            bt[i] = time[bmask].mean()
-            bv[i,:] = values[bmask,:].mean(0)
-    m = isfinite(bt)
-    return bt[m], squeeze(bv[m])
 
 def read_reduced_m2(datadir, pattern='*.fits'):
     files = sorted(Path(datadir).glob(pattern))
@@ -74,53 +52,23 @@ def read_reduced_m2(datadir, pattern='*.fits'):
     return times, fluxes, pbs, wns, covs
 
 
-class M2MultiNightLPF(LinearModelBaseline, BaseLPF):
-    def __init__(self, name: str, min_exptime=None, datadir='results', filename_pattern='*.fits', result_dir='results'):
+class M2MultiNightLPF(M2BaseLPF):
+    def __init__(self, target: str, use_opencl: bool = False, n_legendre: int = 0,
+                 with_transit=True, with_contamination=False,
+                 radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.25),
+                 datadir='results', filename_pattern='*.fits'):
         self.datadir = datadir
         self.pattern = filename_pattern
+        super().__init__(target, use_opencl, n_legendre, with_transit, with_contamination, radius_ratio, noise_model, klims)
 
-        times, fluxes, pbs, wns, covs = read_reduced_m2(datadir, filename_pattern)
-
-        if min_exptime is not None:
-            bts, bfs, bcs = [], [], []
-            for i in range(len(times)):
-                bt, bf = downsample_time(times[i], fluxes[i], 60.)
-                bt, bc = downsample_time(times[i], covs[i], 60.)
-                bts.append(bt)
-                bfs.append(bf)
-                bcs.append(bc)
-            times, fluxes, covs = bts, bfs, bcs
-            wns = [diff(f).std()/sqrt(2) for f in fluxes]
-
+    def _read_data(self):
+        times, fluxes, pbs, wns, covs = read_reduced_m2(self.datadir, self.pattern)
         pbs = pd.Categorical(pbs, categories='g r i z_s'.split(), ordered=True).remove_unused_categories()
         pbnames = pbs.categories.values
         pbids = pbs.codes
-        BaseLPF.__init__(self, name, pbnames, times, fluxes, pbids=pbids, wnids=arange(len(pbs)),
-                         covariates=covs, result_dir=result_dir)
+        return pbnames, times, fluxes, covs, wns, pbids, arange(len(fluxes))
 
-    def _init_p_planet(self):
-        pk2 = [PParameter(f'k2_{pb}', f'area_ratio {pb}', 'A_s', UP(0.01 ** 2, 0.25 ** 2), (0.01 ** 2, 0.25 ** 2)) for
-               pb in self.passbands]
-        self.ps.add_passband_block('k2', 1, self.npb, pk2)
-        self._pid_k2 = arange(self.npb) + self.ps.blocks[-1].start
-        self._start_k2 = self.ps.blocks[-1].start
-        self._sl_k2 = self.ps.blocks[-1].slice
-
-    def transit_model(self, pv, copy=True):
-        pv = atleast_2d(pv)
-        mean_ar = pv[:, self._sl_k2].mean(1)
-        pvv = zeros((pv.shape[0], pv.shape[1] - self.npb + 1))
-        pvv[:, :4] = pv[:, :4]
-        pvv[:, 4] = mean_ar
-        pvv[:, 5:] = pv[:, 4 + self.npb:]
-        pvp = map_pv(pvv)
-        ldc = map_ldc(pvv[:, 5:5 + 2 * self.npb])
-        flux = self.tm.evaluate_pv(pvp, ldc, copy)
-        rel_ar = pv[:, self._sl_k2] / mean_ar[:, newaxis]
-        flux = change_depth(rel_ar, flux, self.lcids, self.pbids)
-        return flux
-
-    def create_pv_population(self, npop=50):
+    def create_pv_population_b(self, npop=50):
         pattern = Path(self.pattern).with_suffix('.nc').name
         files = sorted(Path(self.datadir).glob(pattern))
         pvp = self.ps.sample_from_prior(npop)
@@ -150,17 +98,26 @@ class M2MultiNightLPF(LinearModelBaseline, BaseLPF):
             pvp[:, self._start_err] = log10(uniform(0.5 * wn, 2 * wn, size=npop))
         return pvp
 
+    def downsample(self, exptime: float) -> None:
+        bts, bfs, bcs = [], [], []
+        for i in range(len(self.times)):
+            bt, bf = downsample_time(self.times[i], self.fluxes[i], exptime)
+            bt, bc = downsample_time(self.times[i], self.covariates[i], exptime)
+            bts.append(bt)
+            bfs.append(bf)
+            bcs.append(bc)
+        wns = [diff(f).std() / sqrt(2) for f in bfs]
+        self._init_data(bts, bfs, pbids=self.pbids, covariates=bcs, wnids=self.noise_ids)
 
-    def plot_light_curves(self, method='de', width: float = 3., max_samples: int = 100, figsize=None, data_alpha=0.5,
-                          ylim=None):
+    def plot_light_curves(self, method='de', width: float = 3., max_samples: int = 100, figsize=None, data_alpha=0.5, ylim=None):
         if method == 'mcmc':
-            df = self.posterior_samples(derived_parameters=False)
+            df = self.posterior_samples(derived_parameters=False, add_tref=False)
             t0, p = df.tc.median(), df.p.median()
             fmodel = self.flux_model(permutation(df.values)[:max_samples])
             fmperc = percentile(fmodel, [50, 16, 84, 2.5, 97.5], 0)
         else:
             fmodel = squeeze(self.flux_model(self.de.minimum_location))
-            t0, p = self.de.minimum_location[0], self.de.minimum_location[1]
+            t0, p = self.de.minimum_location[0] - self.tref, self.de.minimum_location[1]
             fmperc = None
 
         epochs = [epoch(t.mean(), t0, p) for t in self.times]
