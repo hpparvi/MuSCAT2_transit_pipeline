@@ -163,6 +163,9 @@ if __name__ == '__main__':
             ddir = root.joinpath('obj', object, pb)
             if ddir.exists():
                 all_files[pb] = sorted(list(ddir.glob('MCT2?_*.fits')))
+                istart = max(0, args.start_frame)
+                iend = min(args.end_frame, len(all_files))
+                all_files = all_files[istart:iend]
                 files_with_wcs[pb] = list(filter(lambda f: f.with_suffix('.wcs').exists(), all_files[pb]))
                 logging.info(f"Found {len(all_files[pb])} fits files ({len(files_with_wcs[pb])} with wcs) in the {pb}-band.")
 
@@ -197,9 +200,6 @@ if __name__ == '__main__':
         stars_file = rdir.joinpath('{}_stars.fits'.format(object))
         for ipb, pb in enumerate(pbs):
             files = all_files[pb]
-            istart = max(0, args.start_frame)
-            iend = min(args.end_frame, len(files))
-            files = files[istart:iend]
 
             im = ScienceFrame(root, pb, aperture_radii=apertures)
             if target_sky_coords is not None:
