@@ -27,7 +27,7 @@ from astropy.io import fits as pf
 from astropy.table import Table
 from corner import corner
 from matplotlib.pyplot import figure, figtext, setp, subplots
-from muscat2ph.catalog import get_m2_coords
+from muscat2ph.catalog import get_m2_coords, get_coords
 from muscat2ph.phdata import PhotometryData
 from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze, atleast_1d, ceil)
 
@@ -88,7 +88,7 @@ class TransitAnalysis:
 
         # Get the target coordinates
         # --------------------------
-        self.target_coordinates = get_m2_coords(self.target)
+        self.target_coordinates = get_coords(self.target)
 
         # Read in the data
         # ----------------
