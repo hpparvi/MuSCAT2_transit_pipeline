@@ -99,6 +99,7 @@ if __name__ == '__main__':
     ap.add_argument('--dc-apt-id', type=int, default=0)
     ap.add_argument('--apply-separation-cut', action='store_true', default=False)
     ap.add_argument('--separation-cut-distance', type=float, default=2.0)
+    ap.add_argument('--double-removal-distance', type=float, default=0.1)
     ap.add_argument('--tfop', action='store_true', default=False)
     ap.add_argument('--no-tfop', action='store_true', default=False)
     ap.add_argument('--find-mf', type=int, default=6)
@@ -236,7 +237,7 @@ if __name__ == '__main__':
                 im.cut_margin(args.border_margin)
                 if TFOP or args.apply_separation_cut:
                     im.cut_separation(target_sky_coords, args.separation_cut_distance)
-                    im.remove_doubles(target_sky_coords, 0.1)
+                    im.remove_doubles(target_sky_coords, args.double_removal_distance)
                     logging.info(f"Applying separation cut and double removal: {im.nstars} left")
                 im.save_reference_stars(stars_file)
 
