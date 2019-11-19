@@ -552,16 +552,37 @@ class TFOPAnalysis(TransitAnalysis):
                       index=False, sep=" ")
 
     def finalize(self):
+        from pathlib import Path
+        from string import Template
         from shutil import copy2
+        import muscat2ta
+        dsubmit = Path('submit')
+        dsubmit.mkdir(exist_ok=True)
+
         files = list(self.datadir.glob('*.png'))
         for src_path in files:
-            trg_path = self._dres.joinpath(src_path.name.replace(self.target, self.ticname))
+            trg_path = dsubmit.joinpath(src_path.name.replace(self.target, self.ticname))
             copy2(src_path, trg_path)
 
         files = list(self.datadir.glob('*frame.fits'))
         for src_path in files:
-            trg_path = self._dres.joinpath(src_path.name)
+            trg_path = dsubmit.joinpath(src_path.name)
             copy2(src_path, trg_path)
+
+        files = list(self._dres.glob('*.pdf')) + list(self._dres.glob('*.tbl'))
+        for src_path in files:
+            trg_path = dsubmit.joinpath(src_path.name)
+            copy2(src_path, trg_path)
+
+        readme = (Path(muscat2ta.__path__[0]) / '..' / 'data' / 'templates' / 'tfop_readme.txt').resolve()
+        report = (Path(muscat2ta.__path__[0]) / '..' / 'data' / 'templates' / 'tfop_report.txt').resolve()
+
+        copy2(readme, dsubmit / f"{self.ticname}_20{self.date}_MuSCAT2_readme.txt")
+
+        with open(dsubmit / f"{self.ticname}_20{self.date}_MuSCAT2_report.txt", "w") as f:
+            t = Template(report.read_text())
+            f.write(t.safe_substitute(ticname=self.ticname, night=self.date, tid=self.tid, cids=self.cids,
+                                      tap=self.lpf.frozen_apertures[0], raps=self.lpf.frozen_apertures[1]))
 
     def save(self):
         delm = None

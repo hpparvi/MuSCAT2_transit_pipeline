@@ -1,0 +1,10 @@
+MuSCAT2 report: $ticname $night
+
+Target: $tid
+Reference star(s): $cids
+Target aperture: $tap
+Reference aperture(s): $raps
+
+All passbands have the same aperture for each star.
+
+**REPORT TEXT HERE**
