@@ -579,10 +579,15 @@ class TFOPAnalysis(TransitAnalysis):
 
         copy2(readme, dsubmit / f"{self.ticname}_20{self.date}_MuSCAT2_readme.txt")
 
+        try:
+            tap, raps = self.lpf.frozen_apertures
+        except IndexError:
+            tap, raps = '-', '-'
+
         with open(dsubmit / f"{self.ticname}_20{self.date}_MuSCAT2_report.txt", "w") as f:
             t = Template(report.read_text())
             f.write(t.safe_substitute(ticname=self.ticname, night=self.date, tid=self.tid, cids=self.cids,
-                                      tap=self.lpf.frozen_apertures[0], raps=self.lpf.frozen_apertures[1]))
+                                      tap=tap, raps=raps))
 
     def save(self):
         delm = None
