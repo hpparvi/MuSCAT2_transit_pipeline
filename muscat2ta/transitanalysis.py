@@ -50,7 +50,7 @@ def get_files(droot, target, night, passbands: tuple = ('g', 'r', 'i', 'z_s')):
 class TransitAnalysis:
     def __init__(self, target: str, date: str, tid: int, cids: list, dataroot: Path = None, exptime_min: float = 30.,
                  nlegendre: int = 0,  npop: int = 200,  mjd_start: float = -inf, mjd_end: float = inf,
-                 excluded_mjd_ranges: tuple = None,
+                 excluded_mjd_ranges: tuple = None, instrument: str = 'MuSCAT2',
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
                  radius_ratio: str = 'achromatic', klims=(0.005, 0.25)):
@@ -62,7 +62,8 @@ class TransitAnalysis:
         self.npop: int = npop
         self.etime: float = exptime_min
         self.pbs: tuple = passbands
-
+        self.instrument: str = instrument
+        
         self.nlegendre = nlegendre
         self.aperture_limits = aperture_lims
         self.use_opencl = use_opencl
@@ -262,12 +263,11 @@ class TransitAnalysis:
         lpf = self.models[model]
         fig = figure(figsize=(figwidth, 1.4142*figwidth))
         if lpf.toi is None:
-            figtext(0.05, 0.99, f"MuSCAT2 - {lpf.name}", size=33, weight='bold', va='top')
+            figtext(0.05, 0.99, f"{self.instrument} - {lpf.name}", size=33, weight='bold', va='top')
             figtext(0.05, 0.95, f"20{self.date[:2]}-{self.date[2:4]}-{self.date[4:]}", size=25, weight='bold', va='top')
         else:
-            figtext(0.05, 0.99, f"MuSCAT2 - TOI {lpf.toi.toi}", size=33, weight='bold', va='top')
-            figtext(0.05, 0.95, f"TIC {lpf.toi.tic}\n20{self.date[:2]}-{self.date[2:4]}-{self.date[4:]}", size=25, weight='bold',
-                    va='top')
+            figtext(0.05, 0.99, f"{self.instrument} - TOI {lpf.toi.toi}", size=33, weight='bold', va='top')
+            figtext(0.05, 0.95, f"TIC {lpf.toi.tic}\n20{self.date[:2]}-{self.date[2:4]}-{self.date[4:]}", size=25, weight='bold', va='top')
 
         # Light curve plots
         # -----------------
@@ -286,5 +286,5 @@ class TransitAnalysis:
         if lpf.toi is None:
             figname = f"{self.target}_{self.date}_transit_fit.pdf"
         else:
-            figname = f"TIC{lpf.toi.tic}-{str(lpf.toi.toi).split('.')[1]}_20{self.date}_MuSCAT2_transit_fit.pdf"
+            figname = f"TIC{lpf.toi.tic}-{str(lpf.toi.toi).split('.')[1]}_20{self.date}_{self.instrument}_transit_fit.pdf"
         fig.savefig(self._dplot.joinpath(figname))

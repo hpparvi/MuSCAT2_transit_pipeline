@@ -99,18 +99,18 @@ def tmodel(time, toi, fratio=None):
 class TFOPAnalysis(TransitAnalysis):
     def __init__(self, target: str, date: str, tid: int, cids: list, dataroot: Path = None,
                  nlegendre: int = 0,  npop: int = 200,  mjd_start: float = -inf, mjd_end: float = inf,
-                 excluded_mjd_ranges: tuple = None,
+                 excluded_mjd_ranges: tuple = None, instrument: str = 'MuSCAT2',
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
                  radius_ratio: str = 'chromatic', excluded_stars=(), toi=None, klims=(0.005, 0.25)):
 
         super().__init__(target, date, tid, cids, dataroot=dataroot,
                  nlegendre=nlegendre,  npop=npop,  mjd_start=mjd_start, mjd_end=mjd_end,
-                 excluded_mjd_ranges=excluded_mjd_ranges,
+                 excluded_mjd_ranges=excluded_mjd_ranges, instrument=instrument,
                  aperture_lims=aperture_lims, passbands=passbands,
                  use_opencl=use_opencl, with_transit=with_transit, with_contamination=with_contamination,
                  radius_ratio=radius_ratio, klims=klims)
-
+        
         # Get the TOI information
         # -----------------------
         if toi is not None:
@@ -183,12 +183,12 @@ class TFOPAnalysis(TransitAnalysis):
             wcs = WCS(f1[0].header)
             data = f1[0].data.astype('d')
             fig = self.plot_tfop_field(data, wcs, figsize, markersize, loffset, subfield_radius=None)
-            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame.pdf"))
+            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_{self.instrument}_{filter}_frame.pdf"))
             fig = self.plot_tfop_field(data, wcs, figsize, markersize, loffset, subfield_radius=2.5)
-            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame_5_arcmin.pdf"))
+            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_{self.instrument}_{filter}_frame_5_arcmin.pdf"))
             close(fig)
             fig = self.plot_tfop_field(data, wcs, figsize, markersize, loffset, subfield_radius=1)
-            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame_2_arcmin.pdf"))
+            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_{self.instrument}_{filter}_frame_2_arcmin.pdf"))
             close(fig)
 
     def plot_tfop_field(self, data, wcs=None, figsize=(9, 9), markersize=25, loffset=0, subfield_radius=None):
@@ -284,7 +284,7 @@ class TFOPAnalysis(TransitAnalysis):
             ax.annotate('', xy=(x0, py), xytext=(x1, py), arrowprops=dict(arrowstyle='|-|', lw=1.5, color='k'))
             ax.text(width / 2, py - 7.5, "{:3.1f}'".format(scale.arcmin), va='top', ha='center', size='larger')
         ax.set_title(
-            f"MuSCAT2 TIC {int(self.toi.tic)} (TOI {self.toi.toi}) {self.date[-2:]}.{self.date[2:4]}.20{self.date[:2]}",
+            f"{self.instrument} TIC {int(self.toi.tic)} (TOI {self.toi.toi}) {self.date[-2:]}.{self.date[2:4]}.20{self.date[:2]}",
             size='x-large')
         ax.set_ylabel('Dec', size='x-large')
         ax.set_xlabel('RA', size='x-large')
@@ -308,7 +308,7 @@ class TFOPAnalysis(TransitAnalysis):
 
         ptype = 'fit' if model == 'de' else 'mcmc'
         if save:
-            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{ptype}.pdf"))
+            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_{self.instrument}_{ptype}.pdf"))
         return fig, axs
 
     def plot_possible_blends(self, cid: int, aid: int, stars: list = None, ncols: int = 3, nrows: int = 4,
@@ -367,7 +367,7 @@ class TFOPAnalysis(TransitAnalysis):
         stars_per_page = nrows * ncols
 
         for pb, ph in zip(passbands, phs):
-            plotname = self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{pb}_possible_blends.pdf")
+            plotname = self._dres.joinpath(f"{self.ticname}_20{self.date}_{self.instrument}_{pb}_possible_blends.pdf")
             pdf = PdfPages(plotname) if save else None
 
             for i, istar in enumerate(tqdm(stars, leave=False)):
@@ -379,7 +379,7 @@ class TFOPAnalysis(TransitAnalysis):
 
                 if ((i+1) % stars_per_page == 0) or i == nstars - 1:
                     setp(axs[:,0], ylabel='Normalized flux')
-                    fig.suptitle(f"{self.ticname} 20{self.date} {pb}-band MuSCAT2 relative normalised fluxes", size='large')
+                    fig.suptitle(f"{self.ticname} 20{self.date} {pb}-band {self.instrument} relative normalised fluxes", size='large')
                     fig.tight_layout(rect=(0, 0, 1, 0.95))
                     if i == nstars - 1:
                         for j in range(stars_per_page - iax):
@@ -466,10 +466,10 @@ class TFOPAnalysis(TransitAnalysis):
         lpf = self.lpf
         fig = figure(figsize=(figwidth, 1.4142 * figwidth))
         if self.toi is None:
-            figtext(0.05, 0.99, f"MuSCAT2 - {lpf.name}", size=33, weight='bold', va='top')
+            figtext(0.05, 0.99, f"{self.instrument} - {lpf.name}", size=33, weight='bold', va='top')
             figtext(0.05, 0.95, f"20{self.date[:2]}-{self.date[2:4]}-{self.date[4:]}", size=25, weight='bold', va='top')
         else:
-            figtext(0.05, 0.99, f"MuSCAT2 - TOI {self.toi.toi}", size=33, weight='bold', va='top')
+            figtext(0.05, 0.99, f"{self.instrument} - TOI {self.toi.toi}", size=33, weight='bold', va='top')
             figtext(0.05, 0.95, f"TIC {self.toi.tic}\n20{self.date[:2]}-{self.date[2:4]}-{self.date[4:]}", size=25,
                     weight='bold',
                     va='top')
@@ -503,7 +503,7 @@ class TFOPAnalysis(TransitAnalysis):
         lpf.plot_posteriors(fig=fig,
                             gridspec=dict(top=0.30, bottom=0.05, left=0.1, right=0.95, wspace=0.03, hspace=0.3))
         fig.add_axes((0.03, 0.01, 0.96, 0.001), facecolor='k', xticks=[], yticks=[])
-        plotname = self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_transit_fit.pdf")
+        plotname = self._dres.joinpath(f"{self.ticname}_20{self.date}_{self.instrument}_transit_fit.pdf")
 
         ptext = (f"P(full transit in window) = {self.p_full_transit_in_window:4.2f},\n"
                  f"P(ingress) = {self.p_ingress_in_window:4.2f},  "
@@ -520,7 +520,7 @@ class TFOPAnalysis(TransitAnalysis):
 
     def plot_covariates(self, figsize=(13, 5), close=False):
         cols = 'Sky, Airmass, X Shift [pix], Y Shift [pix], Aperture entropy'.split(',')
-        with PdfPages(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_covariates.pdf")) as pdf:
+        with PdfPages(self._dres.joinpath(f"{self.ticname}_20{self.date}_{self.instrument}_covariates.pdf")) as pdf:
             for ipb, ph in enumerate(self.phs):
                 fig, axs = subplots(2, 2, figsize=figsize, sharex=True)
                 aux, time = ph.aux, ph.bjd
@@ -531,7 +531,7 @@ class TFOPAnalysis(TransitAnalysis):
                     setp(ax, ylabel=cols[i])
                 setp(axs, xlim=time[[0, -1]] - t0)
                 setp(axs[-1, :], xlabel='Time - {:7.0f} [BJD]'.format(t0))
-                fig.suptitle('{}  20{} MuSCAT2 {} covariates'.format(self.ticname, self.date, self.passbands[ipb]))
+                fig.suptitle(f'{self.ticname}  20{self.date} {self.instrument} {self.passbands[ipb]} covariates')
                 fig.tight_layout()
                 fig.subplots_adjust(hspace=0, top=0.9, bottom=0.01)
                 pdf.savefig(fig)
@@ -548,7 +548,7 @@ class TFOPAnalysis(TransitAnalysis):
                                                                                                            'xshift',
                                                                                                            'yshift',
                                                                                                            'sky_entropy'])
-            df.to_csv(self._dres.joinpath(f'{self.ticname}_20{self.date}_MuSCAT2_{self.passbands[i]}_measurements.tbl'),
+            df.to_csv(self._dres.joinpath(f'{self.ticname}_20{self.date}_{self.instrument}_{self.passbands[i]}_measurements.tbl'),
                       index=False, sep=" ")
 
     def finalize(self):
@@ -577,9 +577,9 @@ class TFOPAnalysis(TransitAnalysis):
         readme = (Path(muscat2ta.__path__[0]) / '..' / 'data' / 'templates' / 'tfop_readme.txt').resolve()
         report = (Path(muscat2ta.__path__[0]) / '..' / 'data' / 'templates' / 'tfop_report.txt').resolve()
 
-        copy2(readme, dsubmit / f"{self.ticname}_20{self.date}_MuSCAT2_readme.txt")
+        copy2(readme, dsubmit / f"{self.ticname}_20{self.date}_{self.instrument}_readme.txt")
 
-        with open(dsubmit / f"{self.ticname}_20{self.date}_MuSCAT2_report.txt", "w") as f:
+        with open(dsubmit / f"{self.ticname}_20{self.date}_{self.instrument}_report.txt", "w") as f:
             t = Template(report.read_text())
             f.write(t.safe_substitute(ticname=self.ticname, night=self.date, tid=self.tid, cids=self.cids,
                                       tap=self.lpf.frozen_apertures[0], raps=self.lpf.frozen_apertures[1]))
