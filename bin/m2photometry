@@ -35,7 +35,7 @@ mpl.use('Agg')
 import matplotlib.pyplot as pl
 
 from muscat2ph.photometry import ScienceFrame, COMCentroider
-from muscat2ph.catalog import get_m2_coords, get_toi, get_toi_or_tic_coords
+from muscat2ph.catalog import get_m2_coords, get_toi, get_toi_or_tic_coords, get_coords
 
 from astropy.utils.exceptions import AstropyDeprecationWarning
 import warnings
@@ -131,25 +131,27 @@ if __name__ == '__main__':
     for object in objects:
         max_stars = args.max_stars
 
+        catalog_name = args.target_catalog_name or object
+
         try:
-            toi = get_toi(object)
+            toi = get_toi(catalog_name)
         except ValueError:
             toi = None
 
         find_treshold = args.find_treshold
         if not args.no_tfop and toi is not None:
-            logging.info(f"Calculating photometry for a TFOP target {object} (TIC {toi.tic}).")
+            logging.info(f"Calculating photometry for a TFOP target {catalog_name} (TIC {toi.tic}).")
             find_treshold = find_treshold or 97.5
             max_stars = max_stars or 150
-            target_sky_coords = get_toi_or_tic_coords(toi.toi)
             ticname = 'TIC{:d}-{}'.format(int(toi.tic), str(toi.toi).split('.')[1])
             TFOP = True
         else:
-            logging.info(f"Calculating photometry for {object}.")
+            logging.info(f"Calculating photometry for {catalog_name}.")
             find_treshold = find_treshold or 99.
             max_stars = max_stars or 20
-            target_sky_coords = get_m2_coords(object)
             TFOP = False
+
+        target_sky_coords = get_coords(catalog_name)
         logging.info(f"Target sky coordinates {target_sky_coords}")
 
         if args.apertures is None:
@@ -259,26 +261,26 @@ if __name__ == '__main__':
                     ax_field = fig_field.add_subplot(111, projection=im._wcs)
                     ax_field.grid()
                     im.plot_reduced(minp=90, offset=10, ax=ax_field, subfield_radius=r)
-                    ax_field.set_title("Reference frame - {} {}'".format(object, pb))
+                    ax_field.set_title(f"Reference frame - {catalog_name} {pb}'")
                     pl.setp(ax_field, ylabel='Dec', xlabel='RA')
                     fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
                     if r:
-                        fig_field.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_field_{:d}am.png'.format(object, obsdate, pb, r))))
+                        fig_field.savefig(str(rdir.joinpath(f"{object}_20{obsdate}_MuSCAT2_{pb}_field_{r:d}am.png")))
                     else:
-                        fig_field.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_field.png'.format(object, obsdate, pb))))
+                        fig_field.savefig(str(rdir.joinpath(f"{object}_20{obsdate}_MuSCAT2_{pb}_field.png")))
                     pl.close(fig_field)
             else:
                 fig_field, ax_field = pl.subplots(figsize=(9, 9))
                 im.plot_reduced(minp=90, offset=10, ax=ax_field)
-                ax_field.set_title('Reference frame - {} {}'.format(object, pb))
+                ax_field.set_title(f"Reference frame - {object} {pb}")
                 pl.setp(ax_field, ylabel='Y [pix]', xlabel='X [pix]')
                 fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
-                fig_field.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_field.png'.format(object, obsdate, pb))))
+                fig_field.savefig(str(rdir.joinpath(f"{object}_20{obsdate}_MuSCAT2_{pb}_field.png")))
                 pl.close(fig_field)
 
             fig_psf, _ = im.plot_psf(figsize=(9, 4.5))
             fig_psf.tight_layout()
-            fig_psf.savefig(str(rdir.joinpath('{}_20{}_MuSCAT2_{}_seeing_profile.png'.format(object, obsdate, pb))))
+            fig_psf.savefig(str(rdir.joinpath(f"{object}_20{obsdate}_MuSCAT2_{pb}_seeing_profile.png")))
             pl.close(fig_psf)
 
             # Datacube creation
