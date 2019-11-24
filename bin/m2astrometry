@@ -18,6 +18,7 @@
 
 import logging
 import re
+import itertools as it
 from argparse import ArgumentParser
 from multiprocessing import Pool
 from os import remove, chdir
@@ -29,26 +30,27 @@ from astropy.io import fits as pf
 from numpy import nan, inf
 from tqdm import tqdm
 
-from muscat2ph.catalog import get_m2_coords, get_toi, get_toi_or_tic_coords
+from muscat2ph.catalog import get_coords
 
 TMPEXTS = ".match .axy .rdls .solved -indx.xyls .corr".split()
 MAX_TIMEOUT = 60
 
 
-def run_astrometry(filename, overwrite=True):
-    object = pf.getval(filename, 'object').lower()
+def run_astrometry(filename_and_obj, overwrite=True):
+    filename, object = filename_and_obj
+    object = object or pf.getval(filename, 'object').lower()
+    astcall = ["solve-field", "--overwrite", "--no-plots", "--new-fits=none", "--fits-image", '--downsample=2',
+               "--scale-low=0.4", "--scale-high=0.5", "--scale-units=app"]
 
+    sc = None
     try:
-        toi = get_toi(object)
-        sc = get_toi_or_tic_coords(toi.toi)
-    except ValueError:
-        sc = get_m2_coords(object)
+        sc = get_coords(object)
+        astcall.extend([f"--ra={sc.ra.deg}", f"--dec={sc.dec.deg}", "--radius=5"])
+        logging.info(f" Solving {filename.stem} - {object} - RA: {sc.ra.deg:6.3f} DEC: {sc.dec.deg:6.3f}")
+    except:
+        logging.info(f" Solving {filename.stem} - {object} - Not found from any catalog")
 
-    logging.info(" Solving {} {} - RA: {:6.3f} DEC: {:6.3f}".format(filename.stem, object, sc.ra.deg, sc.dec.deg))
-
-    astcall = ["solve-field", "--overwrite", "--no-plots", "--scale-low=0.3", "--scale-high=0.7", "--scale-units=app",
-               "--new-fits=none", "--fits-image", "--ra={}".format(sc.ra.deg), "--dec={}".format(sc.dec.deg), "--radius=2",
-               str(filename)]
+    astcall.append(str(filename))
 
     try:
         r = run(astcall, stdout=PIPE, stderr=PIPE, timeout=MAX_TIMEOUT)
@@ -72,7 +74,7 @@ def run_astrometry(filename, overwrite=True):
         return str(filename), nan, nan, nan
 
 
-def process_datadir(datadir, logdir, file_prefix, file_postfix, start_frame, end_frame):
+def process_datadir(datadir, logdir, file_prefix, file_postfix, start_frame, end_frame, target_name=None):
     files = sorted(list(datadir.rglob("%s*%s"%(file_prefix, file_postfix))))
     istart = max(0, start_frame)
     iend = min(end_frame, len(files))
@@ -82,12 +84,12 @@ def process_datadir(datadir, logdir, file_prefix, file_postfix, start_frame, end
     target = str(f.parts[-3])
     pb = str(f.parts[-2])
 
-    logging.basicConfig(filename=logdir.joinpath('00_m2astrometry_{}_{}.log'.format(target, pb)),
-                        filemode='w', level=logging.DEBUG)
+    logging.basicConfig(filename=logdir.joinpath(f'00_m2astrometry_{target}_{pb}.log'), filemode='w', level=logging.DEBUG)
+
+    files = list(zip(files, (it.repeat(target_name, len(files)))))
 
     with Pool(args.n_processes) as p:
-        r = list(tqdm(p.imap(run_astrometry, files), total=len(files),
-                      desc='Solving astrometry for {} {}'.format(target, pb)))
+        r = list(tqdm(p.imap(run_astrometry, files), total=len(files), desc='Solving astrometry for {} {}'.format(target, pb)))
         df = pd.DataFrame(r, columns='filename RA Dec rotation'.split())
 
     dfname = '01_m2astrometry_{}_{}.csv'.format(target, pb)
@@ -98,6 +100,7 @@ if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('--root', type=Path, default=Path('.').absolute())
     ap.add_argument('--directory', type=Path, default=None)
+    ap.add_argument('--target-catalog-name', type=str, default=None)
     ap.add_argument('-n', '--n-processes', type=int, default=6)
     ap.add_argument('-f', '--overwrite', action='store_true', default=False)
     ap.add_argument('--file-prefix', type=str, default='MCT2')
@@ -107,7 +110,8 @@ if __name__ == '__main__':
     args = ap.parse_args()
 
     if args.directory is not None:
-        process_datadir(args.directory, args.directory, args.file_prefix, args.file_postfix, args.start_frame, args.end_frame)
+        process_datadir(args.directory, args.directory, args.file_prefix, args.file_postfix, args.start_frame, args.end_frame,
+                        target_name=args.target_catalog_name)
     else:
         passbands = 'g r i z_s'.split()
 
