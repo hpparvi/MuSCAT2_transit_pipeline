@@ -21,6 +21,8 @@ from collections import namedtuple
 import astropy.units as u
 import pandas as pd
 from astropy.coordinates import SkyCoord
+from astroquery.nasa_exoplanet_archive import NasaExoplanetArchive as NEA
+
 from numpy import remainder, array
 from pkg_resources import resource_filename
 
@@ -149,8 +151,12 @@ def get_toi_or_tic_coords(toi_or_tic):
     toi = get_toi_or_tic(toi_or_tic)
     return SkyCoord(toi.ra, toi.dec, frame='fk5', unit=(u.hourangle, u.deg))
 
+
 def get_coords(target: str):
     try:
-        return get_toi_or_tic_coords(parse_toi('toi00680.01'))
-    except ValueError:
-        return get_m2_coords(target)
+        return NEA.query_planet(target)['sky_coord']
+    except KeyError:
+        try:
+            return get_toi_or_tic_coords(parse_toi(target))
+        except ValueError:
+            return get_m2_coords(target)
