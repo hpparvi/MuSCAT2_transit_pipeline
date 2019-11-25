@@ -24,7 +24,7 @@ from astropy.table import Table
 from matplotlib.artist import setp
 from matplotlib.pyplot import subplots
 from numpy import arange, sort, log10, sqrt, diff, unique, percentile, squeeze, array
-from numpy.random import uniform, permutation
+from numpy.random import uniform, permutation, normal
 from pytransit.orbits import epoch
 
 from .m2baselpf import M2BaseLPF, downsample_time
@@ -32,13 +32,13 @@ from .m2baselpf import M2BaseLPF, downsample_time
 
 def read_reduced_m2(datadir, pattern='*.fits'):
     files = sorted(Path(datadir).glob(pattern))
-    times, fluxes, pbs, wns, covs = [], [], [], [], []
+    times, fluxes, pbs, wns, covs, vars = [], [], [], [], [], []
     for f in files:
         with pf.open(f) as hdul:
             npb = (len(hdul)-1)//2
             masks = []
             for hdu in hdul[1:1+npb]:
-                fobs = hdu.data['flux'].astype('d').copy() * hdu.data['baseline'].astype('d').copy()
+                fobs = hdu.data['flux'].astype('d').copy() #* hdu.data['baseline'].astype('d').copy()
                 fmod = hdu.data['model'].astype('d').copy()
                 time = hdu.data['time_bjd'].astype('d').copy()
                 mask = ~sigma_clip(fobs-fmod, sigma=5).mask
@@ -47,9 +47,10 @@ def read_reduced_m2(datadir, pattern='*.fits'):
                 fluxes.append(fobs[mask])
                 pbs.append(hdu.header['filter'])
                 wns.append(hdu.header['wn'])
+                vars.append((fobs-fmod)[mask].var())
             for i in range(npb):
                 covs.append(Table.read(f, 1+npb+i).to_pandas().values[masks[i],:])
-    return times, fluxes, pbs, wns, covs
+    return times, fluxes, pbs, wns, covs, array(vars)
 
 
 class M2MultiNightLPF(M2BaseLPF):
@@ -62,10 +63,11 @@ class M2MultiNightLPF(M2BaseLPF):
         super().__init__(target, use_opencl, n_legendre, with_transit, with_contamination, radius_ratio, noise_model, klims)
 
     def _read_data(self):
-        times, fluxes, pbs, wns, covs = read_reduced_m2(self.datadir, self.pattern)
+        times, fluxes, pbs, wns, covs, vars = read_reduced_m2(self.datadir, self.pattern)
         pbs = pd.Categorical(pbs, categories='g r i z_s'.split(), ordered=True).remove_unused_categories()
         pbnames = pbs.categories.values
         pbids = pbs.codes
+        self._residual_vars = vars
         return pbnames, times, fluxes, covs, wns, pbids, arange(len(fluxes))
 
     def create_pv_population_b(self, npop=50):
@@ -73,20 +75,17 @@ class M2MultiNightLPF(M2BaseLPF):
         files = sorted(Path(self.datadir).glob(pattern))
         pvp = self.ps.sample_from_prior(npop)
 
-        ibla = 0
         for i, f in enumerate(files):
             with xa.open_dataset(f) as ds:
                 fc = array(ds.lm_mcmc).reshape([-1, ds.lm_mcmc.shape[-1]])
-                blcs = [p for p in array(ds.lm_parameter) if 'bl' in p]
-                bl = ds.lm_mcmc.loc[:, :, blcs]
-                bl = array(bl).reshape([-1, bl.shape[-1]])
-
             if i == 0:
                 pvp[:, 1:8] = fc[:npop, 1:8]
 
-            for ibl in range(bl.shape[1]):
-                pvp[:, self._start_bl + ibla + ibl] = bl[:npop, ibl]
-            ibla += bl.shape[1]
+        c = 0
+        for ilc in range(self.nlc):
+            for icov in range(self.ncov[ilc] + 1):
+                pvp[:, self._start_bl + c] = normal(0, sqrt(self._residual_vars[ilc]), size=npop)
+                c += 1
 
         pvv = uniform(size=(npop, 2 * self.npb))
         pvv[:, ::2] = sort(pvv[:, ::2], 1)[:, ::-1]
