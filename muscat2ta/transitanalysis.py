@@ -53,7 +53,8 @@ class TransitAnalysis:
                  excluded_mjd_ranges: tuple = None,
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
-                 radius_ratio: str = 'achromatic', klims=(0.005, 0.25)):
+                 radius_ratio: str = 'achromatic', klims=(0.005, 0.25),
+                 catalog_name: str = None):
 
         self.target: str = target
         self.date: str = date
@@ -88,7 +89,7 @@ class TransitAnalysis:
 
         # Get the target coordinates
         # --------------------------
-        self.target_coordinates = get_coords(self.target)
+        self.target_coordinates = get_coords(catalog_name or self.target)
 
         # Read in the data
         # ----------------
