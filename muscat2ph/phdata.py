@@ -111,8 +111,12 @@ class PhotometryData:
         self.apt = self._flux.aperture[self.iapt]
         self.lin_formula = 'mjd + sky + xshift + yshift + entropy + airmass'
 
-        self.centroids_pix = cpix = self._ds.centroids_pix.values
-        self.distances_pix = sqrt(((cpix - cpix[tid])**2).sum(1))
+        try:
+            self.centroids_pix = cpix = self._ds.centroids_pix.values
+            self.distances_pix = sqrt(((cpix - cpix[tid])**2).sum(1))
+        except AttributeError:
+            self.centroids_pix =  None
+            self.distances_pix =  None
 
         try:
             self.centroids_sky = SkyCoord(array(self._ds.centroids_sky), frame=FK5, unit=(u.deg, u.deg))
@@ -123,7 +127,7 @@ class PhotometryData:
             self.centroids_sky = None
             self.distances_arcmin = None
 
-        if self.centroids_sky is None or all(isnan(self.distances_arcmin)):
+        if self.distances_pix and (self.centroids_sky is None or all(isnan(self.distances_arcmin))):
             self.distances_arcmin = self.distances_pix * (0.44 * u.arcsec).to(u.arcmin).value
 
         if not self.objskycoords:
