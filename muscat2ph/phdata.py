@@ -127,7 +127,7 @@ class PhotometryData:
             self.centroids_sky = None
             self.distances_arcmin = None
 
-        if self.distances_pix and (self.centroids_sky is None or all(isnan(self.distances_arcmin))):
+        if self.distances_pix is not None and (self.centroids_sky is None or all(isnan(self.distances_arcmin))):
             self.distances_arcmin = self.distances_pix * (0.44 * u.arcsec).to(u.arcmin).value
 
         if not self.objskycoords:
