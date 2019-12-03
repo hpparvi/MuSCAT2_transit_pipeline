@@ -48,38 +48,21 @@ from tqdm.auto import tqdm
 
 from pytransit import NormalPrior as NP, UniformPrior as UP
 
-from .transitanalysis import TransitAnalysis
+from .transitanalysis import TransitAnalysis, downsample_time
+
 
 @njit
 def as_from_dkp(d, p, k):
     """Assumes b=0"""
     return sqrt((1.0+k)**2) / sin(pi*d/p)
 
+
 def true_depth(observed_depth, fratio):
     return (observed_depth * (1 + fratio)) / fratio
 
+
 def true_radius_ratio(observed_depth, fratio):
     return sqrt(true_depth(observed_depth, fratio))
-
-@njit
-def downsample_time(time, flux, inttime=30.):
-    duration = 24. * 60. * 60. * (time.max() - time.min())
-    nbins = int(ceil(duration / inttime))
-    bins = arange(nbins)
-    edges = time[0] + bins * inttime / 24 / 60 / 60
-    bids = digitize(time, edges) - 1
-    bt, bf, be = full(nbins, nan), zeros(nbins), zeros(nbins)
-    for i, bid in enumerate(bins):
-        bmask = bid == bids
-        if bmask.sum() > 0:
-            bt[i] = time[bmask].mean()
-            bf[i] = flux[bmask].mean()
-            if bmask.sum() > 2:
-                be[i] = flux[bmask].std() / sqrt(bmask.sum())
-            else:
-                be[i] = nan
-    m = isfinite(bt)
-    return bt[m], bf[m], be[m]
 
 
 def tmodel(time, toi, fratio=None):

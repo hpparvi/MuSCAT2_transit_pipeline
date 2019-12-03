@@ -18,7 +18,11 @@ import warnings
 from pathlib import Path
 from time import strftime
 
+from astropy.stats import mad_std
 from astropy.utils.exceptions import AstropyWarning
+from matplotlib.axis import Axis
+from numba import njit
+
 warnings.simplefilter('ignore', category=AstropyWarning)
 
 import pandas as pd
@@ -29,13 +33,35 @@ from corner import corner
 from matplotlib.pyplot import figure, figtext, setp, subplots
 from muscat2ph.catalog import get_m2_coords, get_coords
 from muscat2ph.phdata import PhotometryData
-from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze, atleast_1d, ceil)
+from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze, atleast_1d, ceil, floor, array, isfinite, median,
+                   nanmedian, arange, digitize, zeros, nan, full, clip)
 
 from pytransit.param import NormalPrior as NP, UniformPrior as UP
 
 from .m2lpf import M2LPF
 
 __all__ = ["TransitAnalysis", "NP", "UP"]
+
+@njit
+def downsample_time(time, flux, inttime=30.):
+    duration = 24. * 60. * 60. * (time.max() - time.min())
+    nbins = int(ceil(duration / inttime))
+    bins = arange(nbins)
+    edges = time[0] + bins * inttime / 24 / 60 / 60
+    bids = digitize(time, edges) - 1
+    bt, bf, be = full(nbins, nan), zeros(nbins), zeros(nbins)
+    for i, bid in enumerate(bins):
+        bmask = bid == bids
+        if bmask.sum() > 0:
+            bt[i] = time[bmask].mean()
+            bf[i] = flux[bmask].mean()
+            if bmask.sum() > 2:
+                be[i] = flux[bmask].std() / sqrt(bmask.sum())
+            else:
+                be[i] = nan
+    m = isfinite(bt)
+    return bt[m], bf[m], be[m]
+
 
 def get_files(droot, target, night, passbands: tuple = ('g', 'r', 'i', 'z_s')):
     ddata = droot.joinpath(night)
@@ -167,6 +193,76 @@ class TransitAnalysis:
         if save:
             fig.savefig(self._dplot.joinpath(f'{self.basename}_{self.lpf.radius_ratio}_k_lc.pdf'))
         return fig
+
+    def plot_relative_light_curve(self, pbi: int, sid: int, cid: int, aid: int = -1,
+                                  btime: float = 300., ax: Axis = None, figsize: tuple = None):
+        """Plots a relative light curve `sid/cid` for passband `pbi`.
+
+        Parameters
+        ----------
+        pbi: int
+            Passband index
+        sid: int
+            Star index
+        cid: int
+            Comparison star index
+        aid: int
+            Aperture index
+        btime: float
+            Bin width for the overplotted binned flux
+        ax: Axis
+            The matplotlib Axis to plot the image
+        figsize: tuple
+            Figure size (only if no axis is given)
+
+        Returns
+        -------
+            Axis
+
+        """
+        """Plot the raw flux of star `sid` normalized to the median of star `tid`."""
+        fig, ax = subplots(figsize=figsize) if ax is None else (None, ax)
+
+        ph = self.phs[pbi]
+        time = ph.bjd
+        t0 = floor(time[0])
+
+        flux = array(ph.flux[:, sid, aid] / ph.flux[:, self.tid, aid].median())
+        m = isfinite(time) & isfinite(flux)
+        time, flux = time[m], flux[m]
+        fratio = median(flux)
+        flux /= array(ph.flux[:, cid, aid])
+        flux /= median(flux)
+
+        # Flux median and std for y limits and outlier marking
+        # ----------------------------------------------------
+        m = nanmedian(flux)
+        s = mad_std(flux[isfinite(flux)])
+
+        # Mark outliers
+        # -------------
+        mask = abs(flux - m) > 5 * s
+        outliers = clip(flux[mask], m - 5.75 * s, m + 4.75 * s)
+
+        # Plot the unbinned flux
+        # ----------------------
+        ax.plot(time - t0, flux, marker='.', ls='', alpha=0.1)
+        ax.plot(time[mask] - t0, outliers, 'k', ls='', marker=6, ms=10)
+
+        # Plot the binned flux
+        # --------------------
+        bt, bf, be = downsample_time(time, flux, btime)
+        ax.plot(bt - t0, bf, 'k', drawstyle='steps-mid')
+
+        try:
+            ax.text(0.02, 1.01, f"Star {sid:d}, separation {self.distances[sid]:4.2f}'", size='small', ha='left',
+                    va='bottom', transform=ax.transAxes)
+        except AttributeError:
+            pass
+        ax.text(0.98, 1.01, f"F$_\star$/F$_0$ {fratio:4.3f}", size='small', ha='right', va='bottom',
+                transform=ax.transAxes)
+        setp(ax, xlim=time[[0, -1]] - t0, ylim=(m - 6 * s, m + 4 * s))
+        return fig, ax
 
     @property
     def savefile_name(self):
