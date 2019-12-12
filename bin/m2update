@@ -29,8 +29,17 @@
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from muscat2ph.catalog import update_toi_catalog
+from getpass import getpass
+from muscat2ph.catalog import update_toi_catalog, update_m2_catalog
 
 
 if __name__ == '__main__':
+    passwd = getpass(prompt='M2 password: ')
+    print('Updating the TOI catalog')
     update_toi_catalog()
+    print('Updating the M2 catalog')
+    try:
+        update_m2_catalog(passwd)
+    except ValueError:
+        print('Failed to update the M2 catalog: wrong password')
+        exit(0)

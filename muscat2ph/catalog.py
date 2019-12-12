@@ -18,6 +18,9 @@ from difflib import get_close_matches
 from pathlib import Path
 from collections import namedtuple
 
+import requests
+from datetime import datetime
+
 import astropy.units as u
 import pandas as pd
 from astropy.coordinates import SkyCoord
@@ -31,6 +34,20 @@ TOI = namedtuple('TOI', 'tic toi tmag ra dec epoch period duration depth'.split(
 m2_catalog_file = Path(resource_filename('muscat2ph', '../data/m2_catalog.csv')).resolve()
 toi_catalog_file = Path(resource_filename('muscat2ph', '../data/toi_catalog.csv')).resolve()
 
+def update_m2_catalog(password: str) -> None:
+    login_url = 'http://research.iac.es/proyecto/muscat/users/login'
+    csv_url = 'http://research.iac.es/proyecto/muscat/stars/export'
+    data = {'username': 'observer', 'password': password}
+
+    with requests.Session() as session:
+        post = session.post(login_url, data=data)
+        result = session.get(csv_url)
+
+    if "access not permitted" in result.text.lower():
+        raise ValueError("Wrong password")
+
+    with open(m2_catalog_file, "w") as fout:
+        fout.write(result.text)
 
 def update_toi_catalog(remove_fp: bool = False, remove_known_planets: bool = False) -> None:
     """Download TOI list from TESS Alert/TOI Release.
@@ -43,7 +60,6 @@ def update_toi_catalog(remove_fp: bool = False, remove_known_planets: bool = Fal
         remove known planets from the catalog if `True`
     """
     dl_link = 'https://exofop.ipac.caltech.edu/tess/download_toi.php?sort=toi&output=csv'
-    fp = Path('toi_catalog.csv')
 
     d = pd.read_csv(dl_link)
     ntois = len(d)
