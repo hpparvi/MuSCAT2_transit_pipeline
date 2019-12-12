@@ -19,14 +19,16 @@ import seaborn as sb
 from os.path import join, split
 
 from astropy.stats import sigma_clip, mad_std
+from astropy.table import Table
 from ldtk import LDPSetCreator
 from matplotlib.pyplot import subplots, setp, figure
+from astropy.io import fits as pf
 from muscat2ph.catalog import get_toi
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
     delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like, fmin, digitize, ceil, full, \
-    nan
+    nan, transpose
 from numpy.polynomial import Polynomial
 from numpy.polynomial.legendre import legvander
 import astropy.units as u
@@ -890,3 +892,43 @@ class M2LPF(LinearModelBaseline, BaseLPF):
 
         if ylim:
             setp(axs, ylim=ylim)
+
+    def save_fits(self, filename: str) -> None:
+        phdu = pf.PrimaryHDU()
+        phdu.header.update(target=self.name)
+        hdul = pf.HDUList(phdu)
+
+        pv = self.de.minimum_location
+        time = self.timea
+
+        baseline = squeeze(self.baseline(pv))
+        if self.with_transit:
+            transit = squeeze(self.transit_model(pv).astype('d'))
+        else:
+            transit = ones_like(time)
+
+        if not self.photometry_frozen:
+            target_flux = self.target_flux(pv)
+            reference_flux = self.reference_flux(pv)
+            relative_flux = target_flux / reference_flux
+            detrended_flux = relative_flux / baseline
+        else:
+            target_flux = self._target_flux
+            reference_flux = self._reference_flux
+            relative_flux = self.ofluxa
+            detrended_flux = relative_flux / baseline
+
+        if self.cids.size == 0:
+            reference_flux = ones_like(target_flux)
+
+        for i, sl in enumerate(self.lcslices):
+            df = Table(transpose([time[sl] + self.tref, detrended_flux[sl], relative_flux[sl], target_flux[sl],
+                                  reference_flux[sl], baseline[sl], transit[sl]]),
+                       names='time_bjd flux flux_rel flux_trg flux_ref baseline model'.split(),
+                       meta={'extname': f"flux_{self.passbands[i]}", 'filter': self.passbands[i], 'trends': 'linear', 'wn': self.wn[i], 'radrat': self.radius_ratio})
+            hdul.append(pf.BinTableHDU(df))
+
+        for i, pb in enumerate(self.passbands):
+            df = Table(self.covariates[i], names='sky xshift yshift entropy'.split(), meta={'extname': f'aux_{pb}'})
+            hdul.append(pf.BinTableHDU(df))
+        hdul.writeto(filename+'.fits', overwrite=True)

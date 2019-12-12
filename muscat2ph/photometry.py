@@ -130,10 +130,14 @@ class COMCentroider(Centroider):
         #    raise ValueError("Star outside the image FOV.")
         reduced_frame = self.image.reduced
         shifts = zeros((self.nstars, 2))
+
         for iiter in range(niter):
             masks = self.apt.to_mask()
             for istar, mask in enumerate(masks):
-                cutout = mask.cutout(reduced_frame)
+                try:
+                    cutout = mask.cutout(reduced_frame)
+                except ValueError:
+                    cutout = None
                 if cutout is not None:
                     cutout = cutout.copy()
                     p = percentile(cutout, [pmin, pmax])
@@ -230,17 +234,22 @@ class ScienceFrame(ImageFrame):
     height = 1024
     width  = 1024
 
-    def __init__(self, root, passband, masterdark=None, masterflat=None,
+    def __init__(self, root, passband, masterdark=None, masterflat=None, data_is_raw=True,
                  aperture_radii=(6, 8, 12, 16, 20, 24, 30, 40, 50, 60), margin=20):
         self.passband = passband
         self.aperture_radii = aperture_radii
         self.napt = len(aperture_radii)
-        self.margin = 20
+        self.margin = margin
+        self.data_is_prereduced = not data_is_raw
 
         # Calibration files
         # ------------------
-        self.masterdark = self.dark = masterdark or MasterDark(root, self.passband)
-        self.masterflat = self.flat = masterflat or MasterFlat(root, self.passband)
+        if data_is_raw:
+            self.masterdark = self.dark = masterdark or MasterDark(root, self.passband)
+            self.masterflat = self.flat = masterflat or MasterFlat(root, self.passband)
+        else:
+            self.masterdark = None
+            self.masterflat = None
 
         # Basic data
         # ----------
@@ -270,20 +279,23 @@ class ScienceFrame(ImageFrame):
         self.rigid_centroider = None
 
 
-    def load_fits(self, filename):
+    def load_fits(self, filename: Path, extension: int = 0, wcs_in_header: bool = False) -> None:
         """Load the image data and WCS information (if available)."""
         filename = Path(filename)
         with pf.open(filename) as f:
-            self._data = f[0].data.astype('d')
-            self._header = f[0].header
-        wcsfile = filename.parent.joinpath(filename.stem+'.wcs')
-        if wcsfile.exists():
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore', FITSFixedWarning)
-                self._wcs = WCS(pf.getheader(wcsfile))
-            if self._ref_centroids_sky is not None:
-                self._cur_centroids_pix = array(self._ref_centroids_sky.to_pixel(self._wcs)).T
+            self._data = f[extension].data.astype('d')
+            self._header = f[extension].header
 
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=FITSFixedWarning)
+            if wcs_in_header:
+                self._wcs = WCS(self._header)
+            else:
+                wcsfile = filename.parent.joinpath(filename.stem+'.wcs')
+                if wcsfile.exists():
+                    self._wcs = WCS(pf.getheader(wcsfile))
+                    if self._ref_centroids_sky is not None:
+                        self._cur_centroids_pix = array(self._ref_centroids_sky.to_pixel(self._wcs)).T
 
     def _initialize_tables(self, nstars, napt):
         iapt = self._xad_apt
@@ -304,7 +316,10 @@ class ScienceFrame(ImageFrame):
     @property
     def reduced(self):
         """Reduced image."""
-        return (self._data - self.dark._data) / self.flat._data
+        if self.data_is_prereduced:
+            return self._data
+        else:
+            return (self._data - self.dark._data) / self.flat._data
 
     @property
     def raw(self):
@@ -362,7 +377,11 @@ class ScienceFrame(ImageFrame):
         return blow & bhigh
 
     def find_stars(self, treshold=99.5, maxn=10, target_sky=None, target_pix=None, mf_size=6):
-        filtered_flux = mf(self.reduced, mf_size)
+        if mf_size > 1:
+            filtered_flux = mf(self.reduced, mf_size)
+        else:
+            filtered_flux = self.reduced
+
         objects = filtered_flux > sap(filtered_flux, treshold)
         labels, nl = label(objects)
         fluxes = [self.reduced[labels == l].mean() for l in range(1, nl + 1)]
@@ -370,7 +389,6 @@ class ScienceFrame(ImageFrame):
         maxn = min(maxn, nl)
         self.nstars = maxn
         logging.info(f"Found {nl} possible stars, chose {self.nstars}")
-
 
         sorted_labels = zeros_like(labels)
         for i, fid in enumerate(fids[:maxn]):
@@ -393,7 +411,7 @@ class ScienceFrame(ImageFrame):
 
     def find_stars_dao(self, fwhm=5, maxn=100, target_sky=None, target_pix=None):
         data = self.reduced
-        imean, imedian, istd = sigma_clipped_stats(data, sigma=3.0, iters=5)
+        imean, imedian, istd = sigma_clipped_stats(data, sigma=3.0, maxiters=5)
         sfinder = DAOStarFinder(5*istd, fwhm, exclude_border=True)
         stars = sfinder(data)
         sids = argsort(array(stars['flux']))[::-1]
@@ -573,8 +591,7 @@ class ScienceFrame(ImageFrame):
 
 
     def plot_raw(self, ax=None, figsize=(6,6), plot_apertures=True, minp=10, maxp=100):
-        ax = super().plot(self.raw, ax=ax, figsize=figsize, title='Reduced image',
-                            minp=minp, maxp=maxp)
+        ax = super().plot(self.raw, ax=ax, figsize=figsize, title='Raw image', minp=minp, maxp=maxp)
         if plot_apertures:
             self.plot_apertures(ax)
         return ax

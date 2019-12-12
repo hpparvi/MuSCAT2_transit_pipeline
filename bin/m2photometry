@@ -63,7 +63,14 @@ def init(root, pb, stars_file, apertures, centroider_kwargs, dc_obj_id=0, dc_apt
 def photometry(filename):
     try:
         im.load_fits(filename)
-        cc.calculate_and_apply(pmin=cc_pmin, pmax=cc_pmax)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            try:
+                cc.calculate_and_apply(pmin=cc_pmin, pmax=cc_pmax)
+            except (ValueError, RuntimeWarning):
+                logging.warning(f"Centroiding failed for frame {filename}")
+                return None
+
         aux = [im._header['airmass'],
                im._header['exptime'],
                im._header['mjd-strt'] + 0.5 * im._header['exptime'] / 24 / 60 / 60]
