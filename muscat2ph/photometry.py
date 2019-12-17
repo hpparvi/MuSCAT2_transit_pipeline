@@ -261,6 +261,7 @@ class ScienceFrame(ImageFrame):
         self._cur_centroids_pix = None  # Star centroids in pixel coordinates [DataFrame]
         self._apertures_obj = None      # Photometry apertures
         self._apertures_sky = None      # Photometry apertures
+        self._ones = None
 
         self._target_center = None      # Target center in sky coordinates
         self._separation_cut = None     # Include all stars found within this distance to the target [arcmin]
@@ -284,6 +285,7 @@ class ScienceFrame(ImageFrame):
         filename = Path(filename)
         with pf.open(filename) as f:
             self._data = f[extension].data.astype('d')
+            self._ones = ones_like(self._data)
             self._header = f[extension].header
 
         with warnings.catch_warnings():
@@ -658,9 +660,10 @@ class ScienceFrame(ImageFrame):
     def estimate_sky(self):
         masks = self._apertures_sky.to_mask()
         for istar, m in enumerate(masks):
-            d = m.cutout(self.reduced)
+            d = m.cutout(self.reduced, fill_value=nan)
             if d is not None:
-                self._sky_median[istar] = sigma_clipped_stats(d[m.data.astype('bool')], sigma=4)[1]
+                d = d[m.data.astype('bool')]
+                self._sky_median[istar] = sigma_clipped_stats(d, mask=~isfinite(d), sigma=4)[1]
             else:
                 self._sky_median[istar] = nan
         return self._sky_median
@@ -690,14 +693,21 @@ class ScienceFrame(ImageFrame):
 
         return self._entropy, self._sky_entropy
 
-
     def photometry(self, centroid=True):
         if centroid:
             self.centroid_rigid()
         self.estimate_sky()
         self.estimate_entropy()
+        reduced_data = self.reduced
         for iapt, apt in enumerate(self._apertures_obj):
-            self._flux[:, iapt] = apt.do_photometry(self.reduced)[0] - self._sky_median * apt.area
+            masks = apt.to_mask()
+            for im, m in enumerate(masks):
+                area = m.multiply(self._ones).sum()
+                data = m.multiply(reduced_data)
+                if any(data > 50000):
+                    self._flux[im, iapt] = nan
+                else:
+                    self._flux[im, iapt] = data.sum() - self._sky_median[im].values * area
         self._cshift[:] = self._cur_centroids_pix - self._ref_centroids_pix
         return self.flux, self._sky_median.copy(), self.apt_entropy, self._sky_entropy.copy(), self.cshift
 
