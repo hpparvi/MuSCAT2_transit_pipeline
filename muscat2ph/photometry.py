@@ -702,12 +702,17 @@ class ScienceFrame(ImageFrame):
         for iapt, apt in enumerate(self._apertures_obj):
             masks = apt.to_mask()
             for im, m in enumerate(masks):
-                area = m.multiply(self._ones).sum()
-                data = m.multiply(reduced_data)
-                if any(data > 50000):
-                    self._flux[im, iapt] = nan
+                t = m.multiply(self._ones)
+                if t is not None:
+                    area = t.sum()
+                    data = m.multiply(reduced_data)
+                    if any(data > 50000):
+                        self._flux[im, iapt] = nan
+                    else:
+                        self._flux[im, iapt] = data.sum() - self._sky_median[im].values * area
                 else:
-                    self._flux[im, iapt] = data.sum() - self._sky_median[im].values * area
+                    self._flux[im, iapt] = nan
+
         self._cshift[:] = self._cur_centroids_pix - self._ref_centroids_pix
         return self.flux, self._sky_median.copy(), self.apt_entropy, self._sky_entropy.copy(), self.cshift
 
