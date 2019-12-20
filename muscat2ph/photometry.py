@@ -706,7 +706,7 @@ class ScienceFrame(ImageFrame):
                 if t is not None:
                     area = t.sum()
                     data = m.multiply(reduced_data)
-                    if any(data > 50000):
+                    if any(data > 60000):
                         self._flux[im, iapt] = nan
                     else:
                         self._flux[im, iapt] = data.sum() - self._sky_median[im].values * area
