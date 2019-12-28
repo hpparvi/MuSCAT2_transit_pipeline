@@ -210,9 +210,22 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         assert self.tid.size == self.nph
         assert self.cids.shape[0] == self.nph
 
-        times =  [array(ph.bjd) for ph in photometry]
-        fluxes = [array(ph.flux[:, tid, 1]) for tid,ph in zip(self.tid, photometry)]
-        fluxes = [f/nanmedian(f) for f in fluxes]
+        masks = []
+        for i, ph in enumerate(self.phs):
+            ids = concatenate([[self.tid[i]], self.cids[i]])
+            nanmask = isfinite(ph._flux[:, ids, amin:amax+1]).all(['star', 'aperture']).values
+            masks.append(nanmask)
+            ph._fmask &= nanmask
+
+        times, fluxes = [], []
+        for i,ph in enumerate(photometry):
+            try:
+                times.append(array(ph.bjd))
+                f = array(ph.flux[:, self.tid[i], 1])
+                fluxes.append(f / nanmedian(f))
+            except:
+                pass
+
         self.apertures = ones(len(times)).astype('int')
 
         self.tref = floor(times[0].min())
@@ -224,9 +237,12 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.covnames = 'airmass xshift yshift entropy'.split()
         covariates = []
         for ph in photometry:
-            covs = array(ph.aux)[:,[2,3,4,5]]
-            covs[:, 1:] = (covs[:, 1:] - median(covs[:, 1:], 0)) / covs[:, 1:].std(0)
-            covariates.append(covs)
+            try:
+                covs = array(ph.aux)[:,[2,3,4,5]]
+                covs[:, 1:] = (covs[:, 1:] - median(covs[:, 1:], 0)) / covs[:, 1:].std(0)
+                covariates.append(covs)
+            except:
+                pass
 
         wns = [ones(ph.nframes) for ph in photometry]
 
@@ -238,15 +254,16 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         else:
             tm = QuadraticModel(interpolate=True, klims=klims, nk=1024, nz=1024)
 
-        BaseLPF.__init__(self, target, filters, times, fluxes, wns, arange(len(photometry)), covariates, arange(len(photometry)), tm = tm)
+        BaseLPF.__init__(self, target, filters, times, fluxes, wns, arange(len(photometry)), covariates, arange(len(fluxes)), tm = tm)
 
         # Create the target and reference star flux arrays
         # ------------------------------------------------
-        self.ofluxes = [array(ph.flux[:, self.tid[i], amin:amax+1] / ph.flux[:, self.tid[i], amin:amax+1].median('mjd')) for i,ph in enumerate(photometry)]
-
-        self.refs = []
+        self.ofluxes, self.refs = [], []
         for ip, ph in enumerate(photometry):
-            self.refs.append([pad(array(ph.flux[:, cid, amin:amax+1]), ((0, 0), (1, 0)), mode='constant') for cid in self.cids[ip]])
+            ids = concatenate([[self.tid[ip]], self.cids[ip]])
+            flux = ph.flux[:, ids, amin:amax+1]
+            self.ofluxes.append(array(flux[:, 0, :] / flux[:, 0, :].median('mjd')))
+            self.refs.append([pad(array(flux[:, 1+i, :]), ((0, 0), (1, 0)), mode='constant') for i in range(len(self.cids[ip]))])
 
     def _init_parameters(self):
         self.ps = ParameterSet()
@@ -283,6 +300,10 @@ class M2LPF(LinearModelBaseline, BaseLPF):
                 self.ps.add_global_block('contamination', pcn)
                 self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
                 self._sl_cn = self.ps.blocks[-1].slice
+
+                def contamination_prior(pvp):
+                    return where(diff(pvp[:, 4:6])[:, 0] > 0, 0, -inf)
+                self.lnpriors.append(contamination_prior)
 
         # 2. Chromatic radius ratio
         # -------------------------
@@ -407,6 +428,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         fluxes = []
         if plot:
             fig, axs = subplots(1, self.npb, figsize=(13, 4), sharey='all')
+            axs = atleast_1d(axs)
         for ipb in range(self.npb):
             ft = self.ofluxes[ipb][:, iapt] / nanmedian(self.ofluxes[ipb][:, iapt])
             mask = ones(ft.size, bool)

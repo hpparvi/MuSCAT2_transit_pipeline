@@ -219,6 +219,11 @@ class PhotometryData:
         return bjd.jd
 
     @property
+    def _bjd(self):
+        bjd = self._mjd.tdb + self._mjd.light_travel_time(self.objskycoords)
+        return bjd.jd
+
+    @property
     def airmass(self):
         return self._aux.loc[self._fmask, 'airmass']
 

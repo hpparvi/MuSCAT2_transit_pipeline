@@ -357,7 +357,10 @@ class TFOPAnalysis(TransitAnalysis):
                 if i % stars_per_page == 0:
                     fig, axs = subplots(nrows, ncols, figsize=(figwidth, nrows * axheight), sharex='all')
                     iax = 0
-                self.plot_single_raw(axs.flat[iax], ph, istar, cid=cid, aid=aid)
+                try:
+                    self.plot_single_raw(axs.flat[iax], ph, istar, cid=cid, aid=aid)
+                except:
+                    pass
                 iax += 1
 
                 if ((i+1) % stars_per_page == 0) or i == nstars - 1:
@@ -377,14 +380,18 @@ class TFOPAnalysis(TransitAnalysis):
     def plot_single_raw(self, ax, ph, sid, cid, aid=-1, btime=300., nsamples=500):
         """Plot the raw flux of star `sid` normalized to the median of star `tid`."""
         toi = self.toi
-        time = ph.bjd
+        time = ph._bjd
+        m = isfinite(time) & isfinite(ph._flux[:,sid,aid])
+        time = time[m]
         t0 = floor(time[0])
 
-        flux = array(ph.flux[:, sid, aid] / ph.flux[:, self.tid, aid].median())
-        m = isfinite(time) & isfinite(flux)
-        time, flux = time[m], flux[m]
+        target_flux = median(ph._flux[m, self.tid, aid])
+        if not isfinite(target_flux):
+            target_flux = 1.
+
+        flux = array(ph._flux[m, sid, aid] / target_flux)
         fratio = median(flux)
-        flux /= array(ph.flux[:, cid, aid])
+        flux /= array(ph._flux[m, cid, aid])
         flux /= median(flux)
 
         # Flux median and std for y limits and outlier marking

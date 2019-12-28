@@ -23,8 +23,9 @@ from astropy.stats import sigma_clip
 from astropy.table import Table
 from matplotlib.artist import setp
 from matplotlib.pyplot import subplots
-from numpy import arange, sort, log10, sqrt, diff, unique, percentile, squeeze, array
+from numpy import arange, sort, log10, sqrt, diff, unique, percentile, squeeze, array, concatenate
 from numpy.random import uniform, permutation, normal
+from pytransit import LinearModelBaseline
 from pytransit.orbits import epoch
 
 from .m2baselpf import M2BaseLPF, downsample_time
@@ -107,6 +108,8 @@ class M2MultiNightLPF(M2BaseLPF):
             bcs.append(bc)
         wns = [diff(f).std() / sqrt(2) for f in bfs]
         self._init_data(bts, bfs, pbids=self.pbids, covariates=bcs, wnids=self.noise_ids)
+        self.ncov = array([c.shape[1] for c in self.covariates])  # Number of covariates per light curve
+        self.cova = concatenate([c.ravel() for c in self.covariates])  # Flattened covariate vector
 
     def plot_light_curves(self, method='de', width: float = 3., max_samples: int = 100, figsize=None, data_alpha=0.5, ylim=None):
         if method == 'mcmc':

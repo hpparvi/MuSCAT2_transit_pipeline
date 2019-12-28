@@ -33,7 +33,7 @@ from pytransit import QuadraticModel, QuadraticModelCL, BaseLPF, LinearModelBase
 from pytransit.contamination import SMContamination
 from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
 from pytransit.contamination.instrument import Instrument
-from pytransit.lpf.lpf import BaseLPF, map_pv, map_ldc
+from pytransit.lpf.lpf import map_pv, map_ldc
 from pytransit.orbits.orbits_py import as_from_rhop, duration_eccentric, i_from_ba, d_from_pkaiews, epoch
 from pytransit.param.parameter import NormalPrior as NP, UniformPrior as UP, LParameter, PParameter, ParameterSet, \
     GParameter
