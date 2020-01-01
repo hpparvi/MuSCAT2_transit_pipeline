@@ -164,6 +164,20 @@ def map_pv_achromatic_cnt(pv):
     pvt[:, 4] = i_from_ba(pv[:, 3], pvt[:, 3])
     return pvt
 
+@njit(parallel=False, fastmath=True)
+def flare(time, lcids, pbids, pvp, npb, nflares):
+    pvp = atleast_2d(pvp)
+    npt = time.size
+    npv = pvp.shape[0]
+    flux = zeros((npv,npt))
+    for i in range(npt):
+        for j in range(npv):
+            for k in range(nflares):
+                if time[i] >= pvp[j, k*(2+npb)]:
+                    pbid = pbids[lcids[i]]
+                    ii = k*(2+npb)
+                    flux[j,i] = pvp[j, ii+2+pbid]*exp(-((time[i]-pvp[j,ii])/pvp[j,ii+1]))
+    return flux
 
 class M2LPF(LinearModelBaseline, BaseLPF):
     def __init__(self, target: str, photometry: list, tid: int, cids: list,
@@ -183,6 +197,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.noise_model = noise_model
         self.radius_ratio = radius_ratio
         self.n_legendre = n_legendre
+        self.n_flares = 0
 
         # Set photometry
         # --------------
@@ -255,6 +270,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             tm = QuadraticModel(interpolate=True, klims=klims, nk=1024, nz=1024)
 
         BaseLPF.__init__(self, target, filters, times, fluxes, wns, arange(len(photometry)), covariates, arange(len(fluxes)), tm = tm)
+        self._start_flares = len(self.ps)
 
         # Create the target and reference star flux arrays
         # ------------------------------------------------
@@ -358,6 +374,23 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         filters = {'g': sdss_g, 'r': sdss_r, 'i':sdss_i, 'z_s':sdss_z}
         self.instrument = Instrument('MuSCAT2', [filters[pb] for pb in self.passbands])
         self.cm = SMContamination(self.instrument, self.instrument.filters[0].name)
+
+    def add_flare(self, loc, amp=(0, 0.2)):
+        self.n_flares += 1
+        iflare = self.n_flares
+
+        ps = self.ps
+        ps.thaw()
+        fp = [GParameter(f'f{iflare}s', f'flare {iflare} start time', 'd', NP(*loc), [-inf, inf]),
+              GParameter(f'f{iflare}w', f'flare {iflare} width', '-', UP(0, 0.01), [0, inf])]
+        for j in range(self.npb):
+            fp.append(GParameter(f'f{iflare}a{j}', f'flare {iflare} amplitude {j}', '-', UP(*amp), [0, inf]))
+        ps.add_global_block(f'flare_{iflare}', fp)
+        ps.freeze()
+
+        if iflare == 1:
+            self._start_flares = ps.blocks[-1].start
+        self._sl_flares = slice(self._start_flares, ps.blocks[-1].stop)
 
     def create_pv_population(self, npop=50):
         pvp = self.ps.sample_from_prior(npop)
@@ -519,21 +552,25 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.ofluxa[:] = self.relative_flux(pv)
         start_tap = self._start_tap
         start_err = self._start_err
+        stop_err = self._start_flares
         npar_orig = len(ps_orig)
 
         self.photometry_frozen = True
         self._init_parameters()
-        if self.with_transit:
-            self.ps.thaw()
-            for i in range(0, start_tap):
-                self.ps[i].prior = ps_orig[i].prior
-                self.ps[i].bounds = ps_orig[i].bounds
-            for i,j in enumerate(range(start_err, npar_orig)):
-                self.ps[start_tap + i].prior = ps_orig[j].prior
-                self.ps[start_tap + i].bounds = ps_orig[j].bounds
-            self.ps.freeze()
+        self.ps.thaw()
+        for i in range(0, start_tap):
+            self.ps[i].prior = ps_orig[i].prior
+            self.ps[i].bounds = ps_orig[i].bounds
+        for i, j in enumerate(range(start_err, stop_err)):
+            self.ps[start_tap + i].prior = ps_orig[j].prior
+            self.ps[start_tap + i].bounds = ps_orig[j].bounds
+        if self.n_flares > 0:
+            self.ps.add_global_block('flares', ps_orig[self._sl_flares])
+            self._sl_flares = self.ps.blocks[-1].slice
+            self._start_flares = self.ps.blocks[-1].start
+        self.ps.freeze()
         self.de = DiffEvol(self.lnposterior, clip(self.ps.bounds, -1, 1), self.de.n_pop, maximize=True, vectorize=True)
-        self.de._population[:,:] = self._frozen_population.copy()
+        self.de._population[:, :] = self._frozen_population.copy()
         self.de._fitness[:] = self.lnposterior(self._frozen_population)
 
     @property
@@ -597,11 +634,18 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         else:
             return 1.
 
+    def flare_model(self, pvp):
+        pvp = atleast_2d(pvp)
+        return squeeze(flare(self.timea, self.lcids, self.pbids, pvp[:, self._sl_flares], self.npb, self.n_flares))
+
     def flux_model(self, pv):
-        baseline    = self.baseline(pv)
-        trends      = self.trends(pv)
-        model_flux = self.transit_model(pv, copy=True)
-        return baseline * model_flux + trends
+        baseline = self.baseline(pv)
+        trends   = self.trends(pv)
+        transit  = self.transit_model(pv, copy=True).astype('d')
+        flux = baseline * transit + trends
+        if self.n_flares > 0:
+            flux += self.flare_model(pv)
+        return flux
 
     def relative_flux(self, pv):
         return self.target_flux(pv) / self.reference_flux(pv)
