@@ -42,7 +42,7 @@ def read_reduced_m2(datadir, pattern='*.fits'):
                 fobs = hdu.data['flux'].astype('d').copy() #* hdu.data['baseline'].astype('d').copy()
                 fmod = hdu.data['model'].astype('d').copy()
                 time = hdu.data['time_bjd'].astype('d').copy()
-                mask = ~sigma_clip(fobs-fmod, sigma=5).mask
+                mask = ~sigma_clip(fobs-fmod, sigma=3).mask
                 masks.append(mask)
                 times.append(time[mask])
                 fluxes.append(fobs[mask])

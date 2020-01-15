@@ -28,7 +28,7 @@ from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
     delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like, fmin, digitize, ceil, full, \
-    nan, transpose
+    nan, transpose, isscalar
 from numpy.polynomial import Polynomial
 from numpy.polynomial.legendre import legvander
 import astropy.units as u
@@ -638,14 +638,19 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         pvp = atleast_2d(pvp)
         return squeeze(flare(self.timea, self.lcids, self.pbids, pvp[:, self._sl_flares], self.npb, self.n_flares))
 
+    def trends(self, pv):
+        """Additive trends"""
+        if self.n_flares > 0:
+            return self.flare_model(pv)
+        else:
+            return 0.
+
     def flux_model(self, pv):
         baseline = self.baseline(pv)
         trends   = self.trends(pv)
-        transit  = self.transit_model(pv, copy=True).astype('d')
+        transit  = self.transit_model(pv, copy=True)
         flux = baseline * transit + trends
-        if self.n_flares > 0:
-            flux += self.flare_model(pv)
-        return flux
+        return flux.astype('d')
 
     def relative_flux(self, pv):
         return self.target_flux(pv) / self.reference_flux(pv)
@@ -968,6 +973,10 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         time = self.timea
 
         baseline = squeeze(self.baseline(pv))
+        trends = squeeze(self.trends(pv))
+        if isscalar(trends):
+            trends = zeros_like(baseline)
+
         if self.with_transit:
             transit = squeeze(self.transit_model(pv).astype('d'))
         else:
@@ -977,20 +986,20 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             target_flux = self.target_flux(pv)
             reference_flux = self.reference_flux(pv)
             relative_flux = target_flux / reference_flux
-            detrended_flux = relative_flux / baseline
+            detrended_flux = relative_flux / baseline - trends
         else:
             target_flux = self._target_flux
             reference_flux = self._reference_flux
             relative_flux = self.ofluxa
-            detrended_flux = relative_flux / baseline
+            detrended_flux = relative_flux / baseline - trends
 
         if self.cids.size == 0:
             reference_flux = ones_like(target_flux)
 
         for i, sl in enumerate(self.lcslices):
             df = Table(transpose([time[sl] + self.tref, detrended_flux[sl], relative_flux[sl], target_flux[sl],
-                                  reference_flux[sl], baseline[sl], transit[sl]]),
-                       names='time_bjd flux flux_rel flux_trg flux_ref baseline model'.split(),
+                                  reference_flux[sl], baseline[sl], transit[sl], trends[sl]]),
+                       names='time_bjd flux flux_rel flux_trg flux_ref baseline model trends'.split(),
                        meta={'extname': f"flux_{self.passbands[i]}", 'filter': self.passbands[i], 'trends': 'linear', 'wn': self.wn[i], 'radrat': self.radius_ratio})
             hdul.append(pf.BinTableHDU(df))
 
