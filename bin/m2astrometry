@@ -99,6 +99,7 @@ def process_datadir(datadir, logdir, file_prefix, file_postfix, start_frame, end
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('--root', type=Path, default=Path('.').absolute())
+    ap.add_argument('--name-glob', type=str, default='*', help='glob pattern that is matched against the object name.')
     ap.add_argument('--directory', type=Path, default=None)
     ap.add_argument('--target-catalog-name', type=str, default=None)
     ap.add_argument('-n', '--n-processes', type=int, default=6)
@@ -119,7 +120,7 @@ if __name__ == '__main__':
         objdir = args.root.joinpath('obj')
 
         if objdir.exists():
-            targets = list(objdir.glob('*'))
+            targets = list(objdir.glob(args.name_glob))
             for tdir in targets:
                 chdir(tdir.absolute())
                 for pb in passbands:
