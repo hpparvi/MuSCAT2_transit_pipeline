@@ -20,8 +20,10 @@ from time import strftime
 
 from astropy.stats import mad_std
 from astropy.utils.exceptions import AstropyWarning
+from matplotlib import cm
 from matplotlib.axis import Axis
 from numba import njit
+from photutils import CircularAperture
 
 warnings.simplefilter('ignore', category=AstropyWarning)
 
@@ -29,12 +31,13 @@ import pandas as pd
 import xarray as xa
 from astropy.io import fits as pf
 from astropy.table import Table
+from astropy.visualization import simple_norm as sn
 from corner import corner
 from matplotlib.pyplot import figure, figtext, setp, subplots
 from muscat2ph.catalog import get_m2_coords, get_coords
 from muscat2ph.phdata import PhotometryData
 from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze, atleast_1d, ceil, floor, array, isfinite, median,
-                   nanmedian, arange, digitize, zeros, nan, full, clip)
+                   nanmedian, arange, digitize, zeros, nan, full, clip, argmin, concatenate, full_like, atleast_2d)
 
 from pytransit.param import NormalPrior as NP, UniformPrior as UP
 
@@ -339,21 +342,78 @@ class TransitAnalysis:
             hdul.append(pf.BinTableHDU(df))
         hdul.writeto(self._dres.joinpath(self.savefile_name+'.fits'), overwrite=True)
 
-    def plot_raw_light_curves(self, pb: int, sids: int, aids: int):
+    def save_raw_fits(self, plot: bool = True, save: bool = True):
+        aids = []
+        for ph in self.phs:
+            aids.append(
+                argmin(mad_std((ph.flux[:, self.tid, :] / ph.flux[:, self.cids, :].sum('star')).diff('mjd').values, 0)))
+            aid = max(aids)
+        ids = concatenate([[self.tid], self.cids])
+
+        if plot:
+            dph = Path('.') / 'photometry' / self.date
+            stars = Table.read(list(dph.glob("*_stars.fits"))[0]).to_pandas().values[ids, 2:]
+            ref_files = sorted(dph.glob("*frame.fits"))
+            ref_file = ref_files[min(2, len(ref_files) - 1)]
+            data = pf.getdata(ref_file)
+
+            aradius = float(self.phs[0].flux.aperture[4])
+            apts = CircularAperture(stars, aradius)
+
+            fig, ax = subplots(figsize=(13, 13))
+            ax.imshow(data, cmap=cm.gray_r, origin='image',
+                      norm=sn(data, stretch='log', min_percent=10, max_percent=100))
+            apts.plot(axes=ax, color='k', linewidth=4)
+            apts.plot(axes=ax, color='w', linewidth=1.5)
+
+            for sid, (x, y) in zip(ids, stars):
+                ax.text(x + aradius + 12, y, sid, va='center', ha='left', size=15,
+                        bbox=dict(boxstyle='round4', facecolor='w'))
+
+            ax.set_title(f'{self.target} {self.date} raw photometry reference frame', size=15)
+            setp(ax, xlabel='x [pix]', ylabel='y [pix]')
+            fig.tight_layout()
+            fig.savefig(self._dplot / f"{self.target}_{self.date}_raw_reference.pdf")
+
+            for i in range(len(self.phs)):
+                fig = self.plot_raw_light_curves(i, ids, full_like(ids, aid), sharey='all')
+                fig.savefig(self._dplot / f"{self.target}_{self.date}_raw_{self.pbs[i]}.pdf")
+
+        if save:
+            hdul = pf.HDUList([pf.PrimaryHDU()])
+            for ipb, pb in enumerate(self.pbs):
+                ph = self.phs[ipb]
+                tb = Table(concatenate([atleast_2d(ph.bjd).T, ph.flux[:, ids, aid].values], 1),
+                           names=['time_bjd'] + [f"flux_{sid}" for sid in ids],
+                           meta={'extname': f"flux_{pb}", 'filter': pb, 'aperture': float(ph.flux.aperture[aid])})
+                hdul.append(pf.BinTableHDU(tb))
+
+            for i, pb in enumerate(self.pbs):
+                df = Table(self.lpf.covariates[i], names='sky xshift yshift entropy'.split(),
+                           meta={'extname': f'aux_{pb}'})
+                hdul.append(pf.BinTableHDU(df))
+
+            hdul.writeto(self._dres / f"{self.target}_{self.date}_raw.fits", overwrite=True)
+
+    def plot_raw_light_curves(self, pb: int, sids: int, aids: int, sharey='none'):
         sids = atleast_1d(sids)
         aids = atleast_1d(aids)
         nrows = int(ceil(sids.size / 2))
         ncols = min(sids.size, 2)
 
         fig, axs = subplots(nrows, ncols, figsize=(13, (4 if nrows == 1 else 2 * nrows)), constrained_layout=True,
-                            sharex='all', squeeze=False)
+                            sharex='all', sharey=sharey, squeeze=False)
         ph = self.phs[pb]
         for sid, aid, ax in zip(sids, aids, axs.flat):
             f = ph.flux[:, sid, aid]
             f /= f.median()
             ax.plot(ph.bjd - self.lpf.tref, f)
             ax.set_title(f"Star {sid}, aperture {aid}, scatter {float(f.diff('mjd').std('mjd') / sqrt(2)):.4f}")
-            setp(ax, xlabel=f"Time - {self.lpf.tref:.0f} [d]", ylabel='Normalised flux')
+            setp(ax, ylabel='Normalised flux')
+        if sharey != 'none':
+            setp(axs[:,1:], ylabel='')
+        setp(axs[-1,:], xlabel=f"Time - {self.lpf.tref:.0f} [d]")
+        return fig
 
     def plot_final_fit(self, model='linear', figwidth: float = 13):
         lpf = self.models[model]
