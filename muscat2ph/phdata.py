@@ -137,10 +137,11 @@ class PhotometryData:
             except:
                 print('Could not set the target sky coordinates')
 
+        ids = [tid] + cids
         self._fmask = ones(self.nframes, 'bool')
         self._fmask[self._mjd.value < self.mjd_start] = 0
         self._fmask[self._mjd.value > self.mjd_end] = 0
-        self._fmask &= self._flux.notnull().any(['star','aperture'])
+        self._fmask &= self._flux[:, ids, :].notnull().all(['star','aperture'])
         self._fmask = array(self._fmask)
 
         if self._excluded_ranges is not None:
