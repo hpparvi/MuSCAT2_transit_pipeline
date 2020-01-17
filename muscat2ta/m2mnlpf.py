@@ -31,27 +31,32 @@ from pytransit.orbits import epoch
 from .m2baselpf import M2BaseLPF, downsample_time
 
 
-def read_reduced_m2(datadir, pattern='*.fits'):
+def read_reduced_m2(datadir, pattern='*.fits', remove_trends=True):
     files = sorted(Path(datadir).glob(pattern))
-    times, fluxes, pbs, wns, covs, vars = [], [], [], [], [], []
+    times, fluxes, models, residuals, pbs, wns, covs, vars = [], [], [], [], [], [], [], []
     for f in files:
         with pf.open(f) as hdul:
             npb = (len(hdul)-1)//2
             masks = []
             for hdu in hdul[1:1+npb]:
-                fobs = hdu.data['flux'].astype('d').copy() #* hdu.data['baseline'].astype('d').copy()
+                if remove_trends:
+                    fobs = hdu.data['flux'].astype('d').copy()
+                else:
+                    fobs = hdu.data['flux'].astype('d').copy() * hdu.data['baseline'].astype('d').copy()
                 fmod = hdu.data['model'].astype('d').copy()
                 time = hdu.data['time_bjd'].astype('d').copy()
                 mask = ~sigma_clip(fobs-fmod, sigma=3).mask
                 masks.append(mask)
                 times.append(time[mask])
                 fluxes.append(fobs[mask])
+                models.append(fmod[mask])
+                residuals.append(fobs[mask]-fmod[mask])
                 pbs.append(hdu.header['filter'])
                 wns.append(hdu.header['wn'])
                 vars.append((fobs-fmod)[mask].var())
             for i in range(npb):
                 covs.append(Table.read(f, 1+npb+i).to_pandas().values[masks[i],:])
-    return times, fluxes, pbs, wns, covs, array(vars)
+    return times, fluxes, pbs, wns, covs, array(vars), models, residuals
 
 
 class M2MultiNightLPF(M2BaseLPF):
@@ -61,14 +66,16 @@ class M2MultiNightLPF(M2BaseLPF):
                  datadir='results', filename_pattern='*.fits'):
         self.datadir = datadir
         self.pattern = filename_pattern
+        self._reduction_residuals = None
         super().__init__(target, use_opencl, n_legendre, with_transit, with_contamination, radius_ratio, noise_model, klims)
 
     def _read_data(self):
-        times, fluxes, pbs, wns, covs, vars = read_reduced_m2(self.datadir, self.pattern)
+        times, fluxes, pbs, wns, covs, vars, models, residuals = read_reduced_m2(self.datadir, self.pattern)
         pbs = pd.Categorical(pbs, categories='g r i z_s'.split(), ordered=True).remove_unused_categories()
         pbnames = pbs.categories.values
         pbids = pbs.codes
         self._residual_vars = vars
+        self._reduction_residuals = residuals
         return pbnames, times, fluxes, covs, wns, pbids, arange(len(fluxes))
 
     def create_pv_population_b(self, npop=50):
@@ -99,15 +106,18 @@ class M2MultiNightLPF(M2BaseLPF):
         return pvp
 
     def downsample(self, exptime: float) -> None:
-        bts, bfs, bcs = [], [], []
+        bts, bfs, brs, bcs = [], [], [], []
         for i in range(len(self.times)):
             bt, bf = downsample_time(self.times[i], self.fluxes[i], exptime)
-            bt, bc = downsample_time(self.times[i], self.covariates[i], exptime)
+            _,  br = downsample_time(self.times[i], self._reduction_residuals[i], exptime)
+            _,  bc = downsample_time(self.times[i], self.covariates[i], exptime)
             bts.append(bt)
             bfs.append(bf)
+            brs.append(br)
             bcs.append(bc)
         wns = [diff(f).std() / sqrt(2) for f in bfs]
         self._init_data(bts, bfs, pbids=self.pbids, covariates=bcs, wnids=self.noise_ids)
+        self._reduction_residuals = brs
         self.ncov = array([c.shape[1] for c in self.covariates])  # Number of covariates per light curve
         self.cova = concatenate([c.ravel() for c in self.covariates])  # Flattened covariate vector
 
