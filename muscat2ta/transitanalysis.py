@@ -354,26 +354,29 @@ class TransitAnalysis:
             dph = Path('.') / 'photometry' / self.date
             stars = Table.read(list(dph.glob("*_stars.fits"))[0]).to_pandas().values[ids, 2:]
             ref_files = sorted(dph.glob("*frame.fits"))
-            ref_file = ref_files[min(2, len(ref_files) - 1)]
-            data = pf.getdata(ref_file)
+            if len(ref_files) > 0:
+                ref_file = ref_files[min(2, len(ref_files) - 1)]
+                data = pf.getdata(ref_file)
 
-            aradius = float(self.phs[0].flux.aperture[4])
-            apts = CircularAperture(stars, aradius)
+                aradius = float(self.phs[0].flux.aperture[4])
+                apts = CircularAperture(stars, aradius)
 
-            fig, ax = subplots(figsize=(13, 13))
-            ax.imshow(data, cmap=cm.gray_r, origin='image',
-                      norm=sn(data, stretch='log', min_percent=10, max_percent=100))
-            apts.plot(axes=ax, color='k', linewidth=4)
-            apts.plot(axes=ax, color='w', linewidth=1.5)
+                fig, ax = subplots(figsize=(13, 13))
+                ax.imshow(data, cmap=cm.gray_r, origin='image',
+                          norm=sn(data, stretch='log', min_percent=10, max_percent=100))
+                apts.plot(axes=ax, color='k', linewidth=4)
+                apts.plot(axes=ax, color='w', linewidth=1.5)
 
-            for sid, (x, y) in zip(ids, stars):
-                ax.text(x + aradius + 12, y, sid, va='center', ha='left', size=15,
-                        bbox=dict(boxstyle='round4', facecolor='w'))
+                for sid, (x, y) in zip(ids, stars):
+                    ax.text(x + aradius + 12, y, sid, va='center', ha='left', size=15,
+                            bbox=dict(boxstyle='round4', facecolor='w'))
 
-            ax.set_title(f'{self.target} {self.date} raw photometry reference frame', size=15)
-            setp(ax, xlabel='x [pix]', ylabel='y [pix]')
-            fig.tight_layout()
-            fig.savefig(self._dplot / f"{self.target}_{self.date}_raw_reference.pdf")
+                ax.set_title(f'{self.target} {self.date} raw photometry reference frame', size=15)
+                setp(ax, xlabel='x [pix]', ylabel='y [pix]')
+                fig.tight_layout()
+                fig.savefig(self._dplot / f"{self.target}_{self.date}_raw_reference.pdf")
+            else:
+                warnings.warn("Couldn't create a reference frame figure.")
 
             for i in range(len(self.phs)):
                 fig = self.plot_raw_light_curves(i, ids, full_like(ids, aid), sharey='all')
