@@ -85,30 +85,38 @@ class TFOPAnalysis(TransitAnalysis):
                  excluded_mjd_ranges: tuple = None,
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
-                 radius_ratio: str = 'chromatic', excluded_stars=(), toi=None, klims=(0.005, 0.25)):
+                 radius_ratio: str = 'chromatic', excluded_stars=(), toi=None, klims=(0.005, 0.25),
+                 clear_field_only: bool = False):
 
         super().__init__(target, date, tid, cids, dataroot=dataroot,
                  nlegendre=nlegendre,  npop=npop,  mjd_start=mjd_start, mjd_end=mjd_end,
                  excluded_mjd_ranges=excluded_mjd_ranges,
                  aperture_lims=aperture_lims, passbands=passbands,
                  use_opencl=use_opencl, with_transit=with_transit, with_contamination=with_contamination,
-                 radius_ratio=radius_ratio, klims=klims)
+                 radius_ratio=radius_ratio, klims=klims, init_lpf=(not clear_field_only))
 
         # Get the TOI information
         # -----------------------
         if toi is not None:
             self.toi = toi
             self.ticname = 'TIC{:d}-{}'.format(int(self.toi.tic), str(self.toi.toi).split('.')[1])
-            self.lpf.toi = self.toi
+            if self.lpf:
+                self.lpf.toi = self.toi
         else:
             try:
                 self.toi = get_toi(float(target.lower().strip('toi')))
                 self.ticname = 'TIC{:d}-{}'.format(int(self.toi.tic), str(self.toi.toi).split('.')[1])
-                self.lpf.toi = self.toi
+                if self.lpf:
+                    self.lpf.toi = self.toi
             except ValueError:
                 warnings.warn(f"Couldn't identify {target.lower()} and no TOI given")
 
-        self.passbands = self.lpf.passbands
+        #TODO: Clean passbands vs pbs
+        if self.lpf:
+            self.passbands = self.lpf.passbands
+        else:
+            self.passbands = self.pbs
+
         self.excluded_stars = excluded_stars
 
         # Set priors
@@ -116,8 +124,14 @@ class TFOPAnalysis(TransitAnalysis):
         self.t0 = ufloat(*self.toi.epoch)
         self.pr = ufloat(*self.toi.period)
         self.t14 = ufloat(*self.toi.duration/24)
-        self.ep = epoch(self.lpf.timea.mean() + self.lpf.tref, self.t0.n, self.pr.n)
-        self.tc = self.t0 + self.ep * self.pr - self.lpf.tref
+        if self.lpf:
+            self.ep = epoch(self.lpf.timea.mean() + self.lpf.tref, self.t0.n, self.pr.n)
+            self.tc = self.t0 + self.ep * self.pr - self.lpf.tref
+            tmin, tmax = self.lpf.timea.min(), self.lpf.timea.max()
+        else:
+            self.ep = epoch(array(self.phs[0]._bjd).mean(), self.t0.n, self.pr.n)
+            self.tc = self.t0 + self.ep * self.pr
+            tmin, tmax = array(self.phs[0]._bjd).min(), array(self.phs[0]._bjd).max()
 
         self.transit_start = self.tc - 0.5 * ufloat(*self.toi.duration / 24)
         self.transit_center = self.tc
@@ -128,8 +142,6 @@ class TFOPAnalysis(TransitAnalysis):
         ns = 2000
         tc_samples = normal(self.tc.n, self.tc.s, ns)
         td_samples = normal(self.t14.n, self.t14.s, ns)
-
-        tmin, tmax = self.lpf.timea.min(), self.lpf.timea.max()
 
         d_ingress_in_window = (tmin < tc_samples - 0.5 * td_samples) & (tc_samples - 0.5 * td_samples < tmax)
         d_egress_in_window = (tmin < tc_samples + 0.5 * td_samples) & (tc_samples + 0.5 * td_samples < tmax)
@@ -146,15 +158,14 @@ class TFOPAnalysis(TransitAnalysis):
 
         # Set priors
         # ----------
-        self.set_prior('tc', NP(self.tc.n, self.tc.s))
-        self.set_prior('p', NP(*self.toi.period))
-        self.add_t14_prior(self.toi.duration[0] / 24, 0.5*self.toi.duration[1] / 24)
-        self.lpf.add_inside_window_prior()
-
-        for p in self.lpf.ps[self.lpf._sl_k2]:
-            p.prior = UP(0.25 * self.toi.depth[0] * 1e-6, 4 * self.toi.depth[0] * 1e-6)
-
-        self.lpf.aid = 4
+        if self.lpf:
+            self.set_prior('tc', NP(self.tc.n, self.tc.s))
+            self.set_prior('p', NP(*self.toi.period))
+            self.add_t14_prior(self.toi.duration[0] / 24, 0.5*self.toi.duration[1] / 24)
+            self.lpf.add_inside_window_prior()
+            for p in self.lpf.ps[self.lpf._sl_k2]:
+                p.prior = UP(0.25 * self.toi.depth[0] * 1e-6, 4 * self.toi.depth[0] * 1e-6)
+            self.lpf.aid = 4
 
         self.distances = self.phs[0].distances_arcmin
 
@@ -294,7 +305,8 @@ class TFOPAnalysis(TransitAnalysis):
             fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{ptype}.pdf"))
         return fig, axs
 
-    def plot_possible_blends(self, cid: int, aid: int, stars: list = None, ncols: int = 3, nrows: int = 4,
+    def plot_possible_blends(self, cid: int, aid: int, stars: list = None, c_flux_factor: float = None,
+                             ncols: int = 3, nrows: int = 4,
                              max_separation: float = 2.5, figwidth: float = 13, axheight: float = 2.5,
                              pbs: tuple = None, save: bool = True, close_figures: bool = False) -> None:
         """
@@ -349,16 +361,21 @@ class TFOPAnalysis(TransitAnalysis):
         nstars = len(stars)
         stars_per_page = nrows * ncols
 
-        for pb, ph in zip(passbands, phs):
+        for pbi, (pb, ph) in enumerate(zip(passbands, phs)):
             plotname = self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{pb}_possible_blends.pdf")
             pdf = PdfPages(plotname) if save else None
+
+            if c_flux_factor is not None:
+                ref_flux = c_flux_factor * nanmedian(ph._flux[:,cid,aid])
+            else:
+                ref_flux = None
 
             for i, istar in enumerate(tqdm(stars, leave=False)):
                 if i % stars_per_page == 0:
                     fig, axs = subplots(nrows, ncols, figsize=(figwidth, nrows * axheight), sharex='all')
                     iax = 0
                 try:
-                    self.plot_single_raw(axs.flat[iax], ph, istar, cid=cid, aid=aid)
+                    self.plot_single_raw(pbi, istar, cid=cid, aid=aid, ax=axs.flat[iax], reference_flux=ref_flux)
                 except:
                     pass
                 iax += 1
@@ -377,22 +394,33 @@ class TFOPAnalysis(TransitAnalysis):
             if save:
                 pdf.close()
 
-    def plot_single_raw(self, ax, ph, sid, cid, aid=-1, btime=300., nsamples=500):
+    def plot_single_raw(self, phi: int, sid: int, cid: int, aid: int = -1, btime=300., nsamples=500,
+                        reference_flux: float = None, ax=None):
         """Plot the raw flux of star `sid` normalized to the median of star `tid`."""
+        if ax is None:
+            fig, ax = subplots()
+        else:
+            fig, ax = None, ax
+
+        ph = self.phs[phi]
         toi = self.toi
+
         time = ph._bjd
-        m = isfinite(time) & isfinite(ph._flux[:,sid,aid])
+        m = isfinite(time) & isfinite(ph._flux[:,sid,aid]) & ph.exclusion_mask
         time = time[m]
         t0 = floor(time[0])
 
-        target_flux = median(ph._flux[m, self.tid, aid])
-        if not isfinite(target_flux):
-            target_flux = 1.
+        if reference_flux is not None:
+            target_flux = reference_flux
+        else:
+            target_flux = nanmedian(ph._flux[m, self.tid, aid])
+            if not isfinite(target_flux):
+                target_flux = 1.
 
         flux = array(ph._flux[m, sid, aid] / target_flux)
-        fratio = median(flux)
+        fratio = nanmedian(flux)
         flux /= array(ph._flux[m, cid, aid])
-        flux /= median(flux)
+        flux /= nanmedian(flux)
 
         # Flux median and std for y limits and outlier marking
         # ----------------------------------------------------
@@ -422,7 +450,7 @@ class TFOPAnalysis(TransitAnalysis):
 
         # Transit centre, ingress, and egress
         # -----------------------------------
-        tn = round((mean(ph.bjd) - toi.epoch[0]) / toi.period[0])
+        tn = round((mean(ph._bjd) - toi.epoch[0]) / toi.period[0])
         center = normal(*toi.epoch, size=nsamples) + tn * normal(*toi.period, size=nsamples) - t0
         ax.axvspan(*percentile(center, [16, 84]), alpha=0.15)
         ax.axvline(median(center), lw=1)
@@ -513,7 +541,7 @@ class TFOPAnalysis(TransitAnalysis):
         with PdfPages(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_covariates.pdf")) as pdf:
             for ipb, ph in enumerate(self.phs):
                 fig, axs = subplots(2, 2, figsize=figsize, sharex=True)
-                aux, time = ph.aux, ph.bjd
+                aux, time = ph.nmaux, ph._bjd
                 t0 = floor(time.min())
                 for i in range(4):
                     ax = axs.flat[i]
@@ -530,9 +558,9 @@ class TFOPAnalysis(TransitAnalysis):
 
     def export_tables(self):
         for i, ph in enumerate(self.phs):
-            data = concatenate([atleast_2d(ph.bjd).T,
-                                array(ph.flux[:, :, ph._rset.tap]),
-                                array(ph.aux[:, 1:])], axis=1)
+            data = concatenate([atleast_2d(ph._bjd[ph.exclusion_mask]).T,
+                                array(ph._flux[ph.exclusion_mask, :, ph._rset.tap]),
+                                array(ph.nmaux[ph.exclusion_mask, 1:])], axis=1)
             df = pd.DataFrame(data, columns=['BJD_TDB'] + [f'flux_star_{i}' for i in range(ph.flux.shape[1])] + ['sky',
                                                                                                            'airmass',
                                                                                                            'xshift',
@@ -571,7 +599,7 @@ class TFOPAnalysis(TransitAnalysis):
 
         try:
             tap, raps = self.lpf.frozen_apertures
-        except IndexError:
+        except (IndexError, AttributeError):
             tap, raps = '-', '-'
 
         with open(dsubmit / f"{self.ticname}_20{self.date}_MuSCAT2_report.txt", "w") as f:

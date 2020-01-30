@@ -138,9 +138,12 @@ class PhotometryData:
                 print('Could not set the target sky coordinates')
 
         ids = [tid] + cids
+        self.exclusion_mask = ones(self.nframes, 'bool')
+        self.exclusion_mask[self._mjd.value < self.mjd_start] = 0
+        self.exclusion_mask[self._mjd.value > self.mjd_end] = 0
+
         self._fmask = ones(self.nframes, 'bool')
-        self._fmask[self._mjd.value < self.mjd_start] = 0
-        self._fmask[self._mjd.value > self.mjd_end] = 0
+        self._fmask &= self.exclusion_mask
         self._fmask &= self._flux[:, ids, :].notnull().all(['star','aperture'])
         self._fmask = array(self._fmask)
 
@@ -193,6 +196,7 @@ class PhotometryData:
         mask = ones(self.nframes, bool)
         for mr in mjd_ranges:
             mask &= ~((self._mjd.value > mr[0]) & (self._mjd.value < mr[1]))
+        self.exclusion_mask &= mask
         self._fmask &= mask
 
     @property
@@ -200,6 +204,13 @@ class PhotometryData:
         return xa.DataArray(list(map(array, [self.mjd.value, self.sky, self.airmass, self.xshift, self.yshift, self.entropy])),
                      name='aux', dims='quantity mjd'.split(),
                      coords={'mjd': self.mjd.value,
+                             'quantity': 'mjd sky airmass xshift yshift entropy'.split()}).T
+
+    @property
+    def nmaux(self):
+        return xa.DataArray(list(map(array, [self._mjd.value, self.nmsky, self.nmairmass, self.nmxshift, self.nmyshift, self.nmentropy])),
+                     name='aux', dims='quantity mjd'.split(),
+                     coords={'mjd': self._mjd.value,
                              'quantity': 'mjd sky airmass xshift yshift entropy'.split()}).T
 
     @property
@@ -225,6 +236,10 @@ class PhotometryData:
         return bjd.jd
 
     @property
+    def nmairmass(self):
+        return self._aux.loc[:, 'airmass']
+
+    @property
     def airmass(self):
         return self._aux.loc[self._fmask, 'airmass']
 
@@ -233,8 +248,16 @@ class PhotometryData:
         return self._sky[self._fmask, r_[self.tid, self.cids].astype(int)].mean('star') / array(self._aux.loc[self._fmask, 'exptime'])
 
     @property
+    def nmsky(self):
+        return self._sky[:, r_[self.tid, self.cids].astype(int)].mean('star') / array(self._aux.loc[:, 'exptime'])
+
+    @property
     def entropy(self):
         return self._ds.obj_entropy[self._fmask, r_[self.tid, self.cids].astype(int), self.iapt].mean('star')
+
+    @property
+    def nmentropy(self):
+        return self._ds.obj_entropy[:, r_[self.tid, self.cids].astype(int), self.iapt].mean('star')
 
     @property
     def effective_fwhm(self):
@@ -242,9 +265,19 @@ class PhotometryData:
         return self._fwhm[self._fmask, sids, self.iapt].mean('star')
 
     @property
+    def nmxshift(self):
+        sids = r_[self.tid, self.cids].astype(int)
+        return (self._cnt[:, sids, 0] - self._cnt[:, sids, 0][0]).mean('star')
+
+    @property
     def xshift(self):
         sids = r_[self.tid, self.cids].astype(int)
         return (self._cnt[self._fmask, sids, 0] - self._cnt[self._fmask, sids, 0][0]).mean('star')
+
+    @property
+    def nmyshift(self):
+        sids = r_[self.tid, self.cids].astype(int)
+        return (self._cnt[:, sids, 1] - self._cnt[:, sids,1][0]).mean('star')
 
     @property
     def yshift(self):

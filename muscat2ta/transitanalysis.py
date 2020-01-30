@@ -83,7 +83,7 @@ class TransitAnalysis:
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
                  radius_ratio: str = 'achromatic', klims=(0.005, 0.25),
-                 catalog_name: str = None):
+                 catalog_name: str = None, init_lpf: bool = True):
 
         self.target: str = target
         self.date: str = date
@@ -98,6 +98,7 @@ class TransitAnalysis:
         self.use_opencl = use_opencl
         self.with_transit = with_transit
         self.with_contamination = with_contamination
+        self.init_lpf = init_lpf
         self.toi = None
 
         self._old_de_population = None
@@ -129,15 +130,18 @@ class TransitAnalysis:
         if len(self.phs) == 0:
             raise ValueError('No photometry files found.')
 
-        self.lpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl,
-                         with_transit=with_transit, with_contamination=with_contamination,
-                         n_legendre=nlegendre, radius_ratio=radius_ratio, klims=klims)
-        if with_transit:
-            self.lpf.set_prior(0, NP(self.lpf.times[0].mean(), 0.2*self.lpf.times[0].ptp()))
+        if self.init_lpf:
+            self.lpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl,
+                             with_transit=with_transit, with_contamination=with_contamination,
+                             n_legendre=nlegendre, radius_ratio=radius_ratio, klims=klims)
+            if with_transit:
+                self.lpf.set_prior(0, NP(self.lpf.times[0].mean(), 0.2*self.lpf.times[0].ptp()))
 
-        self.pbs = self.lpf.passbands
-        self.pv = None
-
+            self.pbs = self.lpf.passbands
+            self.pv = None
+        else:
+            self.lpf = None
+            self.pv = None
 
     def print_ptp_scatter(self):
         r1s = [res.std() for res in self.gplpf.residuals(self.gp_pv)]
