@@ -8,8 +8,8 @@ The pipeline requires a set of Python packages that can be easily installed usin
 
 .. code-block:: bash
 
-    conda install numpy scipy tqdm traitlets pandas xarray matplotlib seaborn numba uncertainties
-    conda install -c conda-forge astropy pyopencl emcee corner
+    conda install numpy scipy tqdm traitlets pandas xarray matplotlib seaborn numba
+    conda install -c conda-forge astropy pyopencl ocl-icd-system emcee corner uncertainties pybind11 george
     conda install -c astropy astroquery photutils
 
 The pipeline relies also on `PyTransit` and `LDTk`, and these are best to be cloned from GitHub for easy updating.
