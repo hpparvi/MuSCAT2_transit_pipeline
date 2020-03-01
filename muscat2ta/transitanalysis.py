@@ -83,7 +83,8 @@ class TransitAnalysis:
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
                  radius_ratio: str = 'achromatic', klims=(0.005, 0.25),
-                 catalog_name: str = None, init_lpf: bool = True):
+                 catalog_name: str = None, init_lpf: bool = True,
+                 check_saturation: bool = True):
 
         self.target: str = target
         self.date: str = date
@@ -126,9 +127,18 @@ class TransitAnalysis:
         files, pbs = get_files(self.dataroot, target, date, passbands)
         self.phs = [PhotometryData(f, tid, cids, objname=target, objskycoords=self.target_coordinates,
                                    mjd_start=mjd_start, mjd_end=mjd_end, excluded_ranges=excluded_mjd_ranges) for f in files]
+        self.passbands = self.pbs = pbs
 
         if len(self.phs) == 0:
             raise ValueError('No photometry files found.')
+
+        if check_saturation:
+            for istar in concatenate([[self.tid], self.cids]):
+                for ipb, pb in enumerate(self.passbands):
+                    f = self.phs[ipb]._flux[:, istar, -1]
+                    nnan = int((~isfinite(f)).sum())
+                    if nnan > 0:
+                        print(f"WARNING: {100 * nnan / f.shape[0]:6.2f}% of the star {istar} points are NaN in passband {pb}.")
 
         if self.init_lpf:
             self.lpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl,
@@ -346,28 +356,32 @@ class TransitAnalysis:
             hdul.append(pf.BinTableHDU(df))
         hdul.writeto(self._dres.joinpath(self.savefile_name+'.fits'), overwrite=True)
 
-    def save_raw_fits(self, plot: bool = True, save: bool = True):
-        aids = []
-        for ph in self.phs:
-            aids.append(
-                argmin(mad_std((ph.flux[:, self.tid, :] / ph.flux[:, self.cids, :].sum('star')).diff('mjd').values, 0)))
-            aid = max(aids)
+    def save_raw_fits(self, plot: bool = True, save: bool = True, aid: int = None):
+        if not aid:
+            aids = []
+            for ph in self.phs:
+                aids.append(
+                    argmin(mad_std((ph.flux[:, self.tid, :] / ph.flux[:, self.cids, :].sum('star')).diff('mjd').values, 0)))
+                aid = max(aids)
+
         ids = concatenate([[self.tid], self.cids])
 
         if plot:
             dph = Path('.') / 'photometry' / self.date
-            stars = Table.read(list(dph.glob("*_stars.fits"))[0]).to_pandas().values[ids, 2:]
+            stars = Table.read(list(dph.glob("*_stars.fits"))[0]).to_pandas()[['x', 'y']].values[ids]
             ref_files = sorted(dph.glob("*frame.fits"))
             if len(ref_files) > 0:
                 ref_file = ref_files[min(2, len(ref_files) - 1)]
                 data = pf.getdata(ref_file)
 
-                aradius = float(self.phs[0].flux.aperture[4])
+                aradius = float(self.phs[0].flux.aperture[aid])
                 apts = CircularAperture(stars, aradius)
+                apt_target = CircularAperture(stars[0], 0.7*aradius)
 
                 fig, ax = subplots(figsize=(13, 13))
                 ax.imshow(data, cmap=cm.gray_r, origin='image',
                           norm=sn(data, stretch='log', min_percent=10, max_percent=100))
+                apt_target.plot(axes=ax, color='k', linewidth=1)
                 apts.plot(axes=ax, color='k', linewidth=4)
                 apts.plot(axes=ax, color='w', linewidth=1.5)
 
