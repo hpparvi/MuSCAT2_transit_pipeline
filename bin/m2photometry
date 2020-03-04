@@ -27,7 +27,7 @@ from pathlib import Path
 import xarray as xa
 from astropy.io import fits as pf
 from astropy.wcs.wcs import NoConvergence
-from numpy import zeros, inf, array, c_, nan, full_like, float32
+from numpy import zeros, inf, array, c_, nan, full_like, float32, seterr
 from tqdm import tqdm
 
 import matplotlib as mpl
@@ -40,6 +40,8 @@ from muscat2ph.catalog import get_m2_coords, get_toi, get_toi_or_tic_coords, get
 from astropy.utils.exceptions import AstropyDeprecationWarning
 import warnings
 warnings.filterwarnings("error", category=AstropyDeprecationWarning)
+
+seterr(invalid='ignore')
 
 passbands = 'g r i z_s'.split()
 
@@ -258,8 +260,8 @@ if __name__ == '__main__':
                 im.save_reference_stars(stars_file)
 
             im.load_reference_stars(stars_file)
-            if TFOP or args.apply_separation_cut:
-                im.cut_separation(target_sky_coords, args.separation_cut_distance)
+            #if TFOP or args.apply_separation_cut:
+            #    im.cut_separation(target_sky_coords, args.separation_cut_distance)
 
             cc = COMCentroider(im, None, aperture_radius=apertures[0])
             if not 'sids' in centroider_kwargs or centroider_kwargs['sids'] is None:
