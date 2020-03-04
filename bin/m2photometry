@@ -241,14 +241,20 @@ if __name__ == '__main__':
             # Find, cut, save, and load the stars
             # -----------------------------------
             if (args.save_stars and ipb==0) or not stars_file.exists():
-                logging.info("Searching for stars")
-                im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords,
-                              treshold=find_treshold, mf_size=args.find_mf)
-                im.cut_margin(args.border_margin)
-                if TFOP or args.apply_separation_cut:
-                    im.cut_separation(target_sky_coords, args.separation_cut_distance)
-                    im.remove_doubles(target_sky_coords, args.double_removal_distance)
-                    logging.info(f"Applying separation cut and double removal: {im.nstars} left")
+                if len(files_with_wcs[pb]) > 0:
+                    logging.info("Searching for stars from the GAIA catalog")
+                    im.load_fits(files_with_wcs[pb][0])
+                    im.find_stars_gaia(target_sky=target_sky_coords, 6, 0.005)
+                    logging.info(f"- Found {im.nstars} stars")
+                else:
+                    logging.info("Searching for stars")
+                    im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords,
+                                  treshold=find_treshold, mf_size=args.find_mf)
+                    im.cut_margin(args.border_margin)
+                    if TFOP or args.apply_separation_cut:
+                        im.cut_separation(target_sky_coords, args.separation_cut_distance)
+                        im.remove_doubles(target_sky_coords, args.double_removal_distance)
+                        logging.info(f"Applying separation cut and double removal: {im.nstars} left")
                 im.save_reference_stars(stars_file)
 
             im.load_reference_stars(stars_file)

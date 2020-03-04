@@ -29,6 +29,7 @@ from astropy.stats import sigma_clipped_stats
 from astropy.table import Table
 from astropy.visualization import simple_norm as sn
 from astropy.wcs import WCS, FITSFixedWarning
+from astroquery.gaia import Gaia
 from matplotlib import cm
 from matplotlib.pyplot import subplots, figure, subplot, setp
 from numpy import *
@@ -43,16 +44,34 @@ from tqdm import tqdm
 
 passbands = 'g r i z_s'.split()
 
+
 def dflat(root, passband):
     return root.joinpath('calibs', 'flat', passband)
 
+
 def ddark(root, passband):
     return root.joinpath('calibs', 'dark', passband)
+
 
 def entropy(a):
     a = a - a.min() + 1e-10
     a = a / a.sum()
     return -(a*log(a)).sum()
+
+
+def ensure_pos(pos):
+    pos = asarray(pos)
+    if pos.shape[1] != 2:
+        if pos.shape[0] != 2:
+            raise ValueError("Aperture position array dimensions should be (n,2)")
+        pos = pos.T
+    return pos
+
+
+def is_inside_frame(p, width: float = 1024, height: float = 1024, xpad: float = 15, ypad: float = 15):
+    p = ensure_pos(p)
+    return (p[:, 0] > ypad) & (p[:, 0] < height - ypad) & (p[:, 1] > xpad) & (p[:, 1] < width - xpad)
+
 
 class Centroider:
     def __init__(self, image, sids=None, nstars=inf, aperture_radius=20):
@@ -410,6 +429,39 @@ class ScienceFrame(ImageFrame):
         else:
             self.set_reference_stars(cpix)
 
+    def find_stars_gaia(self, target_sky: SkyCoord, radius: float = 6, min_flux_ratio: float = 0.005):
+        cs = Gaia.cone_search_async(target_sky, radius * u.arcmin)
+        tb = cs.get_results()
+
+        # Flux ratio cut
+        # --------------
+        relative_fluxes = array(tb['phot_rp_mean_flux'] / tb['phot_rp_mean_flux'][0])
+        tb = tb[relative_fluxes > min_flux_ratio]
+
+        # Inside-frame cut
+        # ----------------
+        stars = SkyCoord(tb['ra'], tb['dec'])
+        pos = stars.to_pixel(self._wcs)
+
+        m = is_inside_frame(pos, self.height, self.width, self.margin, self.margin)
+        pos = ensure_pos((pos[0][m], pos[1][m]))
+        tb = tb[m]
+
+        fratio = tb['phot_rp_mean_flux'].compressed() + tb['phot_g_mean_flux'].compressed() + tb[
+            'phot_bp_mean_flux'].compressed()
+        fratio = fratio / fratio[0]
+
+        sids = argsort(fratio[1:])[::-1]
+        fratio[1:] = fratio[1:][sids]
+        pos[1:] = pos[1:][sids]
+        tb[1:] = tb[1:][sids]
+        self._gaia_source_table = tb
+        self._flux_ratios = fratio
+        self.nstars = pos.shape[0]
+        cpix = pos
+        self._initialize_tables(self.nstars, self.napt)
+        csky = pd.DataFrame(self._wcs.all_pix2world(pos, 0), columns='RA Dec'.split())
+        self.set_reference_stars(cpix, csky=csky)
 
     def find_stars_dao(self, fwhm=5, maxn=100, target_sky=None, target_pix=None):
         data = self.reduced
