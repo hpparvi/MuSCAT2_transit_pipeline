@@ -34,7 +34,8 @@ import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as pl
 
-from muscat2ph.photometry import ScienceFrame, COMCentroider
+from muscat2ph.photometry import ScienceFrame
+from muscat2ph.centroider import COMCentroider
 from muscat2ph.catalog import get_m2_coords, get_toi, get_toi_or_tic_coords, get_coords
 
 from astropy.utils.exceptions import AstropyDeprecationWarning
