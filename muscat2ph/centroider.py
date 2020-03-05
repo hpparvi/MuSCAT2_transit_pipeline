@@ -17,7 +17,7 @@
 import warnings
 
 from numpy import inf, amin, nan, argsort, meshgrid, clip, percentile, flip, nanmean, log
-from numpy.core._multiarray_umath import arange, zeros, sqrt, isfinite, array
+from numpy import arange, zeros, sqrt, isfinite, array, all, squeeze
 from photutils import CircularAperture
 from scipy.ndimage import median_filter as mf, center_of_mass as com
 from scipy.optimize import minimize
@@ -34,7 +34,7 @@ def entropy(a):
 
 class Centroider:
 
-    def __init__(self, image, sids=None, nstars: int = inf, aperture_radius: float = 20):
+    def __init__(self, image, sids=None, nstars: int = 10, aperture_radius: float = 20):
         self.image = image
         self.image.centroider = self
         self.r = aperture_radius
@@ -42,8 +42,8 @@ class Centroider:
         if sids is None:
             self.select_stars(nstars)
         else:
-            self.sids = sids
-            self.nstars = len(self.sids)
+            self.sids = squeeze(sids)
+            self.nstars = self.sids.size
             self.apt = CircularAperture(self.image._cur_centroids_pix[self.sids], self.r)
 
     def calculate_minimum_distances(self):
@@ -82,6 +82,7 @@ class Centroider:
         self.sids = ids
         self.nstars = len(self.sids)
         self.apt = CircularAperture(self.image._cur_centroids_pix[self.sids], self.r)
+        self.image.centroid_star_ids = ids
 
     def set_data(self, image, filter_footprint=4):
         self.data = mf(self.image.reduced, filter_footprint)
@@ -165,5 +166,5 @@ class COMCentroider(Centroider):
         shifts = self.calculate_centroid_shift(pmin, pmax, niter)
         m = all(isfinite(shifts), 1)
         self.transform = nudged.estimate(self.image._ref_centroids_pix[self.sids][m], shifts[m])
-        self.image._cur_centroids_pix[:] = array(self.transform.transform(self._ref_centroids_pix.T)).T
+        self.image._cur_centroids_pix[:] = array(self.transform.transform(self.image._ref_centroids_pix.T)).T
         self.image._update_apertures(self.image._cur_centroids_pix)

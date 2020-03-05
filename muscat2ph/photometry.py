@@ -187,6 +187,7 @@ class ScienceFrame(ImageFrame):
         self.soft_centroider = self.centroid_soft
         self.rigid_centroider = None
         self.centroider: Centroider = None
+        self.centroid_star_ids = None
 
 
     def load_fits(self, filename: Path, extension: int = 0, wcs_in_header: bool = False) -> None:
@@ -254,6 +255,17 @@ class ScienceFrame(ImageFrame):
         self.set_reference_stars(cpix, csky)
         self._initialize_tables(self.nstars, self.napt)
 
+        try:
+            df = pd.read_csv(Path(fname).with_suffix('.csv'), index_col=0)
+            cpix = df[['x','y']].values
+            csky = df[['ra','dec']].values
+            self.set_reference_stars(cpix, csky)
+            self._initialize_tables(self.nstars, self.napt)
+            self._flux_ratios = df['fratio'].values
+            self.centroid_star_ids = where(df.center.values)
+        except FileNotFoundError:
+            pass
+
     def save_reference_stars(self, fname):
         cids = zeros(self.nstars, bool)
         cids[self.centroider.sids] = True
@@ -263,7 +275,7 @@ class ScienceFrame(ImageFrame):
         df['dec'] = self._ref_centroids_sky.dec.value
         df['fratio'] = self._flux_ratios
         df['center'] = cids
-        df.to_csv(fname)
+        df.to_csv(Path(fname).with_suffix('.csv'))
 
         if self._wcs:
             t = Table(c_[self._ref_centroids_sky.ra.deg, self._ref_centroids_sky.dec.deg, self._ref_centroids_pix],
@@ -493,30 +505,23 @@ class ScienceFrame(ImageFrame):
                       norm=sn(d, stretch='linear', min_percent=minp, max_percent=maxp))
         fig.tight_layout()
 
-    def plot_apertures(self, ax, offset=9, wcs=None):
-        if wcs:
-            cpix = self._ref_centroids_sky.to_pixel(wcs)
-            cpix = list(array(cpix).T)
+    def plot_apertures(self, ax, offset=9, wcs:WCS=None):
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
 
-        if self._apertures_obj is not None:
-            if wcs:
-                apertures_obj = [CircularAperture(cpix, r) for r in self.aperture_radii]
-            else:
-                apertures_obj = self._apertures_obj
-            [apt.plot(axes=ax, alpha=0.25) for apt in apertures_obj]
-            for istar, (x,y) in enumerate(apertures_obj[0].positions):
-                if (xlim[0] <= x <= xlim[1]) and (ylim[0] <= y <= ylim[1]):
-                    yoffset = offset if y < ylim[1]-10 else -offset
-                    ax.text(x+offset, y+yoffset, istar)
-        if self._apertures_sky is not None:
-            if wcs:
-                apertures_sky = CircularAnnulus(cpix, self.aperture_radii[-1], self.aperture_radii[-1] + 15)
-            else:
-                apertures_sky = self._apertures_sky
-            apertures_sky.plot(axes=ax, alpha=0.25)
+        if wcs is not None:
+            cpix = wcs.all_world2pix(self._wcs.all_pix2world(self._cur_centroids_pix, 0),0)
+        else:
+            cpix = self._cur_centroids_pix
 
+        apertures_obj = [CircularAperture(cpix, r) for r in self.aperture_radii]
+        [apt.plot(axes=ax, alpha=0.25) for apt in apertures_obj]
+        for istar, (x,y) in enumerate(apertures_obj[0].positions):
+            if (xlim[0] <= x <= xlim[1]) and (ylim[0] <= y <= ylim[1]):
+                yoffset = offset if y < ylim[1]-10 else -offset
+                ax.text(x+offset, y+yoffset, istar)
+        apertures_sky = CircularAnnulus(cpix, self.aperture_radii[-1], self.aperture_radii[-1] + 15)
+        apertures_sky.plot(axes=ax, alpha=0.25)
 
     def plot_psf(self, iob=0, iapt=0, max_r=15, figsize=None, ax=None):
         a = self._apertures_obj[iapt]
@@ -574,6 +579,7 @@ class ScienceFrame(ImageFrame):
             self.plot_apertures(ax, wcs=wcs)
 
         # Plot the circle of inclusion
+        self._separation_cut = 2.5 * u.arcmin
         if self._separation_cut is not None:
             from photutils import SkyCircularAperture
             sa = SkyCircularAperture(self._target_center, self._separation_cut).to_pixel(wcs)
