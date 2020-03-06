@@ -114,6 +114,7 @@ if __name__ == '__main__':
     ap.add_argument('--no-tfop', action='store_true', default=False)
     ap.add_argument('--find-mf', type=int, default=6)
     ap.add_argument('--find-treshold', type=float, default=None)
+    ap.add_argument('--min-fratio', type=float, default=0.005)
     ap.add_argument('--apertures', nargs='+', type=float, default=None)
     ap.add_argument('--cnt-aperture', type=float, default=25)
     ap.add_argument('--cnt-sids', type=int, nargs='+', default=None)
@@ -247,7 +248,7 @@ if __name__ == '__main__':
                 if len(files_with_wcs[pb]) > 0:
                     logging.info("Searching for stars from the GAIA catalog")
                     im.load_fits(files_with_wcs[pb][0])
-                    im.find_stars_gaia(target_sky=target_sky_coords, radius=6, min_flux_ratio=0.005)
+                    im.find_stars_gaia(target_sky=target_sky_coords, radius=6, min_flux_ratio=args.min_fratio)
                     logging.info(f"- Found {im.nstars} stars")
                 else:
                     logging.info("Searching for stars")
