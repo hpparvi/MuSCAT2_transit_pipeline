@@ -183,9 +183,11 @@ class M2LPF(LinearModelBaseline, BaseLPF):
     def __init__(self, target: str, photometry: list, tid: int, cids: list,
                  filters: tuple, aperture_lims: tuple = (0, inf), use_opencl: bool = False,
                  n_legendre: int = 0, use_toi_info=True, with_transit=True, with_contamination=False,
-                 radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.75)):
+                 radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.75),
+                 contamination_model: str = 'physical'):
         assert radius_ratio in ('chromatic', 'achromatic')
         assert noise_model in ('white', 'gp')
+        assert contamination_model in ('physical', 'direct')
 
         self.use_opencl = use_opencl
         self.planet = None
@@ -193,6 +195,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.photometry_frozen = False
         self.with_transit = with_transit
         self.with_contamination = with_contamination
+        self.contamination_model = contamination_model
         self.achromatic_transit = radius_ratio == 'achromatic'
         self.noise_model = noise_model
         self.radius_ratio = radius_ratio
@@ -305,21 +308,37 @@ class M2LPF(LinearModelBaseline, BaseLPF):
                 self._start_k2 = self.ps.blocks[-1].start
                 self._sl_k2 = self.ps.blocks[-1].slice
             else:
-                pk2 = [PParameter('k2_app', 'apparent_area_ratio', 'A_s', UP(0.005**2, 0.25**2), (0.005**2, 0.25**2))]
-                pcn = [GParameter('k2_true', 'true_area_ratio', 'A_s', UP(0.005**2, 0.75**2), bounds=(1e-8, inf)),
-                       GParameter('teff_h', 'host_teff', 'K', UP(2500, 12000), bounds=(2500, 12000)),
-                       GParameter('teff_c', 'contaminant_teff', 'K', UP(2500, 12000), bounds=(2500, 12000))]
-                self.ps.add_passband_block('k2', 1, 1, pk2)
-                self._pid_k2 = repeat(self.ps.blocks[-1].start, self.npb)
-                self._start_k2 = self.ps.blocks[-1].start
-                self._sl_k2 = self.ps.blocks[-1].slice
-                self.ps.add_global_block('contamination', pcn)
-                self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
-                self._sl_cn = self.ps.blocks[-1].slice
+                if self.contamination_model == 'physical':
+                    pk2 = [PParameter('k2_app', 'apparent_area_ratio', 'A_s', UP(0.005 ** 2, 0.25 ** 2),
+                                      (0.005 ** 2, 0.25 ** 2))]
+                    self.ps.add_passband_block('k2', 1, 1, pk2)
+                    self._pid_k2 = repeat(self.ps.blocks[-1].start, self.npb)
+                    self._start_k2 = self.ps.blocks[-1].start
+                    self._sl_k2 = self.ps.blocks[-1].slice
+                    pcn = [GParameter('k2_true', 'true_area_ratio', 'A_s', UP(0.005**2, 0.75**2), bounds=(1e-8, inf)),
+                           GParameter('teff_h', 'host_teff', 'K', UP(2500, 12000), bounds=(2500, 12000)),
+                           GParameter('teff_c', 'contaminant_teff', 'K', UP(2500, 12000), bounds=(2500, 12000))]
+                    self.ps.add_global_block('contamination', pcn)
+                    self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
+                    self._sl_cn = self.ps.blocks[-1].slice
 
-                def contamination_prior(pvp):
-                    return where(diff(pvp[:, 4:6])[:, 0] > 0, 0, -inf)
-                self.lnpriors.append(contamination_prior)
+                    def contamination_prior(pvp):
+                        return where(diff(pvp[:, 4:6])[:, 0] > 0, 0, -inf)
+                    self.lnpriors.append(contamination_prior)
+                elif self.contamination_model == 'direct':
+                    pk2 = [PParameter('k2', 'area_ratio', 'A_s', UP(0.005 ** 2, 0.25 ** 2), (0.005 ** 2, 0.25 ** 2))]
+                    self.ps.add_passband_block('k2', 1, 1, pk2)
+                    self._pid_k2 = repeat(self.ps.blocks[-1].start, self.npb)
+                    self._start_k2 = self.ps.blocks[-1].start
+                    self._sl_k2 = self.ps.blocks[-1].slice
+                    pcn = []
+                    for pb in self.passbands:
+                        pcn.append(GParameter(f'c_{pb}', f'{pb} contamination', '', UP(0, 1), bounds=(0, 1)))
+                    self.ps.add_global_block('contamination', pcn)
+                    self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
+                    self._sl_cn = self.ps.blocks[-1].slice
+                else:
+                    raise NotImplementedError
 
         # 2. Chromatic radius ratio
         # -------------------------
@@ -595,6 +614,14 @@ class M2LPF(LinearModelBaseline, BaseLPF):
                 cnt[i, :] = -inf
         return contaminate(flux, cnt, self.lcids, self.pbids)
 
+    def _transit_model_achromatic_dcnt(self, pvp, copy=True):
+        pvp = atleast_2d(pvp)
+        pvt = map_pv_achromatic_nocnt(pvp)
+        ldc = map_ldc(pvp[:, self._sl_ld])
+        cnt = pvp[:, self._sl_cn]
+        flux = self.tm.evaluate_pv(pvt, ldc, copy=copy)
+        return contaminate(flux, cnt, self.lcids, self.pbids)
+
     def _transit_model_chromatic_nocnt(self, pvp, copy=True):
         pvp = atleast_2d(pvp)
         mean_ar = pvp[:, self._sl_k2].mean(1)
@@ -623,9 +650,12 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         if self.with_transit:
             if self.achromatic_transit:
                 if self.with_contamination:
-                    return self._transit_model_achromatic_cnt(pv, copy)
+                    if self.contamination_model == 'physical':
+                        return self._transit_model_achromatic_cnt(pv, copy)
+                    else:
+                        return self._transit_model_achromatic_dcnt(pv, copy)
                 else:
-                    return  self._transit_model_achromatic_nocnt(pv, copy)
+                    return self._transit_model_achromatic_nocnt(pv, copy)
             else:
                 if self.with_contamination:
                     return self._transit_model_chromatic_cnt(pv, copy)

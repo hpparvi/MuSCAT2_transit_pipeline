@@ -84,7 +84,7 @@ class TransitAnalysis:
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
                  radius_ratio: str = 'achromatic', klims=(0.005, 0.25),
                  catalog_name: str = None, init_lpf: bool = True,
-                 check_saturation: bool = True):
+                 check_saturation: bool = True, contamination_model: str = 'physical'):
 
         self.target: str = target
         self.date: str = date
@@ -143,7 +143,8 @@ class TransitAnalysis:
         if self.init_lpf:
             self.lpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl,
                              with_transit=with_transit, with_contamination=with_contamination,
-                             n_legendre=nlegendre, radius_ratio=radius_ratio, klims=klims)
+                             n_legendre=nlegendre, radius_ratio=radius_ratio, klims=klims,
+                             contamination_model=contamination_model)
             if with_transit:
                 self.lpf.set_prior(0, NP(self.lpf.times[0].mean(), 0.2*self.lpf.times[0].ptp()))
 

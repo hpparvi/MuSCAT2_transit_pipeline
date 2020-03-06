@@ -86,14 +86,15 @@ class TFOPAnalysis(TransitAnalysis):
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
                  radius_ratio: str = 'chromatic', excluded_stars=(), toi=None, klims=(0.005, 0.25),
-                 clear_field_only: bool = False):
+                 clear_field_only: bool = False, contamination_model: str = 'physical'):
 
         super().__init__(target, date, tid, cids, dataroot=dataroot,
                  nlegendre=nlegendre,  npop=npop,  mjd_start=mjd_start, mjd_end=mjd_end,
                  excluded_mjd_ranges=excluded_mjd_ranges,
                  aperture_lims=aperture_lims, passbands=passbands,
                  use_opencl=use_opencl, with_transit=with_transit, with_contamination=with_contamination,
-                 radius_ratio=radius_ratio, klims=klims, init_lpf=(not clear_field_only))
+                 radius_ratio=radius_ratio, klims=klims, init_lpf=(not clear_field_only),
+                         contamination_model=contamination_model)
 
         # Get the TOI information
         # -----------------------
