@@ -265,6 +265,8 @@ if __name__ == '__main__':
             #if TFOP or args.apply_separation_cut:
             #    im.cut_separation(target_sky_coords, args.separation_cut_distance)
 
+            if centroider_kwargs['sids'] is None:
+                centroider_kwargs['sids'] = im.centroid_star_ids
             cc = COMCentroider(im, im.centroid_star_ids, aperture_radius=apertures[0], nstars=8)
             cc.calculate_and_apply(pmin=args.cnt_pmin, pmax=args.cnt_pmax)
 

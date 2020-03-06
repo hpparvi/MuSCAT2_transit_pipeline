@@ -23,7 +23,7 @@ from astropy.stats import sigma_clip
 from astropy.table import Table
 from matplotlib.artist import setp
 from matplotlib.pyplot import subplots
-from numpy import arange, sort, log10, sqrt, diff, unique, percentile, squeeze, array, concatenate
+from numpy import arange, sort, log10, sqrt, diff, unique, percentile, squeeze, array, concatenate, median
 from numpy.random import uniform, permutation, normal
 from pytransit import LinearModelBaseline
 from pytransit.orbits import epoch
@@ -121,17 +121,33 @@ class M2MultiNightLPF(M2BaseLPF):
         self.ncov = array([c.shape[1] for c in self.covariates])  # Number of covariates per light curve
         self.cova = concatenate([c.ravel() for c in self.covariates])  # Flattened covariate vector
 
-    def plot_light_curves(self, method='de', width: float = 3., max_samples: int = 100, figsize=None, data_alpha=0.5, ylim=None):
+    def plot_light_curves(self, method='de', width: float = 3., max_samples: int = 100, figsize=None,
+                          data_alpha=0.5, ylim=None, remove_baseline=True):
         if method == 'mcmc':
             df = self.posterior_samples(derived_parameters=False, add_tref=False)
             t0, p = df.tc.median(), df.p.median()
-            fmodel = self.flux_model(permutation(df.values)[:max_samples])
+            pvs = permutation(df.values)[:max_samples]
+            fbasel = self.baseline(pvs)
+            fmodel = self.transit_model(pvs)
+            if remove_baseline:
+                fobs = self.ofluxa - median(fbasel, 0)
+            else:
+                fobs = self.ofluxa
+                fmodel += fbasel
             fmperc = percentile(fmodel, [50, 16, 84, 2.5, 97.5], 0)
+
         else:
-            fmodel = squeeze(self.flux_model(self.de.minimum_location))
-            t0, p = self.de.minimum_location[0] - self.tref, self.de.minimum_location[1]
+            t0, p = self.de.minimum_location[0], self.de.minimum_location[1]
+            fbasel = squeeze(self.baseline(self.de.minimum_location))
+            fmodel = squeeze(self.transit_model(self.de.minimum_location))
+            if remove_baseline:
+                fobs = self.ofluxa - fbasel
+            else:
+                fobs = self.ofluxa
+                fmodel += fbasel
             fmperc = None
 
+        t0 -= self.tref
         epochs = [epoch(t.mean(), t0, p) for t in self.times]
         n_epochs = unique(epochs).size
         epoch_to_row = {e: i for i, e in enumerate(unique(epochs))}
@@ -152,9 +168,9 @@ class M2MultiNightLPF(M2BaseLPF):
                 ax.plot(time, fmodel[self.lcslices[i]], 'w', lw=4)
                 ax.plot(time, fmodel[self.lcslices[i]], 'k', lw=1)
             else:
-                ax.fill_between(time, *fmperc[3:5, self.lcslices[i]], alpha=0.15)
-                ax.fill_between(time, *fmperc[1:3, self.lcslices[i]], alpha=0.25)
-                ax.plot(time, fmperc[0, self.lcslices[i]])
+                ax.fill_between(time, *fmperc[3:5, self.lcslices[i]], alpha=0.55)
+                ax.fill_between(time, *fmperc[1:3, self.lcslices[i]], alpha=0.75)
+                ax.plot(time, fmperc[0, self.lcslices[i]], 'k')
 
         setp(axs, xlim=(-width / 2 / 24, width / 2 / 24))
         setp(axs[:, 0], ylabel='Normalised flux')

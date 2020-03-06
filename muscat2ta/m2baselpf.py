@@ -252,6 +252,11 @@ class M2BaseLPF(LinearModelBaseline, BaseLPF):
         self.instrument = Instrument('MuSCAT2', [filters[pb] for pb in self.passbands])
         self.cm = SMContamination(self.instrument, self.instrument.filters[0].name)
 
+    def add_ldtk_prior(self, teff: tuple, logg: tuple, z: tuple, uncertainty_multiplier: float = 3, **kwargs) -> None:
+        from ldtk import sdss_g, sdss_r, sdss_i, sdss_z
+        passbands = [f for f,pb in zip((sdss_g, sdss_r, sdss_i, sdss_z), 'g r i z'.split()) if pb in ' '.join(self.passbands)]
+        BaseLPF.add_ldtk_prior(self, teff, logg, z, passbands, uncertainty_multiplier, **kwargs)
+
     def create_pv_population(self, npop=50):
         pvp = self.ps.sample_from_prior(npop)
         if self.with_transit:
@@ -385,37 +390,6 @@ class M2BaseLPF(LinearModelBaseline, BaseLPF):
             lnp += self.additional_priors(pv) + self.ldprior(pv)
             #lnp += self.ldprior(pv) + self.inside_obs_prior(pv) + self.additional_priors(pv)
         return lnp
-
-    def add_ldtk_prior(self, teff: tuple, logg: tuple, z: tuple,
-                       uncertainty_multiplier: float = 3,
-                       pbs: tuple = ('g', 'r', 'i', 'z'), cache = None) -> None:
-        """Add a LDTk-based prior on the limb darkening.
-
-        Parameters
-        ----------
-        teff
-        logg
-        z
-        uncertainty_multiplier
-        pbs
-
-        Returns
-        -------
-
-        """
-        fs = {n: f for n, f in zip('g r i z'.split(), (sdss_g, sdss_r, sdss_i, sdss_z))}
-        filters = [fs[k] for k in pbs]
-        self.ldsc = LDPSetCreator(teff, logg, z, filters,cache=cache)
-        self.ldps = self.ldsc.create_profiles(1000)
-        self.ldps.resample_linear_z()
-        self.ldps.set_uncertainty_multiplier(uncertainty_multiplier)
-        def ldprior(pv):
-            pv = atleast_2d(pv)
-            lnl = zeros(pv.shape[0])
-            for i in range(pv.shape[0]):
-                lnl[i] = self.ldps.lnlike_tq(pv[i, self._sl_ld])
-            return lnl
-        self.lnpriors.append(ldprior)
 
     def add_inside_window_prior(self, min_duration=20):
         self._iptmin = self.timea.min()
