@@ -341,17 +341,23 @@ class ScienceFrame(ImageFrame):
     def find_stars_gaia(self, target_sky: SkyCoord, radius: float = 6, min_flux_ratio: float = 0.005):
         cs = Gaia.cone_search_async(target_sky, radius * u.arcmin)
         tb = cs.get_results()
+
+        relative_fluxes = tb['phot_rp_mean_flux'] + tb['phot_g_mean_flux'] + tb['phot_bp_mean_flux']
+        relative_fluxes = relative_fluxes / relative_fluxes[0]
+        m = ~relative_fluxes.mask
+
+        relative_fluxes = relative_fluxes[m]
+        tb = tb[m]
+
         stars = SkyCoord(tb['ra'], tb['dec'])
         cpix = array(stars.to_pixel(self._wcs)).T
 
         # Flux ratio cut
         # --------------
-        relative_fluxes = tb['phot_rp_mean_flux'] + tb['phot_g_mean_flux'] + tb['phot_bp_mean_flux']
-        relative_fluxes = relative_fluxes / relative_fluxes[0]
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             mask = relative_fluxes > min_flux_ratio
-        relative_fluxes = relative_fluxes[mask].compressed()
+        relative_fluxes = relative_fluxes[mask]
         tb = tb[mask]
         cpix = cpix[mask]
 
