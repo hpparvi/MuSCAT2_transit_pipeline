@@ -259,7 +259,7 @@ if __name__ == '__main__':
                         im.cut_separation(target_sky_coords, args.separation_cut_distance)
                         im.remove_doubles(target_sky_coords, args.double_removal_distance)
                         logging.info(f"Applying separation cut and double removal: {im.nstars} left")
-                cn = COMCentroider(im,  None, aperture_radius=apertures[0], nstars=8)
+                cn = COMCentroider(im,  None, aperture_radius=args.cnt_aperture, nstars=8)
                 im.save_reference_stars(stars_file)
 
             im.load_reference_stars(stars_file)
@@ -268,7 +268,7 @@ if __name__ == '__main__':
 
             if centroider_kwargs['sids'] is None:
                 centroider_kwargs['sids'] = im.centroid_star_ids
-            cc = COMCentroider(im, im.centroid_star_ids, aperture_radius=apertures[0], nstars=8)
+            cc = COMCentroider(im, im.centroid_star_ids, aperture_radius=args.cnt_aperture, nstars=8)
             cc.calculate_and_apply(pmin=args.cnt_pmin, pmax=args.cnt_pmax)
 
             # Field plot with apertures
