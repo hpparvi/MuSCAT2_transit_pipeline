@@ -614,10 +614,14 @@ class TFOPAnalysis(TransitAnalysis):
         except (IndexError, AttributeError):
             tap, raps = '-', '-'
 
+        df = self.posterior_samples()
+
         with open(dsubmit / f"{self.ticname}_20{self.date}_MuSCAT2_report.txt", "w") as f:
             t = Template(report.read_text())
             f.write(t.safe_substitute(ticname=self.ticname, night=self.date, tid=self.tid, cids=self.cids,
-                                      tap=tap, raps=raps))
+                                      tap=tap, raps=raps,
+                                      tc=round(df.tc.median(), 7), tce=round(df.tc.std(), 7),
+                                      t14=round(df.t14.median(),5), t14e=round(df.t14.std(), 5)))
 
     def save(self):
         delm = None

@@ -5,6 +5,9 @@ Reference star(s): $cids
 Target aperture: $tap
 Reference aperture(s): $raps
 
+Tc: $tc ± $tce
+T14: $t14 ± $t14e days
+
 All passbands have the same aperture for each star.
 
 **REPORT TEXT HERE**
