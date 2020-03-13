@@ -65,18 +65,13 @@ def true_radius_ratio(observed_depth, fratio):
     return sqrt(true_depth(observed_depth, fratio))
 
 
-def tmodel(time, toi, fratio=None):
+def tmodel(time, toi, depth):
     tc = toi.epoch[0]
     p = toi.period[0]
     tn = round((time.mean() - tc) / p)
     time = time - (tc + tn * p)
+    return where(abs(time) <= 0.5 * toi.duration[0] / 24, 1.0 - depth, 1.0)
 
-    flux = where(abs(time) <= 0.5 * toi.duration[0] / 24, 1.0 - toi.depth[0] * 1e-6, 1.0)
-
-    if fratio is None:
-        return flux
-    else:
-        return 1 + ((flux - 1) * (1 + fratio)) / fratio
 
 
 class TFOPAnalysis(TransitAnalysis):
@@ -371,12 +366,15 @@ class TFOPAnalysis(TransitAnalysis):
             else:
                 ref_flux = None
 
+            total_flux = nanmedian(ph._flux[:, stars, aid],0).sum()
+
             for i, istar in enumerate(tqdm(stars, leave=False)):
                 if i % stars_per_page == 0:
                     fig, axs = subplots(nrows, ncols, figsize=(figwidth, nrows * axheight), sharex='all')
                     iax = 0
                 try:
-                    self.plot_single_raw(pbi, istar, cid=cid, aid=aid, ax=axs.flat[iax], reference_flux=ref_flux)
+                    self.plot_single_raw(pbi, istar, cid=cid, aid=aid, ax=axs.flat[iax], reference_flux=ref_flux,
+                                         total_flux=total_flux)
                 except:
                     pass
                 iax += 1
@@ -396,7 +394,7 @@ class TFOPAnalysis(TransitAnalysis):
                 pdf.close()
 
     def plot_single_raw(self, phi: int, sid: int, cid: int, aid: int = -1, btime=300., nsamples=500,
-                        reference_flux: float = None, ax=None):
+                        reference_flux: float = None, total_flux: float = None, ax=None):
         """Plot the raw flux of star `sid` normalized to the median of star `tid`."""
         if ax is None:
             fig, ax = subplots()
@@ -416,11 +414,24 @@ class TFOPAnalysis(TransitAnalysis):
         else:
             target_flux = nanmedian(ph._flux[m, self.tid, aid])
             if not isfinite(target_flux):
+                print("WARNING: The target is completely saturated, blending analysis will fail")
                 target_flux = 1.
 
-        flux = array(ph._flux[m, sid, aid] / target_flux)
-        fratio = nanmedian(flux)
-        flux /= array(ph._flux[m, cid, aid])
+        star_flux = nanmedian(array(ph._flux[m, sid, aid]))
+
+        if total_flux is None:
+            total_flux = star_flux + target_flux
+        else:
+            target_flux = total_flux
+            total_flux = total_flux + star_flux
+
+        fratio = star_flux / target_flux
+        fratio2 = star_flux / nanmedian(ph._flux[m, self.tid, aid])
+
+        target_flux /= total_flux
+        star_flux /= total_flux
+
+        flux = array(ph._flux[m, sid, aid]) / array(ph._flux[m, cid, aid])
         flux /= nanmedian(flux)
 
         # Flux median and std for y limits and outlier marking
@@ -445,9 +456,9 @@ class TFOPAnalysis(TransitAnalysis):
 
         # Plot the model
         # --------------
-        if fratio > toi.depth[0] * 1e-6:
-            fmodel = tmodel(time, toi, None if sid == self.tid else fratio) - 3 * s
-            ax.plot(time - t0, fmodel, 'k', ls='-', alpha=0.5)
+        depth = max(0, 1 - ((1 - 1e-6 * toi.depth[0]) - target_flux) / star_flux)
+        fmodel = tmodel(time, toi, depth) - 3 * s
+        ax.plot(time - t0, fmodel, 'k', ls='-', alpha=0.5)
 
         # Transit centre, ingress, and egress
         # -----------------------------------
@@ -466,7 +477,7 @@ class TFOPAnalysis(TransitAnalysis):
 
         ax.text(0.02, 1.01, f"Star {sid:d}, separation {self.distances[sid]:4.2f}'", size='small', ha='left',
                 va='bottom', transform=ax.transAxes)
-        ax.text(0.98, 1.01, f"F$_\star$/F$_0$ {fratio:4.3f}", size='small', ha='right', va='bottom',
+        ax.text(0.98, 1.01, f"F$_\star$/F$_\mathrm{{Tot}}$ {fratio:4.3f}   F$_\star$/F$_0$ {fratio2:4.3f}", size='small', ha='right', va='bottom',
                 transform=ax.transAxes)
         setp(ax, xlim=time[[0, -1]] - t0, ylim=(m - 6 * s, m + 4 * s))
 
