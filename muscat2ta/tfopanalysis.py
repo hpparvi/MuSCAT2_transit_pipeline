@@ -366,15 +366,12 @@ class TFOPAnalysis(TransitAnalysis):
             else:
                 ref_flux = None
 
-            total_flux = nanmedian(ph._flux[:, stars, aid],0).sum()
-
             for i, istar in enumerate(tqdm(stars, leave=False)):
                 if i % stars_per_page == 0:
                     fig, axs = subplots(nrows, ncols, figsize=(figwidth, nrows * axheight), sharex='all')
                     iax = 0
                 try:
-                    self.plot_single_raw(pbi, istar, cid=cid, aid=aid, ax=axs.flat[iax], reference_flux=ref_flux,
-                                         total_flux=total_flux)
+                    self.plot_single_raw(pbi, istar, cid=cid, aid=aid, ax=axs.flat[iax], reference_flux=ref_flux)
                 except:
                     pass
                 iax += 1
@@ -394,20 +391,18 @@ class TFOPAnalysis(TransitAnalysis):
                 pdf.close()
 
     def plot_single_raw(self, phi: int, sid: int, cid: int, aid: int = -1, btime=300., nsamples=500,
-                        reference_flux: float = None, total_flux: float = None, ax=None):
+                        reference_flux: float = None, ax=None):
         """Plot the raw flux of star `sid` normalized to the median of star `tid`."""
-        if ax is None:
-            fig, ax = subplots()
-        else:
-            fig, ax = None, ax
 
+        fig, ax = subplots() if ax is None else (None, ax)
         ph = self.phs[phi]
         toi = self.toi
 
-        time = ph._bjd
-        m = isfinite(time) & isfinite(ph._flux[:,sid,aid]) & ph.exclusion_mask
-        time = time[m]
+        m = isfinite(ph._bjd) & isfinite(ph._flux[:,sid,aid]) & isfinite(ph._flux[:,cid,aid]) & ph.exclusion_mask
+        time = ph._bjd[m]
         t0 = floor(time[0])
+        flux = array(ph._flux[m, sid, aid] / ph._flux[m, cid, aid])
+        flux /= median(flux)
 
         if reference_flux is not None:
             target_flux = reference_flux
@@ -417,32 +412,13 @@ class TFOPAnalysis(TransitAnalysis):
                 print("WARNING: The target is completely saturated, blending analysis will fail")
                 target_flux = 1.
 
-        star_flux = nanmedian(array(ph._flux[m, sid, aid]))
-
-        if total_flux is None:
-            total_flux = star_flux + target_flux
-        else:
-            target_flux = total_flux
-            total_flux = total_flux + star_flux
-
-        fratio = star_flux / target_flux
-        fratio2 = star_flux / nanmedian(ph._flux[m, self.tid, aid])
-
-        target_flux /= total_flux
-        star_flux /= total_flux
-
-        flux = array(ph._flux[m, sid, aid]) / array(ph._flux[m, cid, aid])
-        flux /= nanmedian(flux)
-
-        # Flux median and std for y limits and outlier marking
-        # ----------------------------------------------------
-        m = nanmedian(flux)
-        s = mad_std(flux[isfinite(flux)])
+        fratio = nanmedian(array(ph._flux[m, sid, aid])) / target_flux
 
         # Mark outliers
         # -------------
-        mask = abs(flux - m) > 5 * s
-        outliers = clip(flux[mask], m - 5.75 * s, m + 4.75 * s)
+        s = mad_std(flux)
+        mask = abs(flux - 1) > 5 * s
+        outliers = clip(flux[mask], 1 - 5.75 * s, 1 + 4.75 * s)
 
         # Plot the unbinned flux
         # ----------------------
@@ -456,8 +432,10 @@ class TFOPAnalysis(TransitAnalysis):
 
         # Plot the model
         # --------------
-        depth = max(0, 1 - ((1 - 1e-6 * toi.depth[0]) - target_flux) / star_flux)
-        fmodel = tmodel(time, toi, depth) - 3 * s
+        depth = 1e-6 * toi.depth[0] / fratio
+        ep = epoch(time, toi.epoch[0], toi.period[0])
+        timec = time - (toi.epoch[0] + ep * toi.period[0])
+        fmodel = where(abs(timec) <= 0.5 * toi.duration[0] / 24, 1.0 - depth, 1.0) - 3 * s
         ax.plot(time - t0, fmodel, 'k', ls='-', alpha=0.5)
 
         # Transit centre, ingress, and egress
@@ -475,11 +453,12 @@ class TFOPAnalysis(TransitAnalysis):
         ax.axvspan(*percentile(egress, [16, 84]), alpha=0.25, ymin=0.95, ymax=1.)
         ax.axvline(median(egress), ymin=0.97, ymax=1., lw=1)
 
-        ax.text(0.02, 1.01, f"Star {sid:d}, separation {self.distances[sid]:4.2f}'", size='small', ha='left',
+        ax.text(0.02, 1.01, f"Star {sid:d} -- separation {self.distances[sid]:4.2f}'", size='small', ha='left',
                 va='bottom', transform=ax.transAxes)
-        ax.text(0.98, 1.01, f"F$_\star$/F$_\mathrm{{Tot}}$ {fratio:4.3f}   F$_\star$/F$_0$ {fratio2:4.3f}", size='small', ha='right', va='bottom',
+        ax.text(0.98, 1.01, f"$F_\star \;/\;F_0\;= $ {fratio:4.3f} -- $\Delta F = {depth:6.5f}$", size='small',
+                ha='right', va='bottom',
                 transform=ax.transAxes)
-        setp(ax, xlim=time[[0, -1]] - t0, ylim=(m - 6 * s, m + 4 * s))
+        setp(ax, xlim=time[[0, -1]] - t0, ylim=(1 - 6 * s, 1 + 4 * s))
 
     def plot_final_fit(self, figwidth: float = 13, save: bool = True, close: bool = False) -> None:
 
