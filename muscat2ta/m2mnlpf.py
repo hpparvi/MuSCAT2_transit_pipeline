@@ -63,11 +63,17 @@ class M2MultiNightLPF(M2BaseLPF):
     def __init__(self, target: str, use_opencl: bool = False, n_legendre: int = 0,
                  with_transit=True, with_contamination=False,
                  radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.25),
-                 datadir='results', filename_pattern='*.fits'):
+                 datadir='results', filename_pattern='*.fits',
+                 contamination_model: str = 'physical',
+                 contamination_reference_passband: str = "r'"):
+
         self.datadir = datadir
         self.pattern = filename_pattern
         self._reduction_residuals = None
-        super().__init__(target, use_opencl, n_legendre, with_transit, with_contamination, radius_ratio, noise_model, klims)
+
+        super().__init__(target, use_opencl, n_legendre, with_transit, with_contamination, radius_ratio, noise_model, klims,
+                         contamination_model=contamination_model,
+                         contamination_reference_passband=contamination_reference_passband)
 
     def _read_data(self):
         times, fluxes, pbs, wns, covs, vars, models, residuals = read_reduced_m2(self.datadir, self.pattern)

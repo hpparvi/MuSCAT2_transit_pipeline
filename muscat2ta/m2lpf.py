@@ -184,7 +184,8 @@ class M2LPF(LinearModelBaseline, BaseLPF):
                  filters: tuple, aperture_lims: tuple = (0, inf), use_opencl: bool = False,
                  n_legendre: int = 0, use_toi_info=True, with_transit=True, with_contamination=False,
                  radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.75),
-                 contamination_model: str = 'physical'):
+                 contamination_model: str = 'physical',
+                 contamination_reference_passband: str = "r'"):
         assert radius_ratio in ('chromatic', 'achromatic')
         assert noise_model in ('white', 'gp')
         assert contamination_model in ('physical', 'direct')
@@ -201,6 +202,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.radius_ratio = radius_ratio
         self.n_legendre = n_legendre
         self.n_flares = 0
+        self.contamination_reference_passband = contamination_reference_passband
 
         # Set photometry
         # --------------
@@ -324,7 +326,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
 
                     def contamination_prior(pvp):
                         return where(diff(pvp[:, 4:6])[:, 0] > 0, 0, -inf)
-                    self.lnpriors.append(contamination_prior)
+                    self._additional_log_priors.append(contamination_prior)
                 elif self.contamination_model == 'direct':
                     pk2 = [PParameter('k2', 'area_ratio', 'A_s', UP(0.005 ** 2, 0.25 ** 2), (0.005 ** 2, 0.25 ** 2))]
                     self.ps.add_passband_block('k2', 1, 1, pk2)
@@ -392,7 +394,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
     def _init_instrument(self):
         filters = {'g': sdss_g, 'r': sdss_r, 'i':sdss_i, 'z_s':sdss_z}
         self.instrument = Instrument('MuSCAT2', [filters[pb] for pb in self.passbands])
-        self.cm = SMContamination(self.instrument, self.instrument.filters[0].name)
+        self.cm = SMContamination(self.instrument, self.contamination_reference_passband)
 
     def add_flare(self, loc, amp=(0, 0.2)):
         self.n_flares += 1
@@ -761,7 +763,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             for i in range(pv.shape[0]):
                 lnl[i] = self.ldps.lnlike_tq(pv[i, self._sl_ld])
             return lnl
-        self.lnpriors.append(ldprior)
+        self._additional_log_priors.append(ldprior)
 
     def add_inside_window_prior(self, min_duration=20):
         self._iptmin = self.timea.min()
@@ -776,7 +778,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             egress = tc + 0.5 * t14
             inside_limits = fmin(egress - self._iptmin - self._ipmdur, self._iptmax - ingress - self._ipmdur) > 0
             return where(inside_limits, 0, -inf)
-        self.lnpriors.append(is_inside_window)
+        self._additional_log_priors.append(is_inside_window)
 
     def transit_bic(self):
         from scipy.optimize import minimize

@@ -143,7 +143,9 @@ def map_pv_achromatic_cnt(pv):
 class M2BaseLPF(LinearModelBaseline, BaseLPF):
     def __init__(self, target: str, use_opencl: bool = False, n_legendre: int = 0,
                  with_transit=True, with_contamination=False,
-                 radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.25)):
+                 radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.25),
+                 contamination_model: str = 'physical',
+                 contamination_reference_passband: str = "r'"):
 
         assert radius_ratio in ('chromatic', 'achromatic')
         assert noise_model in ('white', 'gp')
@@ -157,6 +159,7 @@ class M2BaseLPF(LinearModelBaseline, BaseLPF):
         self.noise_model = noise_model
         self.radius_ratio = radius_ratio
         self.n_legendre = n_legendre
+        self.contamination_reference_passband = contamination_reference_passband
 
         filters, times, fluxes, covariates, wns, pbids, nids = self._read_data()
         self.tref = floor(min([t.min() for t in times]))
@@ -211,6 +214,7 @@ class M2BaseLPF(LinearModelBaseline, BaseLPF):
                 self.ps.add_global_block('contamination', pcn)
                 self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
                 self._sl_cn = self.ps.blocks[-1].slice
+                self._additional_log_priors.append(lambda pv: where(pv[:, 4] < pv[:, 5], 0, -inf))
 
         # 2. Chromatic radius ratio
         # -------------------------
@@ -250,7 +254,7 @@ class M2BaseLPF(LinearModelBaseline, BaseLPF):
     def _init_instrument(self):
         filters = {'g': sdss_g, 'r': sdss_r, 'i':sdss_i, 'z_s':sdss_z}
         self.instrument = Instrument('MuSCAT2', [filters[pb] for pb in self.passbands])
-        self.cm = SMContamination(self.instrument, self.instrument.filters[0].name)
+        self.cm = SMContamination(self.instrument, self.contamination_reference_passband)
 
     def add_ldtk_prior(self, teff: tuple, logg: tuple, z: tuple, uncertainty_multiplier: float = 3, **kwargs) -> None:
         from ldtk import sdss_g, sdss_r, sdss_i, sdss_z
