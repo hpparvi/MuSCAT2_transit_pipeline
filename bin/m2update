@@ -29,12 +29,21 @@
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+from argparse import ArgumentParser
 from getpass import getpass
 from muscat2ph.catalog import update_toi_catalog, update_m2_catalog
 
 
 if __name__ == '__main__':
-    passwd = getpass(prompt='M2 password: ')
+    ap = ArgumentParser()
+    ap.add_argument('-p', '--password', default=None, type=str, help='M2 observer password')
+    args = ap.parse_args()
+
+    if args.password is None:
+        passwd = getpass(prompt='M2 password: ')
+    else:
+        passwd = args.password
+
     print('Updating the TOI catalog')
     update_toi_catalog()
     print('Updating the M2 catalog')
