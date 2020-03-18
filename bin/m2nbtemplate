@@ -19,5 +19,18 @@ if __name__ == '__main__':
 
     t = Template(tfile.read_text())
 
+    photometry_dir = Path('photometry', args.date)
+    if not photometry_dir.exists():
+        raise ValueError(f'The photometry directory {photometry_dir} does not exist.')
+
+    files = [str(p) for p in photometry_dir.glob('*field.png')]
+    def choose_frame(files):
+        pb_order = 'r i z_s g'.split()
+        for pb in pb_order:
+            for i, f in enumerate(files):
+                if f'MuSCAT2_{pb}_f' in f:
+                    return files[i]
+    field_frame = choose_frame(files)
+
     with open(f"{args.target}_{args.date}.ipynb", "w") as f:
-        f.write(t.safe_substitute(target= args.target, night=args.date))
+        f.write(t.safe_substitute(target= args.target, night=args.date, field=field_frame))
