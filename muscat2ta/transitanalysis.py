@@ -79,7 +79,6 @@ def get_files(droot, target, night, passbands: tuple = ('g', 'r', 'i', 'z_s')):
 class TransitAnalysis:
     def __init__(self, target: str, date: str, tid: int, cids: list, dataroot: Path = None, exptime_min: float = 30.,
                  nlegendre: int = 0,  npop: int = 200,  mjd_start: float = -inf, mjd_end: float = inf,
-                 time_start: float = -inf, time_end: float = inf,
                  excluded_mjd_ranges: tuple = None,
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
@@ -127,7 +126,7 @@ class TransitAnalysis:
         # ----------------
         files, pbs = get_files(self.dataroot, target, date, passbands)
         self.phs = [PhotometryData(f, tid, cids, objname=target, objskycoords=self.target_coordinates,
-                                   mjd_start=mjd_start, mjd_end=mjd_end, time_start=time_start, time_end=time_end,
+                                   mjd_start=mjd_start, mjd_end=mjd_end,
                                    excluded_ranges=excluded_mjd_ranges) for f in files]
         self.passbands = self.pbs = pbs
 
