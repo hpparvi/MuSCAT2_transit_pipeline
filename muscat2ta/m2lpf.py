@@ -208,6 +208,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         # --------------
         self.phs = photometry
         self.nph = len(photometry)
+        self.aid = 1
 
         # Set the aperture ranges
         # -----------------------
@@ -241,7 +242,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         for i,ph in enumerate(photometry):
             try:
                 times.append(array(ph.bjd))
-                f = array(ph.flux[:, self.tid[i], 1])
+                f = array(ph.flux[:, self.tid[i], self.aid])
                 fluxes.append(f / nanmedian(f))
             except:
                 pass
@@ -472,6 +473,35 @@ class M2LPF(LinearModelBaseline, BaseLPF):
                 for icid in range(self.cids.shape[1]):
                     self.refs[ipb][icid] = self.refs[ipb][icid][ids, :]
                 self.covariates[ipb] = self.covariates[ipb][ids, :]
+        if apply:
+            self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
+        if plot:
+            fig.tight_layout()
+
+    def cut(self, tstart: float = -inf, tend: float = inf, plot: bool = True, apply: bool = True, aid: int = None) -> None:
+        fluxes = []
+
+        aid = aid if aid is not None else self.aid
+
+        if plot:
+            fig, axs = subplots(1, self.npb, figsize=(13, 4), sharey='all')
+            axs = atleast_1d(axs)
+
+        for ipb in range(self.npb):
+            ft = self.ofluxes[ipb][:, aid] / nanmedian(self.ofluxes[ipb][:, aid])
+
+            mask = ~((self.times[ipb] > tstart) & (self.times[ipb] < tend))
+
+            if plot:
+                axs[ipb].plot(self.times[ipb][mask], ft[mask], '.')
+                axs[ipb].plot(self.times[ipb][~mask], ft[~mask], 'kx')
+            if apply:
+                fluxes.append(ft[mask])
+                self.times[ipb] = self.times[ipb][mask]
+                self.ofluxes[ipb] = self.ofluxes[ipb][mask, :]
+                for icid in range(self.cids.shape[1]):
+                    self.refs[ipb][icid] = self.refs[ipb][icid][mask, :]
+                self.covariates[ipb] = self.covariates[ipb][mask, :]
         if apply:
             self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
         if plot:

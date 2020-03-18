@@ -79,6 +79,7 @@ def get_files(droot, target, night, passbands: tuple = ('g', 'r', 'i', 'z_s')):
 class TransitAnalysis:
     def __init__(self, target: str, date: str, tid: int, cids: list, dataroot: Path = None, exptime_min: float = 30.,
                  nlegendre: int = 0,  npop: int = 200,  mjd_start: float = -inf, mjd_end: float = inf,
+                 time_start: float = -inf, time_end: float = inf,
                  excluded_mjd_ranges: tuple = None,
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
@@ -126,7 +127,8 @@ class TransitAnalysis:
         # ----------------
         files, pbs = get_files(self.dataroot, target, date, passbands)
         self.phs = [PhotometryData(f, tid, cids, objname=target, objskycoords=self.target_coordinates,
-                                   mjd_start=mjd_start, mjd_end=mjd_end, excluded_ranges=excluded_mjd_ranges) for f in files]
+                                   mjd_start=mjd_start, mjd_end=mjd_end, time_start=time_start, time_end=time_end,
+                                   excluded_ranges=excluded_mjd_ranges) for f in files]
         self.passbands = self.pbs = pbs
 
         if len(self.phs) == 0:
@@ -163,6 +165,10 @@ class TransitAnalysis:
     def apply_normalized_limits(self, iapt: int, lower: float = -inf, upper: float = inf, plot: bool = True,
                                 apply: bool = True, npoly: int = 0, iterations: int = 5, erosion: int = 0) -> None:
         self.lpf.apply_normalized_limits(iapt, lower, upper, plot, apply, npoly, iterations, erosion)
+
+    def cut(self, tstart: float = -inf, tend: float = inf, plot: bool = True, apply: bool = True,
+            aid: int = None) -> None:
+        self.lpf.cut(tstart, tend, plot, apply, aid)
 
     def downsample(self, exptime: float) -> None:
         self.lpf.downsample(exptime)
@@ -417,25 +423,40 @@ class TransitAnalysis:
 
             hdul.writeto(self._dres / f"{self.target}_{self.date}_raw.fits", overwrite=True)
 
-    def plot_raw_light_curves(self, pb: int, sids: int, aids: int, sharey='none'):
-        sids = atleast_1d(sids)
-        aids = atleast_1d(aids)
-        nrows = int(ceil(sids.size / 2))
-        ncols = min(sids.size, 2)
+    def plot_raw_light_curves(self, pbs: int = None, sids: int = None, aids: int = None, sharey='all', ylim=None, vlines=None):
+        pbs = atleast_1d(pbs) if pbs is not None else arange(len(self.phs))
+        sids = atleast_1d(sids) if sids is not None else arange(min(self.phs[0].nobj, 6))
+        aids = atleast_1d(aids) if aids is not None else full(sids.size, -1)
+        nrows = int(ceil(sids.size / 3))
+        ncols = min(sids.size, 3)
 
-        fig, axs = subplots(nrows, ncols, figsize=(13, (4 if nrows == 1 else 2 * nrows)), constrained_layout=True,
-                            sharex='all', sharey=sharey, squeeze=False)
-        ph = self.phs[pb]
-        for sid, aid, ax in zip(sids, aids, axs.flat):
-            f = ph.flux[:, sid, aid]
-            f /= f.median()
-            ax.plot(ph.bjd - self.lpf.tref, f)
-            ax.set_title(f"Star {sid}, aperture {aid}, scatter {float(f.diff('mjd').std('mjd') / sqrt(2)):.4f}")
-            setp(ax, ylabel='Normalised flux')
-        if sharey != 'none':
-            setp(axs[:,1:], ylabel='')
-        setp(axs[-1,:], xlabel=f"Time - {self.lpf.tref:.0f} [d]")
-        return fig
+        if aids.size == 1:
+            aids = full_like(sids, aids)
+
+        figs = []
+        for pb in pbs:
+            fig, axs = subplots(nrows, ncols, figsize=(13, (4 if nrows == 1 else 2 * nrows)),
+                                sharex='all', sharey=sharey, squeeze=False)
+            ph = self.phs[pb]
+            for sid, aid, ax in zip(sids, aids, axs.flat):
+                f = ph.flux[:, sid, aid]
+                f /= f.median()
+                ax.plot(ph.bjd - self.lpf.tref, f)
+                ax.set_title(f"Star {sid}, aperture {aid}, scatter {float(f.diff('mjd').std('mjd') / sqrt(2)):.4f}")
+                ax.autoscale(enable=True, axis='x', tight=True)
+                setp(ax, ylabel='Normalised flux')
+
+            if vlines is not None:
+                for vline in atleast_1d(vlines):
+                    [ax.axvline(vline, c='k', lw=1) for ax in axs.flat]
+
+            if sharey != 'none':
+                setp(axs[:, 1:], ylabel='')
+            setp(axs[-1, :], xlabel=f"Time - {self.lpf.tref:.0f} [d]")
+            setp(axs, ylim=ylim)
+            fig.tight_layout()
+            figs.append(fig)
+        return figs
 
     def plot_final_fit(self, model='linear', figwidth: float = 13):
         lpf = self.models[model]
