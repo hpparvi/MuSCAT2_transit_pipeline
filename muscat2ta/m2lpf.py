@@ -16,21 +16,20 @@
 
 import warnings
 import seaborn as sb
-from os.path import join, split
 
 from astropy.stats import sigma_clip, mad_std
 from astropy.table import Table
 from ldtk import LDPSetCreator
 from matplotlib.pyplot import subplots, setp, figure
 from astropy.io import fits as pf
-from muscat2ph.catalog import get_toi
+
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
     delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like, fmin, digitize, ceil, full, \
-    nan, transpose, isscalar
+    nan, transpose, isscalar, empty
 from numpy.polynomial import Polynomial
-from numpy.polynomial.legendre import legvander
+
 import astropy.units as u
 from numpy.random import permutation, uniform, normal
 from pytransit import QuadraticModel, QuadraticModelCL, BaseLPF, LinearModelBaseline
@@ -54,12 +53,18 @@ def downsample_time(time, values, inttime=30.):
     bins = arange(nbins)
     edges = time[0] + bins * inttime / 24 / 60 / 60
     bids = digitize(time, edges) - 1
-    bt, bv = full(nbins, nan), zeros((nbins, values.shape[1]))
+    if values.ndim == 2:
+        bt, bv = full(nbins, nan), zeros((nbins, values.shape[1]))
+    else:
+        bt, bv = full(nbins, nan), zeros((nbins, values.shape[1], values.shape[2]))
     for i, bid in enumerate(bins):
         bmask = bid == bids
         if bmask.sum() > 0:
             bt[i] = time[bmask].mean()
-            bv[i,:] = values[bmask,:].mean(0)
+            if values.ndim == 2:
+                bv[i,:] = values[bmask,:].mean(0)
+            else:
+                bv[i,:,:] = values[bmask,:,:].mean(0)
     m = isfinite(bt)
     return bt[m], squeeze(bv[m])
 
@@ -179,6 +184,18 @@ def flare(time, lcids, pbids, pvp, npb, nflares):
                     flux[j,i] = pvp[j, ii+2+pbid]*exp(-((time[i]-pvp[j,ii])/pvp[j,ii+1]))
     return flux
 
+@njit
+def create_reference_flux(reference_fluxes, ref_mask, ref_aperture_ids):
+    npv = ref_mask.shape[0]
+    nref = reference_fluxes.shape[1]
+    flux = zeros((npv, reference_fluxes.shape[0]))
+    for ipv in range(npv):
+        for iref in range(nref):
+            if ref_mask[ipv, iref]:
+                flux[ipv] += reference_fluxes[:, iref, ref_aperture_ids[ipv, iref]]
+        flux[ipv] /= median(flux[ipv])
+    return flux
+
 class M2LPF(LinearModelBaseline, BaseLPF):
     def __init__(self, target: str, photometry: list, tid: int, cids: list,
                  filters: tuple, aperture_lims: tuple = (0, inf), use_opencl: bool = False,
@@ -280,12 +297,12 @@ class M2LPF(LinearModelBaseline, BaseLPF):
 
         # Create the target and reference star flux arrays
         # ------------------------------------------------
-        self.ofluxes, self.refs = [], []
+        self.target_fluxes, self.reference_fluxes = [], []
         for ip, ph in enumerate(photometry):
             ids = concatenate([[self.tid[ip]], self.cids[ip]])
-            flux = ph.flux[:, ids, amin:amax+1]
-            self.ofluxes.append(array(flux[:, 0, :] / flux[:, 0, :].median('mjd')))
-            self.refs.append([pad(array(flux[:, 1+i, :]), ((0, 0), (1, 0)), mode='constant') for i in range(len(self.cids[ip]))])
+            flux = ph.flux[:, ids, amin:amax + 1]
+            self.target_fluxes.append(array(flux[:, 0, :] / flux[:, 0, :].median('mjd')))
+            self.reference_fluxes.append(array(flux[:, 1:, :]))
 
     def _init_parameters(self):
         self.ps = ParameterSet()
@@ -327,7 +344,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
 
                     def contamination_prior(pvp):
                         return where(diff(pvp[:, 4:6])[:, 0] > 0, 0, -inf)
-                    self._additional_log_priors.append(contamination_prior)
+                    self.add_prior(contamination_prior)
                 elif self.contamination_model == 'direct':
                     pk2 = [PParameter('k2', 'area_ratio', 'A_s', UP(0.005 ** 2, 0.25 ** 2), (0.005 ** 2, 0.25 ** 2))]
                     self.ps.add_passband_block('k2', 1, 1, pk2)
@@ -372,10 +389,17 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             if self.cids.size > 0:
                 c = []
                 for irf in range(self.cids.shape[1]):
-                    c.append(LParameter(f'ref_{irf:d}', f'comparison_star_{irf:d}', '', UP(0.0, 0.999), bounds=( 0.0, 0.999)))
-                self.ps.add_global_block('rstars', c)
-                self._sl_ref = self.ps.blocks[-1].slice
-                self._start_ref = self.ps.blocks[-1].start
+                    c.append(LParameter(f'ref_on_{irf:d}', f'use_comparison_star_{irf:d}', '', UP(0.0, 1.0), bounds=( 0.0, 1.0)))
+                self.ps.add_global_block('ref_include', c)
+                self._sl_ref_include = self.ps.blocks[-1].slice
+                self._start_ref_include = self.ps.blocks[-1].start
+
+                c = []
+                for irf in range(self.cids.shape[1]):
+                    c.append(LParameter(f'ref_apt_{irf:d}', f'comparison_star_aperture_{irf:d}', '', UP(0.0, 0.999*(self.napt)), bounds=( 0.0, 0.999*(self.napt))))
+                self.ps.add_global_block('ref_apts', c)
+                self._sl_ref_apt = self.ps.blocks[-1].slice
+                self._start_ref_apt = self.ps.blocks[-1].start
 
     def _init_p_noise(self):
         """Noise parameter initialisation.
@@ -457,7 +481,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         if plot:
             fig, axs = subplots(1, self.npb, figsize=(13, 4), sharey='all')
         for ipb in range(self.npb):
-            ft = self.ofluxes[ipb][:, iapt] / sum([r[:, iapt] for r in self.refs[ipb]], 0)
+            ft = self.target_fluxes[ipb][:, iapt] / self.reference_fluxes[ipb][:, :, iapt].sum(1)
             ft /= median(ft)
             dft = diff(ft)
             mask = ~sigma_clip(dft, sigma_lower=inf, sigma_upper=5, stdfunc=mad_std).mask
@@ -469,9 +493,8 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             if apply:
                 fluxes.append(ft[ids])
                 self.times[ipb] = self.times[ipb][ids]
-                self.ofluxes[ipb] = self.ofluxes[ipb][ids, :]
-                for icid in range(self.cids.shape[1]):
-                    self.refs[ipb][icid] = self.refs[ipb][icid][ids, :]
+                self.target_fluxes[ipb] = self.target_fluxes[ipb][ids, :]
+                self.reference_fluxes[ipb] = self.reference_fluxes[ipb][ids, :, :]
                 self.covariates[ipb] = self.covariates[ipb][ids, :]
         if apply:
             self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
@@ -488,7 +511,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             axs = atleast_1d(axs)
 
         for ipb in range(self.npb):
-            ft = self.ofluxes[ipb][:, aid] / nanmedian(self.ofluxes[ipb][:, aid])
+            ft = self.target_fluxes[ipb][:, aid] / nanmedian(self.target_fluxes[ipb][:, aid])
 
             mask = ~((self.times[ipb] > tstart) & (self.times[ipb] < tend))
 
@@ -498,9 +521,8 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             if apply:
                 fluxes.append(ft[mask])
                 self.times[ipb] = self.times[ipb][mask]
-                self.ofluxes[ipb] = self.ofluxes[ipb][mask, :]
-                for icid in range(self.cids.shape[1]):
-                    self.refs[ipb][icid] = self.refs[ipb][icid][mask, :]
+                self.target_fluxes[ipb] = self.target_fluxes[ipb][mask, :]
+                self.reference_fluxes[ipb] = self.reference_fluxes[ipb][mask, :, :]
                 self.covariates[ipb] = self.covariates[ipb][mask, :]
         if apply:
             self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
@@ -514,7 +536,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             fig, axs = subplots(1, self.npb, figsize=(13, 4), sharey='all')
             axs = atleast_1d(axs)
         for ipb in range(self.npb):
-            ft = self.ofluxes[ipb][:, iapt] / nanmedian(self.ofluxes[ipb][:, iapt])
+            ft = self.target_fluxes[ipb][:, iapt] / nanmedian(self.target_fluxes[ipb][:, iapt])
             mask = ones(ft.size, bool)
 
             if npoly > 0:
@@ -538,9 +560,8 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             if apply:
                 fluxes.append(ft[mask])
                 self.times[ipb] = self.times[ipb][mask]
-                self.ofluxes[ipb] = self.ofluxes[ipb][mask, :]
-                for icid in range(self.cids.shape[1]):
-                    self.refs[ipb][icid] = self.refs[ipb][icid][mask, :]
+                self.target_fluxes[ipb] = self.target_fluxes[ipb][mask, :]
+                self.reference_fluxes[ipb] = self.reference_fluxes[ipb][mask, :, :]
                 self.covariates[ipb] = self.covariates[ipb][mask, :]
         if apply:
             self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
@@ -548,15 +569,13 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             fig.tight_layout()
 
     def downsample(self, exptime: float) -> None:
-        nrefs = self.cids.shape[1]
         fluxes = []
         for ipb in range(self.npb):
-            bt, self.ofluxes[ipb] = downsample_time(self.times[ipb], self.ofluxes[ipb], exptime)
-            for icid in range(nrefs):
-                _, self.refs[ipb][icid] = downsample_time(self.times[ipb], self.refs[ipb][icid], exptime)
+            bt, self.target_fluxes[ipb] = downsample_time(self.times[ipb], self.target_fluxes[ipb], exptime)
+            _, self.reference_fluxes[ipb] = downsample_time(self.times[ipb], self.reference_fluxes[ipb], exptime)
             _, self.covariates[ipb] = downsample_time(self.times[ipb], self.covariates[ipb], exptime)
             self.times[ipb] = bt
-            f = self.ofluxes[ipb][:, -1] / sum([r[:, -1] for r in self.refs[ipb]], 0)
+            f = self.target_fluxes[ipb][:, -1] / self.reference_fluxes[ipb][:,:,-1].sum(1)
             fluxes.append(f / nanmedian(f))
         self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
 
@@ -574,7 +593,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
 
     def reference_apertures(self, pv):
         pv = atleast_2d(pv)
-        p = floor(clip(pv[:, self._sl_ref], 0., 0.999) * (self.napt+1)).astype('int')
+        p = floor(pv[:, self._sl_ref_apt]).astype('int')
         return squeeze(p)
 
     def set_ofluxa(self, pv):
@@ -594,7 +613,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             self._reference_flux = ones_like(self.ofluxa)
             self.raps = []
         else:
-            self._frozen_population = delete(pvp, s_[self._sl_tap.start: self._sl_ref.stop], 1)
+            self._frozen_population = delete(pvp, s_[self._sl_tap.start: self._sl_ref_apt.stop], 1)
             self._reference_flux = self.reference_flux(pv)
             self.raps = self.reference_apertures(pv)
 
@@ -722,20 +741,18 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         p = floor(clip(pv[:, self._sl_tap], 0., 0.999) * self.napt).astype('int')
         off = zeros((p.shape[0], self.timea.size))
         for i, sl in enumerate(self.lcslices):
-            off[:, sl] = self.ofluxes[i][:, p].T
+            off[:, sl] = self.target_fluxes[i][:, p].T
         return squeeze(off)
 
-    def reference_flux(self, pv):
+    def reference_flux(self, pvp):
         if self.cids.size > 0:
-            pv = atleast_2d(pv)
-            p = floor(clip(pv[:, self._sl_ref], 0., 0.999) * self.napt + 1).astype('int')
-            r = zeros((pv.shape[0], self.ofluxa.size))
-            nref = self.cids.shape[1]
-            for ipb, sl in enumerate(self.lcslices):
-                for iref in range(nref):
-                    r[:, sl] += self.refs[ipb][iref][:, p[:, iref]].T
-                r[:, sl] = r[:, sl] / median(r[:, sl], 1)[:, newaxis]
-            return squeeze(where(isfinite(r), r, inf))
+            pvp = atleast_2d(pvp)
+            ref_mask = pvp[:, self._sl_ref_include] >= 0.5
+            ref_apertures = floor(clip(pvp[:, self._sl_ref_apt], 0, 11.99)).astype(int)
+            ref_fluxes = empty((pvp.shape[0], self.timea.size))
+            for i, rf in enumerate(self.reference_fluxes):
+                ref_fluxes[:, self.lcslices[i]] = create_reference_flux(rf, ref_mask, ref_apertures)
+            return squeeze(where(isfinite(ref_fluxes), ref_fluxes, inf))
         else:
             return 1.
 
@@ -793,7 +810,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             for i in range(pv.shape[0]):
                 lnl[i] = self.ldps.lnlike_tq(pv[i, self._sl_ld])
             return lnl
-        self._additional_log_priors.append(ldprior)
+        self.add_prior(ldprior)
 
     def add_inside_window_prior(self, min_duration=20):
         self._iptmin = self.timea.min()
@@ -808,7 +825,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             egress = tc + 0.5 * t14
             inside_limits = fmin(egress - self._iptmin - self._ipmdur, self._iptmax - ingress - self._ipmdur) > 0
             return where(inside_limits, 0, -inf)
-        self._additional_log_priors.append(is_inside_window)
+        self.add_prior(is_inside_window)
 
     def transit_bic(self):
         from scipy.optimize import minimize
