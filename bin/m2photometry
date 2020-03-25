@@ -120,6 +120,7 @@ if __name__ == '__main__':
     ap.add_argument('--cnt-sids', type=int, nargs='+', default=None)
     ap.add_argument('--cnt-pmin', type=float, default=80)
     ap.add_argument('--cnt-pmax', type=float, default=95)
+    ap.add_argument('--cnt-refine', type=int, nargs='+', default=None)
     args = ap.parse_args()
 
     root = Path(args.datadir)
@@ -259,7 +260,10 @@ if __name__ == '__main__':
                         im.cut_separation(target_sky_coords, args.separation_cut_distance)
                         im.remove_doubles(target_sky_coords, args.double_removal_distance)
                         logging.info(f"Applying separation cut and double removal: {im.nstars} left")
-                cn = COMCentroider(im,  None, aperture_radius=args.cnt_aperture, nstars=8)
+                if args.cnt_refine is not None:
+                    for istar in args.cnt_refine:
+                        im.centroid_single(istar, args.cnt_aperture, pmin=args.cnt_pmin, pmax=args.cnt_pmax)
+                cn = COMCentroider(im, None, aperture_radius=args.cnt_aperture, nstars=8)
                 im.save_reference_stars(stars_file)
 
             im.load_reference_stars(stars_file)

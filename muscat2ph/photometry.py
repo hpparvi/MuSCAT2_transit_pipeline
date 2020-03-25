@@ -462,15 +462,18 @@ class ScienceFrame(ImageFrame):
         apt = CircularAperture(list(self._cur_centroids_pix[star, :]), r)
         reduced_frame = self.reduced
         for iiter in range(niter):
-            mask = apt.to_mask()[0]
+            mask = apt.to_mask()
             cutout = mask.cutout(reduced_frame).copy()
             p = percentile(cutout, [pmin, pmax])
             clipped_cutout = clip(cutout, *p) - p[0]
             c = com(clipped_cutout)
             apt.positions[:] = flip(c, 0) + array([mask.bbox.slices[1].start, mask.bbox.slices[0].start])
         self._cur_centroids_pix[star, :] = apt.positions
-        self._update_apertures(self._cur_centroids_pix)
-
+        if self._wcs:
+            csky = pd.DataFrame(self._wcs.all_pix2world(self._cur_centroids_pix, 0), columns='RA Dec'.split())
+            self.set_reference_stars(self._cur_centroids_pix, csky=csky)
+        else:
+            self.set_reference_stars(self._cur_centroids_pix)
 
     def centroid_soft(self, r=20, pmin=80, pmax=95, niter=1):
         for istar in range(self.nstars):
