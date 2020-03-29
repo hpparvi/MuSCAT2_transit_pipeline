@@ -45,7 +45,7 @@ def run_astrometry(filename_and_obj, overwrite=True):
     sc = None
     try:
         sc = get_coords(object)
-        astcall.extend([f"--ra={sc.ra.deg}", f"--dec={sc.dec.deg}", "--radius=5"])
+        astcall.extend([f"--ra={sc.ra.deg}", f"--dec={sc.dec.deg}", "--radius=0.15"])
         logging.info(f" Solving {filename.stem} - {object} - RA: {sc.ra.deg:6.3f} DEC: {sc.dec.deg:6.3f}")
     except:
         logging.info(f" Solving {filename.stem} - {object} - Not found from any catalog")
