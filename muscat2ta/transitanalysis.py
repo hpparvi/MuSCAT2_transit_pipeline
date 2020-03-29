@@ -17,6 +17,7 @@
 import warnings
 from pathlib import Path
 from time import strftime
+from typing import Optional, List, Union
 
 from astropy.stats import mad_std
 from astropy.utils.exceptions import AstropyWarning
@@ -84,7 +85,8 @@ class TransitAnalysis:
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
                  radius_ratio: str = 'achromatic', klims=(0.005, 0.25),
                  catalog_name: str = None, init_lpf: bool = True,
-                 check_saturation: bool = True, contamination_model: str = 'physical'):
+                 check_saturation: bool = True, contamination_model: str = 'physical',
+                 contamination_reference_passband: str = "r'"):
 
         self.target: str = target
         self.date: str = date
@@ -145,7 +147,8 @@ class TransitAnalysis:
             self.lpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl,
                              with_transit=with_transit, with_contamination=with_contamination,
                              n_legendre=nlegendre, radius_ratio=radius_ratio, klims=klims,
-                             contamination_model=contamination_model)
+                             contamination_model=contamination_model,
+                             contamination_reference_passband=contamination_reference_passband)
             if with_transit:
                 self.lpf.set_prior(0, NP(self.lpf.times[0].mean(), 0.2*self.lpf.times[0].ptp()))
 
@@ -403,7 +406,7 @@ class TransitAnalysis:
                 warnings.warn("Couldn't create a reference frame figure.")
 
             for i in range(len(self.phs)):
-                fig = self.plot_raw_light_curves(i, ids, full_like(ids, aid), sharey='all')
+                fig = self.plot_raw_light_curves(i, ids, aid, sharey='all')[0]
                 fig.savefig(self._dplot / f"{self.target}_{self.date}_raw_{self.pbs[i]}.pdf")
 
         if save:
@@ -422,7 +425,8 @@ class TransitAnalysis:
 
             hdul.writeto(self._dres / f"{self.target}_{self.date}_raw.fits", overwrite=True)
 
-    def plot_raw_light_curves(self, pbs: int = None, sids: int = None, aids: int = None, sharey='all', ylim=None, vlines=None):
+    def plot_raw_light_curves(self, pbs: Optional[int] = None, sids: Optional[Union[List,int,ndarray]] = None,
+                              aids: Optional[Union[List,int,ndarray]] = None, sharey='all', ylim=None, vlines=None):
         pbs = atleast_1d(pbs) if pbs is not None else arange(len(self.phs))
         sids = atleast_1d(sids) if sids is not None else arange(min(self.phs[0].nobj, 6))
         aids = atleast_1d(aids) if aids is not None else full(sids.size, -1)
