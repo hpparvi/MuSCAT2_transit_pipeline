@@ -249,40 +249,45 @@ class ScienceFrame(ImageFrame):
         return self._cshift.copy()
 
     def load_reference_stars(self, fname):
-        t = Table.read(fname)
-        csky = array(t[['ra', 'dec']]) if 'ra' in t.colnames else None
-        cpix = t.to_pandas()[['x', 'y']].values
-        self.set_reference_stars(cpix, csky)
-        self._initialize_tables(self.nstars, self.napt)
+        csv_file = Path(fname).with_suffix('.csv')
+        fits_file = Path(fname).with_suffix('.fits')
 
-        try:
-            df = pd.read_csv(Path(fname).with_suffix('.csv'), index_col=0)
+        if csv_file.exists():
+            df = pd.read_csv(csv_file, index_col=0)
             cpix = df[['x','y']].values
-            csky = df[['ra','dec']].values
+            if 'ra' in df:
+                csky = df[['ra','dec']].values
+            else:
+                csky = None
             self.set_reference_stars(cpix, csky)
             self._initialize_tables(self.nstars, self.napt)
-            self._flux_ratios = df['fratio'].values
+            if 'fratio' in df:
+                self._flux_ratios = df['fratio'].values
             self.centroid_star_ids = where(df.center.values)
-        except FileNotFoundError:
-            pass
+        elif fits_file.exists():
+            t = Table.read(fits_file)
+            csky = array(t[['ra', 'dec']]) if 'ra' in t.colnames else None
+            cpix = t.to_pandas()[['x', 'y']].values
+            self.set_reference_stars(cpix, csky)
+            self._initialize_tables(self.nstars, self.napt)
+        else:
+            raise FileNotFoundError(f"Could not find neither {csv_file} or {fits_file}")
 
     def save_reference_stars(self, fname):
         cids = zeros(self.nstars, bool)
-        cids[self.centroider.sids] = True
+        try:
+            cids[self.centroider.sids] = True
+        except AttributeError:
+            pass
 
         df = pd.DataFrame(self._ref_centroids_pix, columns=['x', 'y'])
-        df['ra'] = self._ref_centroids_sky.ra.value
-        df['dec'] = self._ref_centroids_sky.dec.value
-        df['fratio'] = self._flux_ratios
+        if self._ref_centroids_sky is not None:
+            df['ra'] = self._ref_centroids_sky.ra.value
+            df['dec'] = self._ref_centroids_sky.dec.value
+        if hasattr(self, '_flux_ratios'):
+            df['fratio'] = self._flux_ratios
         df['center'] = cids
         df.to_csv(Path(fname).with_suffix('.csv'))
-
-        if self._wcs:
-            t = Table(c_[self._ref_centroids_sky.ra.deg, self._ref_centroids_sky.dec.deg, self._ref_centroids_pix],
-                      names='ra dec x y'.split())
-        else:
-            t = Table(self._ref_centroids_pix, names=['x', 'y'])
-        t.write(fname, overwrite=True)
 
     def set_reference_stars(self, cpix, csky=None, wsky=15):
         self._ref_centroids_pix = array(cpix)

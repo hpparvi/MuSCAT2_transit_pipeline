@@ -1,0 +1,250 @@
+#!/usr/bin/env python
+
+#  MuSCAT2 photometry and transit analysis pipeline
+#  Copyright (C) 2020  Hannu Parviainen
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+import logging
+
+from argparse import ArgumentParser
+from datetime import datetime, timedelta
+from multiprocessing import Pool
+from os import makedirs
+from pathlib import Path
+
+import xarray as xa
+from astropy.io import fits as pf
+from astropy.wcs.wcs import NoConvergence
+from numpy import zeros, inf, array, c_, nan, full_like, float32, seterr, arange
+from tqdm import tqdm
+
+import matplotlib as mpl
+
+from muscat2ph.dfcentroider import DFCentroider
+
+mpl.use('Agg')
+import matplotlib.pyplot as pl
+
+from muscat2ph.photometry import ScienceFrame
+from muscat2ph.centroider import COMCentroider
+from muscat2ph.catalog import get_m2_coords, get_toi, get_toi_or_tic_coords, get_coords
+
+from astropy.utils.exceptions import AstropyDeprecationWarning
+import warnings
+warnings.filterwarnings("error", category=AstropyDeprecationWarning)
+
+seterr(invalid='ignore')
+
+passbands = 'g r i z_s'.split()
+
+logging.basicConfig(level=logging.INFO)
+
+if __name__ == '__main__':
+    ap = ArgumentParser()
+    ap.add_argument('datadir', type=str)
+    ap.add_argument('--object', type=str, default=None)
+    ap.add_argument('--passband', choices='g r i z_s all'.split(), default='all')
+    ap.add_argument('--target-catalog-name', type=str, default=None)
+    ap.add_argument('--result-dir', type=Path, default=None)
+    ap.add_argument('--max-stars', type=int, default=15)
+    ap.add_argument('--start-frame', type=int, default=0)
+    ap.add_argument('--end-frame', type=int, default=inf)
+    ap.add_argument('--plot-only', action='store_false', dest='do_photometry', default=True)
+    ap.add_argument('--n-processes', type=int, default=5)
+    ap.add_argument('--border-margin', type=int, default=30)
+    ap.add_argument('--save-stars', action='store_true', default=False)
+    ap.add_argument('--apertures', nargs='+', type=float, default=None)
+    ap.add_argument('--cnt-aperture', type=float, default=35)
+    ap.add_argument('--ignore-wcs', action='store_true', default=False)
+    args = ap.parse_args()
+
+    root = Path(args.datadir)
+    obsdate = root.absolute().name
+    pbs = [args.passband] if args.passband != 'all' else 'r g i z_s'.split()
+    target_sky_coords = None
+    target_pix_coords = None
+    centroider_kwargs = dict(aperture_radius=args.cnt_aperture)
+
+    # Find objects
+    # ------------
+    if args.object:
+        objects = [args.object]
+    else:
+        objects = [o.name for o in list(root.joinpath('obj').glob('*'))]
+    logging.info(f'Objects: {objects}')
+
+    # Do the photometry for all the targets
+    # -------------------------------------
+    for object in objects:
+        max_stars = args.max_stars
+        catalog_name = args.target_catalog_name or object
+
+        try:
+            toi = get_toi(catalog_name)
+        except ValueError:
+            toi = None
+
+        target_sky_coords = get_coords(catalog_name)
+        logging.info(f"Target sky coordinates {target_sky_coords}")
+
+        if args.apertures is None:
+            apertures = (12, 18, 24, 30, 36)
+        else:
+            apertures = args.apertures
+        logging.info(f"Apertures {apertures}")
+
+        all_files = {}
+        files_with_wcs = {}
+        for pb in pbs:
+            ddir = root.joinpath('obj', object, pb)
+            if ddir.exists():
+                all_files[pb] = sorted(list(ddir.glob('MCT2?_*.fits')))
+                istart = max(0, args.start_frame)
+                iend = min(args.end_frame, len(all_files[pb]))
+                all_files[pb] = all_files[pb][istart:iend]
+                files_with_wcs[pb] = list(filter(lambda f: f.with_suffix('.wcs').exists(), all_files[pb]))
+                logging.info(f"Found {len(all_files[pb])} fits files ({len(files_with_wcs[pb])} with wcs) in the {pb}-band.")
+
+        if sum([len(f) for f in all_files.values()]) == 0:
+            logging.warning("No files to process")
+            continue
+
+        for k, it in all_files.items():
+            if len(it) > 0:
+                h = pf.getheader(it[0])
+                break
+
+        obsnight = datetime.strptime(h['date-obs'], '%Y-%m-%d')
+        if h['MJD-STRT'] % 1 < 0.5:
+            obsnight -= timedelta(1)
+
+        if args.result_dir:
+            rdir = Path(args.result_dir)
+        else:
+            rdir = Path('.').resolve().joinpath(object, obsnight.strftime('%y%m%d'))
+            if not rdir.exists():
+                makedirs(rdir)
+
+        plotdir = rdir / 'plots'
+        plotdir.mkdir(exist_ok=True, parents=True)
+
+        pbs = [pb for pb in pbs if pb in all_files]
+        logging.info(f"Found passbands {pbs}")
+
+        # Loop over passbands
+        # -------------------
+        stars_file = rdir.joinpath('{}_stars.csv'.format(object))
+        for ipb, pb in enumerate(pbs):
+            files = all_files[pb]
+            im = ScienceFrame(root, pb, aperture_radii=apertures)
+
+            # Find, cut, save, and load the stars
+            # -----------------------------------
+            if (args.save_stars and ipb==0) or not stars_file.exists():
+                if len(files_with_wcs[pb]) > 0:
+                    logging.info("Searching for stars from the GAIA catalog")
+                    im.load_fits(files_with_wcs[pb][0])
+                    im.find_stars_gaia(target_sky=target_sky_coords, radius=6, min_flux_ratio=0.1)
+                    logging.info(f"- Found {im.nstars} stars")
+                else:
+                    logging.info("Searching for stars")
+                    im.find_stars(maxn=max_stars)
+                im.save_reference_stars(stars_file)
+
+            im.load_reference_stars(stars_file)
+
+            cc = DFCentroider()
+            im._cur_centroids_pix[:] = cc.calculate_centroid(im.reduced, im._cur_centroids_pix, args.cnt_aperture)
+            im._update_apertures(im._cur_centroids_pix)
+
+            # Field plot with apertures
+            # -------------------------
+            fig_field, ax_field = pl.subplots(figsize=(9, 9))
+            im.plot_reduced(minp=90, offset=10, ax=ax_field)
+            ax_field.set_title(f"Reference frame - {object} {pb}")
+            pl.setp(ax_field, ylabel='Y [pix]', xlabel='X [pix]')
+            fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
+            fig_field.savefig(str(rdir.joinpath(f"{object}_20{obsdate}_MuSCAT2_{pb}_field.png")))
+            pl.close(fig_field)
+
+            # Fitted PSF plot
+            # ---------------
+            fig_psf = cc.plot_profiles(figsize=(13,6))
+            fig_psf.savefig(str(rdir / f"{object}_20{obsdate}_MuSCAT2_{pb}_seeing_profile.png"))
+            pl.close(fig_psf)
+
+            # Photometry
+            # ----------
+            if args.do_photometry:
+                def photometry(i):
+                    im.load_fits(files[i])
+                    im._cur_centroids_pix[:] = cc.calculate_centroid(im.reduced, im._cur_centroids_pix, args.cnt_aperture)
+                    im._update_apertures(im._cur_centroids_pix)
+                    figp = cc.plot_profiles(figsize=(13, 6))
+                    figp.savefig(str(plotdir / f"psf_{pb}_{i:03d}.png"))
+                    pl.close(figp)
+
+                    aux = [im._header['airmass'],
+                           im._header['exptime'],
+                           im._header['mjd-strt'] + 0.5 * im._header['exptime'] / 24 / 60 / 60]
+                    aux = xa.DataArray(aux, dims='quantity', coords={'quantity': 'airmass exptime mjd'.split()})
+
+                    return im.photometry(False) + (aux,)
+
+                result = [photometry(f) for f in tqdm(arange(len(files)))]
+
+                #with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file, apertures, centroider_kwargs)) as pool:
+                #    result = list(tqdm(pool.imap(photometry, files, chunksize=args.chunksize), total=len(files), desc='Photometry for {}'.format(pb)))
+                result = list(filter(lambda r:r is not None, result))
+
+                aux  = xa.concat([r[5] for r in result], 'frame')
+                ctime = xa.IndexVariable('mjd', aux.loc[:,'mjd'])
+                flux = xa.concat([r[0] for r in result], 'mjd').assign_coords(mjd = ctime)
+                msky = xa.concat([r[1] for r in result], 'mjd').assign_coords(mjd = ctime)
+                eobj = xa.concat([r[2] for r in result], 'mjd').assign_coords(mjd = ctime)
+                esky = xa.concat([r[3] for r in result], 'mjd').assign_coords(mjd = ctime)
+                cpos = xa.concat([r[4] for r in result], 'mjd').assign_coords(mjd = ctime)
+
+                cpix = xa.DataArray(im._ref_centroids_pix,
+                                    name='centroids_pix',
+                                    dims='star centroid_pix'.split(),
+                                    coords={'centroid_pix': ['x', 'y']})
+
+                if im._ref_centroids_sky is not None:
+                    ca = c_[im._ref_centroids_sky.ra.deg, im._ref_centroids_sky.dec.deg]
+                else:
+                    ca = full_like(array(cpix), nan)
+
+                csky = xa.DataArray(ca,
+                                    name='centroids_sky',
+                                    dims='star centroid_sky'.split(),
+                                    coords={'centroid_sky': ['ra', 'dec']})
+
+                ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos,
+                                     aux=aux, centroids_pix=cpix, centroids_sky=csky))
+                ds.to_netcdf(str(rdir.joinpath('{}_{}_{}.nc'.format(object, obsdate, pb))))
