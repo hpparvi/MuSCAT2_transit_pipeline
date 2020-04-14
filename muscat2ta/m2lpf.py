@@ -299,7 +299,7 @@ class M2LPF(BaseLPF):
             queue = cl.CommandQueue(ctx)
             tm = QuadraticModelCL(klims=klims, nk=1024, nz=1024, cl_ctx=ctx, cl_queue=queue)
         else:
-            tm = QuadraticModel(interpolate=True, klims=klims, nk=1024, nz=1024)
+            tm = QuadraticModel(interpolate=False, klims=klims, nk=1024, nz=1024)
 
         BaseLPF.__init__(self, target, filters, times, fluxes, wns, arange(len(photometry)), covariates,
                          arange(len(fluxes)), tm = tm, tref=floor(times[0].min()))
@@ -566,11 +566,14 @@ class M2LPF(BaseLPF):
         for ipb in range(self.npb):
             bt, self.target_fluxes[ipb] = downsample_time(self.times[ipb], self.target_fluxes[ipb], exptime)
             _, self.reference_fluxes[ipb] = downsample_time(self.times[ipb], self.reference_fluxes[ipb], exptime)
+            if self.reference_fluxes[ipb].ndim == 2:
+                self.reference_fluxes[ipb] = self.reference_fluxes[ipb][:,newaxis,:]
             _, self.covariates[ipb] = downsample_time(self.times[ipb], self.covariates[ipb], exptime)
             self.times[ipb] = bt
             f = self.target_fluxes[ipb][:, -1] / self.reference_fluxes[ipb][:,:,-1].sum(1)
             fluxes.append(f / nanmedian(f))
         self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
+        self._baseline_models[0].init_data()
 
     def set_radius_ratio_prior(self, kmin, kmax):
         for p in self.ps[self._sl_k2]:
