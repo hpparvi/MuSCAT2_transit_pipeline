@@ -19,6 +19,7 @@ import seaborn as sb
 
 from astropy.stats import sigma_clip, mad_std
 from astropy.table import Table
+from build.lib.muscat2ta.lpf import lnlike_normal
 from ldtk import LDPSetCreator
 from matplotlib.pyplot import subplots, setp, figure
 from astropy.io import fits as pf
@@ -36,10 +37,11 @@ from pytransit import QuadraticModel, QuadraticModelCL, BaseLPF, LinearModelBase
 from pytransit.contamination import SMContamination
 from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
 from pytransit.contamination.instrument import Instrument
-from pytransit.lpf.lpf import BaseLPF, map_pv, map_ldc
+from pytransit.lpf.lpf import map_pv, map_ldc
 from pytransit.orbits.orbits_py import as_from_rhop, duration_eccentric, i_from_ba, d_from_pkaiews, epoch
 from pytransit.param.parameter import NormalPrior as NP, UniformPrior as UP, LParameter, PParameter, ParameterSet, \
     GParameter
+from pytransit.lpf.loglikelihood.wnloglikelihood import WNLogLikelihood
 from pytransit.utils.de import DiffEvol
 from scipy.ndimage import binary_erosion
 from scipy.stats import logistic, norm
@@ -196,7 +198,17 @@ def create_reference_flux(reference_fluxes, ref_mask, ref_aperture_ids):
         flux[ipv] /= median(flux[ipv])
     return flux
 
-class M2LPF(LinearModelBaseline, BaseLPF):
+
+class M2WNLogLikelihood(WNLogLikelihood):
+    def __call__(self, pvp, model):
+        err = 10 ** atleast_2d(pvp)[:, self.pv_slice]
+        flux_m = self.lpf.flux_model(pvp)
+        if self.lpf.photometry_frozen:
+            return lnlike_logistic_v1d(self.lpf.ofluxa, flux_m, err, self.lpf.lcids)
+        else:
+            return lnlike_logistic_v(self.lpf.relative_flux(pvp), flux_m, err, self.lpf.lcids)
+
+class M2LPF(BaseLPF):
     def __init__(self, target: str, photometry: list, tid: int, cids: list,
                  filters: tuple, aperture_lims: tuple = (0, inf), use_opencl: bool = False,
                  n_legendre: int = 0, use_toi_info=True, with_transit=True, with_contamination=False,
@@ -266,9 +278,6 @@ class M2LPF(LinearModelBaseline, BaseLPF):
 
         self.apertures = ones(len(times)).astype('int')
 
-        self.tref = floor(times[0].min())
-        times = [t - self.tref for t in times]
-
         self._tmin = times[0].min()
         self._tmax = times[0].max()
 
@@ -292,7 +301,8 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         else:
             tm = QuadraticModel(interpolate=True, klims=klims, nk=1024, nz=1024)
 
-        BaseLPF.__init__(self, target, filters, times, fluxes, wns, arange(len(photometry)), covariates, arange(len(fluxes)), tm = tm)
+        BaseLPF.__init__(self, target, filters, times, fluxes, wns, arange(len(photometry)), covariates,
+                         arange(len(fluxes)), tm = tm, tref=floor(times[0].min()))
         self._start_flares = len(self.ps)
 
         # Create the target and reference star flux arrays
@@ -304,15 +314,24 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             self.target_fluxes.append(array(flux[:, 0, :] / flux[:, 0, :].median('mjd')))
             self.reference_fluxes.append(array(flux[:, 1:, :]))
 
+        if self.cids.shape[1] == 1:
+            self.set_prior('ref_on_0', 'NP', 0.75, 1e-3)
+
     def _init_parameters(self):
         self.ps = ParameterSet()
         if self.with_transit:
             self._init_p_orbit()
             self._init_p_planet()
             self._init_p_limb_darkening()
-        self._init_p_baseline()
-        self._init_p_noise()
-        self.ps.freeze()
+        self._init_p_photometry()
+        if self.ps:
+            self.ps.freeze()
+
+    def _init_baseline(self):
+        self._add_baseline_model(LinearModelBaseline(self))
+
+    def _init_lnlikelihood(self):
+        self._add_lnlikelihood_model(M2WNLogLikelihood(self))
 
     def _init_p_planet(self):
         """Planet parameter initialisation.
@@ -377,11 +396,9 @@ class M2LPF(LinearModelBaseline, BaseLPF):
                 self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
                 self._sl_cn = self.ps.blocks[-1].slice
 
-    def _init_p_baseline(self):
-        LinearModelBaseline._init_p_baseline(self)
-
+    def _init_p_photometry(self):
         if not self.photometry_frozen:
-            c = [LParameter(f'tap', f'target_aperture', '', UP(0.0, 0.999),  bounds=(0.0, 0.999))]
+            c = [LParameter(f'tap', f'target_aperture', '', UP(0.0, 0.999*(self.napt)),  bounds=(0.0, 0.999*(self.napt)))]
             self.ps.add_global_block('apertures', c)
             self._sl_tap = self.ps.blocks[-1].slice
             self._start_tap = self.ps.blocks[-1].start
@@ -400,21 +417,6 @@ class M2LPF(LinearModelBaseline, BaseLPF):
                 self.ps.add_global_block('ref_apts', c)
                 self._sl_ref_apt = self.ps.blocks[-1].slice
                 self._start_ref_apt = self.ps.blocks[-1].start
-
-    def _init_p_noise(self):
-        """Noise parameter initialisation.
-        """
-
-        if self.noise_model == 'gp':
-            pgp = [GParameter('log_gpa', 'log10_gp_amplitude', '', UP(-4,  0), bounds=(-4,  0)),
-                   GParameter('log_gps', 'log10_gp_tscale',    '', UP(-5, 10), bounds=(-5, 10))]
-            self.ps.add_global_block('gp', pgp)
-            self._sl_gp = self.ps.blocks[-1].slice
-            self._start_gp = self.ps.blocks[-1].start
-        pns = [LParameter('loge_{:d}'.format(i), 'log10_error_{:d}'.format(i), '', UP(-4, 0), bounds=(-4, 0)) for i in range(self.n_noise_blocks)]
-        self.ps.add_lightcurve_block('log_err', 1, self.n_noise_blocks, pns)
-        self._sl_err = self.ps.blocks[-1].slice
-        self._start_err = self.ps.blocks[-1].start
 
     def _init_instrument(self):
         filters = {'g': sdss_g, 'r': sdss_r, 'i':sdss_i, 'z_s':sdss_z}
@@ -465,15 +467,6 @@ class M2LPF(LinearModelBaseline, BaseLPF):
                 #    pvp[i, ldsl][::2] = pvp[i, ldsl][::2][pid]
                 #    pvp[i, ldsl][1::2] = pvp[i, ldsl][1::2][pid]
 
-        # Baseline coefficients
-        # ---------------------
-        for i,p in enumerate(self.ps[self._sl_bl]):
-            pvp[:, self._start_bl+i] = normal(p.prior.mean, 0.2*p.prior.std, size=npop)
-
-        # Estimate white noise from the data
-        # ----------------------------------
-        for i in range(self.nlc):
-            pvp[:, self._start_err+i] = log10(uniform(0.5*self.wn[i], 2*self.wn[i], size=npop))
         return pvp
 
     def remove_outliers(self, iapt: int, lower: float = 5, upper: float = 5, plot: bool = False, apply: bool = True) -> None:
@@ -620,20 +613,18 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         self.taps = self.target_apertures(pv)
         self._target_flux = self.target_flux(pv)
         self.ofluxa[:] = self.relative_flux(pv)
-        start_tap = self._start_tap
-        start_err = self._start_err
-        stop_err = self._start_flares
-        npar_orig = len(ps_orig)
 
         self.photometry_frozen = True
         self._init_parameters()
+        self._baseline_models = []
+        self._lnlikelihood_models = []
+        self._init_lnlikelihood()
+        self._init_baseline()
         self.ps.thaw()
-        for i in range(0, start_tap):
-            self.ps[i].prior = ps_orig[i].prior
-            self.ps[i].bounds = ps_orig[i].bounds
-        for i, j in enumerate(range(start_err, stop_err)):
-            self.ps[start_tap + i].prior = ps_orig[j].prior
-            self.ps[start_tap + i].bounds = ps_orig[j].bounds
+        for p in self.ps:
+            iold = ps_orig.names.index(p.name)
+            p.prior = ps_orig[iold].prior
+            p.bounds = ps_orig[iold].bounds
         if self.n_flares > 0:
             self.ps.add_global_block('flares', ps_orig[self._sl_flares])
             self._sl_flares = self.ps.blocks[-1].slice
@@ -738,7 +729,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
 
     def target_flux(self, pv):
         pv = atleast_2d(pv)
-        p = floor(clip(pv[:, self._sl_tap], 0., 0.999) * self.napt).astype('int')
+        p = floor(clip(pv[:, self._sl_tap], 0.0, self.napt*0.999)).astype('int')
         off = zeros((p.shape[0], self.timea.size))
         for i, sl in enumerate(self.lcslices):
             off[:, sl] = self.target_fluxes[i][:, p].T
@@ -748,21 +739,13 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         if self.cids.size > 0:
             pvp = atleast_2d(pvp)
             ref_mask = pvp[:, self._sl_ref_include] >= 0.5
-            ref_apertures = floor(clip(pvp[:, self._sl_ref_apt], 0, 11.99)).astype(int)
+            ref_apertures = floor(clip(pvp[:, self._sl_ref_apt], 0.0, 0.999*self.napt)).astype(int)
             ref_fluxes = empty((pvp.shape[0], self.timea.size))
             for i, rf in enumerate(self.reference_fluxes):
                 ref_fluxes[:, self.lcslices[i]] = create_reference_flux(rf, ref_mask, ref_apertures)
             return squeeze(where(isfinite(ref_fluxes), ref_fluxes, inf))
         else:
             return 1.
-
-    def lnlikelihood(self, pv):
-        flux_m = self.flux_model(pv)
-        wn = 10**(atleast_2d(pv)[:,self._sl_err])
-        if self.photometry_frozen:
-            return lnlike_logistic_v1d(self.ofluxa, flux_m, wn, self.lcids)
-        else:
-            return lnlike_logistic_v(self.relative_flux(pv), flux_m, wn, self.lcids)
 
     def ldprior(self, pv):
         ld = pv[:, self._sl_ld]
@@ -835,7 +818,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
 
         pv_all = self.de.minimum_location.copy()
         pv_bl = pv_all[self._sl_bl]
-        wn = atleast_2d(10 ** pv_all[self._sl_err])
+        wn = atleast_2d(10 ** pv_all[self._sl_wn])
 
         def lnlikelihood_baseline(self, pv):
             pv_all[self._sl_bl] = pv
@@ -858,7 +841,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
     def posterior_samples(self, burn: int = 0, thin: int = 1, derived_parameters: bool = True, add_tref = True):
         df = BaseLPF.posterior_samples(self, burn, thin, derived_parameters)
         if add_tref:
-            df.tc += self.tref
+            df.tc += self._tref
         return df
 
     def plot_light_curves(self, model: str = 'de', figsize: tuple = (13, 8), fig=None, gridspec=None,
@@ -874,14 +857,14 @@ class M2LPF(LinearModelBaseline, BaseLPF):
 
         if model == 'de':
             pv = self.de.minimum_location
-            err = 10 ** pv[self._sl_err]
+            err = 10 ** pv[self._sl_wn]
             if not self.photometry_frozen:
                 self.set_ofluxa(pv)
 
         elif model == 'mc':
             fc = array(self.posterior_samples(derived_parameters=False, add_tref=False))
             pv = permutation(fc)[:300]
-            err = 10 ** median(pv[:, self._sl_err], 0)
+            err = 10 ** median(pv[:, self._sl_wn], 0)
             if not self.photometry_frozen:
                 self.set_ofluxa(median(pv, 0))
         else:
@@ -921,7 +904,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         setp(axs[1, 0], ylabel='Transit + Systematics')
         setp(axs[2, 0], ylabel='Transit - Systematics')
         setp(axs[3, 0], ylabel='Residuals')
-        setp(axs[3, :], xlabel=f'Time - {self.tref:9.0f} [BJD]')
+        setp(axs[3, :], xlabel=f'Time - {self._tref:9.0f} [BJD]')
         setp(axs[0, :], xlabel='Residual [ppt]', yticks=[])
 
         if ylim_transit is not None:
@@ -976,9 +959,9 @@ class M2LPF(LinearModelBaseline, BaseLPF):
         p = self.ps.priors[0]
         trange = p.mean - 3 * p.std, p.mean + 3 * p.std
         x = linspace(*trange)
-        axs[0, 1].hist(df.tc - self.tref, 50, density=True, range=trange, alpha=0.5, edgecolor='k',
+        axs[0, 1].hist(df.tc - self._tref, 50, density=True, range=trange, alpha=0.5, edgecolor='k',
                        histtype='stepfilled')
-        axs[0, 1].set_xlabel(f'Transit center - {self.tref:9.0f} [BJD]')
+        axs[0, 1].set_xlabel(f'Transit center - {self._tref:9.0f} [BJD]')
         axs[0, 1].fill_between(x, exp(p.logpdf(x)), alpha=0.5, edgecolor='k')
 
         # Period
@@ -1076,7 +1059,7 @@ class M2LPF(LinearModelBaseline, BaseLPF):
             reference_flux = ones_like(target_flux)
 
         for i, sl in enumerate(self.lcslices):
-            df = Table(transpose([time[sl] + self.tref, detrended_flux[sl], relative_flux[sl], target_flux[sl],
+            df = Table(transpose([time[sl] + self._tref, detrended_flux[sl], relative_flux[sl], target_flux[sl],
                                   reference_flux[sl], baseline[sl], transit[sl], trends[sl]]),
                        names='time_bjd flux flux_rel flux_trg flux_ref baseline model trends'.split(),
                        meta={'extname': f"flux_{self.passbands[i]}", 'filter': self.passbands[i], 'trends': 'linear', 'wn': self.wn[i], 'radrat': self.radius_ratio})

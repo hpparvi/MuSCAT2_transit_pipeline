@@ -303,13 +303,13 @@ class TransitAnalysis:
         delm = None
         if self.lpf.de:
             dep = self.lpf.de.population.copy()
-            dep[:,0] += self.lpf.tref
+            dep[:,0] += self.lpf._tref
             delm = xa.DataArray(dep, dims='pvector lm_parameter'.split(), coords={'lm_parameter': self.lpf.ps.names})
 
         lmmc = None
         if self.lpf.sampler is not None:
             chain = self.lpf.sampler.chain.copy()
-            chain[:,:,0] += self.lpf.tref
+            chain[:,:,0] += self.lpf._tref
             lmmc = xa.DataArray(chain, dims='pvector step lm_parameter'.split(),
                                 coords={'lm_parameter': self.lpf.ps.names},
                                 attrs={'ndim': self.lpf.de.n_par, 'npop': self.lpf.de.n_pop})
@@ -352,7 +352,7 @@ class TransitAnalysis:
 
         for i, pb in enumerate(self.pbs):
             sl = lpf.lcslices[i]
-            df = Table(transpose([time[sl] + self.lpf.tref, detrended_flux[sl], relative_flux[sl], target_flux[sl],
+            df = Table(transpose([time[sl] + self.lpf._tref, detrended_flux[sl], relative_flux[sl], target_flux[sl],
                                   reference_flux[sl], baseline[sl], transit[sl]]),
                        names='time_bjd flux flux_rel flux_trg flux_ref baseline model'.split(),
                        meta={'extname': f"flux_{pb}", 'filter': pb, 'trends': 'linear', 'wn': lpf.wn[i],
@@ -444,7 +444,7 @@ class TransitAnalysis:
             for sid, aid, ax in zip(sids, aids, axs.flat):
                 f = ph.flux[:, sid, aid]
                 f /= f.median()
-                ax.plot(ph.bjd - self.lpf.tref, f)
+                ax.plot(ph.bjd - self.lpf._tref, f)
                 ax.set_title(f"Star {sid}, aperture {aid}, scatter {float(f.diff('mjd').std('mjd') / sqrt(2)):.4f}")
                 ax.autoscale(enable=True, axis='x', tight=True)
                 setp(ax, ylabel='Normalised flux')
@@ -455,7 +455,7 @@ class TransitAnalysis:
 
             if sharey != 'none':
                 setp(axs[:, 1:], ylabel='')
-            setp(axs[-1, :], xlabel=f"Time - {self.lpf.tref:.0f} [d]")
+            setp(axs[-1, :], xlabel=f"Time - {self.lpf._tref:.0f} [d]")
             setp(axs, ylim=ylim)
             fig.tight_layout()
             figs.append(fig)

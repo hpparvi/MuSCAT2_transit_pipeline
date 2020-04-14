@@ -140,7 +140,7 @@ def map_pv_achromatic_cnt(pv):
     return pvt
 
 
-class M2BaseLPF(LinearModelBaseline, BaseLPF):
+class M2BaseLPF(BaseLPF):
     def __init__(self, target: str, use_opencl: bool = False, n_legendre: int = 0,
                  with_transit=True, with_contamination=False,
                  radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.25),
@@ -179,14 +179,17 @@ class M2BaseLPF(LinearModelBaseline, BaseLPF):
     def _read_data(self):
         raise NotImplementedError
 
+    def _init_baseline(self):
+        self._add_baseline_model(LinearModelBaseline(self))
+
     def _init_parameters(self):
         self.ps = ParameterSet()
         if self.with_transit:
             self._init_p_orbit()
             self._init_p_planet()
             self._init_p_limb_darkening()
-        self._init_p_baseline()
-        self._init_p_noise()
+        #self._init_p_baseline()
+        #self._init_p_noise()
         self.ps.freeze()
 
     def _init_p_planet(self):
@@ -233,23 +236,6 @@ class M2BaseLPF(LinearModelBaseline, BaseLPF):
                 self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
                 self._sl_cn = self.ps.blocks[-1].slice
 
-    def _init_p_baseline(self):
-        LinearModelBaseline._init_p_baseline(self)
-
-    def _init_p_noise(self):
-        """Noise parameter initialisation.
-        """
-
-        if self.noise_model == 'gp':
-            pgp = [GParameter('log_gpa', 'log10_gp_amplitude', '', UP(-4,  0), bounds=(-4,  0)),
-                   GParameter('log_gps', 'log10_gp_tscale',    '', UP(-5, 10), bounds=(-5, 10))]
-            self.ps.add_global_block('gp', pgp)
-            self._sl_gp = self.ps.blocks[-1].slice
-            self._start_gp = self.ps.blocks[-1].start
-        pns = [LParameter('loge_{:d}'.format(i), 'log10_error_{:d}'.format(i), '', UP(-4, 0), bounds=(-4, 0)) for i in range(self.n_noise_blocks)]
-        self.ps.add_lightcurve_block('log_err', 1, self.n_noise_blocks, pns)
-        self._sl_err = self.ps.blocks[-1].slice
-        self._start_err = self.ps.blocks[-1].start
 
     def _init_instrument(self):
         filters = {'g': sdss_g, 'r': sdss_r, 'i':sdss_i, 'z_s':sdss_z}
@@ -290,13 +276,13 @@ class M2BaseLPF(LinearModelBaseline, BaseLPF):
 
         # Baseline coefficients
         # ---------------------
-        for i,p in enumerate(self.ps[self._sl_bl]):
-            pvp[:, self._start_bl+i] = normal(p.prior.mean, 0.2*p.prior.std, size=npop)
+        #for i,p in enumerate(self.ps[self._sl_bl]):
+        #    pvp[:, self._start_bl+i] = normal(p.prior.mean, 0.2*p.prior.std, size=npop)
 
         # Estimate white noise from the data
         # ----------------------------------
-        for i in range(self.nlc):
-            pvp[:, self._start_err+i] = log10(uniform(0.5*self.wn[i], 2*self.wn[i], size=npop))
+        #for i in range(self.nlc):
+        #    pvp[:, self._start_err+i] = log10(uniform(0.5*self.wn[i], 2*self.wn[i], size=npop))
         return pvp
 
     def set_radius_ratio_prior(self, kmin, kmax):
