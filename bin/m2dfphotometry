@@ -162,18 +162,14 @@ if __name__ == '__main__':
         for ipb, pb in enumerate(pbs):
             files = all_files[pb]
             im = ScienceFrame(root, pb, aperture_radii=apertures)
+            im.load_fits(files[0])
 
             # Find, cut, save, and load the stars
             # -----------------------------------
             if (args.save_stars and ipb==0) or not stars_file.exists():
-                if len(files_with_wcs[pb]) > 0:
-                    logging.info("Searching for stars from the GAIA catalog")
-                    im.load_fits(files_with_wcs[pb][0])
-                    im.find_stars_gaia(target_sky=target_sky_coords, radius=6, min_flux_ratio=0.1)
-                    logging.info(f"- Found {im.nstars} stars")
-                else:
-                    logging.info("Searching for stars")
-                    im.find_stars(maxn=max_stars)
+                logging.info("Searching for stars")
+                im.find_stars(maxn=max_stars)
+                logging.info(f"- Found {im.nstars} stars")
                 im.save_reference_stars(stars_file)
 
             im.load_reference_stars(stars_file)

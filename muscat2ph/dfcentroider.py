@@ -21,6 +21,8 @@ from photutils import CircularAperture
 from scipy.optimize import minimize
 from scipy.stats import norm
 
+from pytransit.utils.de import DiffEvol
+
 @njit(cache=False)
 def lnlike_normal_s(o, m, e):
     return -o.size*log(e) -0.5*o.size*log(2.*pi) - 0.5*sum((o-m)**2)/e**2
@@ -58,9 +60,9 @@ def model(pv, xs, nstars):
 def log_likelihood(pv, obs, nstars):
     pv = asarray(pv)
     if any(pv[:9] <= 0.0) or any(pv[-nstars:] <= 0.0):
-        return inf
+        return -inf
     if not all(0 < pv[9:9 + 2 * nstars]) and all(pv[9:9 + 2 * nstars] < obs.shape[1]):
-        return inf
+        return -inf
 
     mod = model(pv, arange(obs.shape[1]), nstars)
     lnl = 0.
@@ -137,15 +139,37 @@ class DFCentroider(Centroider):
         self.profiles_obs = concatenate([xarray, yarray])
         self.npt = npt = self.profiles_obs.shape[1]
 
+        from pytransit.param import ParameterSet, LParameter, UniformPrior as UP, NormalPrior as NP
+
+        ps = []
+        ps.append(LParameter('separation', '', '', UP(5, 15)))
+        for a,c in zip('xxyy','1212'):
+            ps.append(LParameter(f'a{a}{c}', '', '', UP(0.1, 1.)))
+        for a,c in zip('xxyy','1212'):
+            ps.append(LParameter(f'w{a}{c}', '', '', UP(2.0, 10.)))
+        for c in 'xy':
+            for s in range(1,ns+1):
+                ps.append(LParameter(f'c{c}{s}', '', '', UP(0.4*npt, 0.6*npt)))
+        for c in 'xy':
+            for s in range(1,ns+1):
+                ps.append(LParameter(f'si{c}{s}', '', '', NP(-0.1, 0.1)))
+        for c in 'xy':
+            for s in range(1, ns+1):
+                ps.append(LParameter(f'ss{c}{s}', '', '', NP(-0.1, 0.1)))
+        for s in range(1, ns+1):
+            ps.append(LParameter(f'e{s}', '', '', UP(0.005, 0.1)))
+        ps = ParameterSet(ps)
+        ps.freeze()
+
         if x0 is None:
             if update and self._x0 is not None:
                 x0 = self._x0
             else:
-                x0 = concatenate([[15, 1, 1, 1, 1, 5, 5, 5, 5],
-                                  full(ns, npt / 2), full(ns, npt / 2),
-                                  zeros(4 * ns),
-                                  full(ns, 0.05)])
-                self._x0 = x0
+                pvp = ps.sample_from_prior(30)
+                de = DiffEvol(lambda x: -log_likelihood(x, self.profiles_obs, self.nstars), ps.bounds, pvp.shape[0])
+                de.population[:,:] = pvp
+                de.optimize(1000)
+                self._x0 = x0 = de.minimum_location
 
         self._res = minimize(lambda x: -log_likelihood(x, self.profiles_obs, self.nstars), x0, method='nelder-mead')
         self._x0 = self._res.x.copy()
@@ -206,13 +230,12 @@ class DFCentroider(Centroider):
 
     def plot_profiles(self, axs=None, figsize=None):
         if axs is None:
-            fig, axs = subplots(2, self.nstars, figsize=figsize, sharey='all')
+            fig, axs = subplots(2, self.nstars, figsize=figsize, sharey='all', squeeze=False)
         else:
             fig, axs = None, axs
 
         st = array([[bb.ixmin for bb in self.apertures.bbox],
                     [bb.iymin for bb in self.apertures.bbox]]).T
-
         x = arange(self.profiles_obs.shape[1])
         for ist in range(self.nstars):
             for ic in range(2):
