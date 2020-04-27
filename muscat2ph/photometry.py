@@ -343,7 +343,7 @@ class ScienceFrame(ImageFrame):
         else:
             self.set_reference_stars(cpix)
 
-    def find_stars_gaia(self, target_sky: SkyCoord, radius: float = 8, min_flux_ratio: float = 0.005):
+    def find_stars_gaia(self, target_sky: SkyCoord, radius: float = 11, min_flux_ratio: float = 0.005):
         cs = Gaia.cone_search_async(target_sky, radius * u.arcmin)
         tb = cs.get_results()
 
