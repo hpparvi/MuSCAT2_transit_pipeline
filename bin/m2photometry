@@ -249,7 +249,7 @@ if __name__ == '__main__':
                 if len(files_with_wcs[pb]) > 0:
                     logging.info("Searching for stars from the GAIA catalog")
                     im.load_fits(files_with_wcs[pb][0])
-                    im.find_stars_gaia(target_sky=target_sky_coords, radius=6, min_flux_ratio=args.min_fratio)
+                    im.find_stars_gaia(target_sky=target_sky_coords, radius=11, min_flux_ratio=args.min_fratio)
                     logging.info(f"- Found {im.nstars} stars")
                 else:
                     logging.info("Searching for stars")
