@@ -45,13 +45,13 @@ from tqdm import tqdm
 
 import matplotlib as mpl
 
-from muscat2ph.dfcentroider import DFCentroider
 
 mpl.use('Agg')
 import matplotlib.pyplot as pl
 
 from muscat2ph.photometry import ScienceFrame
 from muscat2ph.centroider import COMCentroider
+from muscat2ph.cmcentroider import CMCentroider
 from muscat2ph.catalog import get_m2_coords, get_toi, get_toi_or_tic_coords, get_coords
 
 from astropy.utils.exceptions import AstropyDeprecationWarning
@@ -174,8 +174,8 @@ if __name__ == '__main__':
 
             im.load_reference_stars(stars_file)
 
-            cc = DFCentroider()
-            im._cur_centroids_pix[:] = cc.calculate_centroid(im.reduced, im._cur_centroids_pix, args.cnt_aperture)
+            cc = CMCentroider(im.reduced, im._cur_centroids_pix, args.cnt_aperture)
+            im._cur_centroids_pix[:] = cc.calculate_centroid(im.reduced)
             im._update_apertures(im._cur_centroids_pix)
 
             # Field plot with apertures
@@ -190,7 +190,7 @@ if __name__ == '__main__':
 
             # Fitted PSF plot
             # ---------------
-            fig_psf = cc.plot_profiles(figsize=(13,6))
+            fig_psf = cc.plot_images()
             fig_psf.savefig(str(rdir / f"{object}_20{obsdate}_MuSCAT2_{pb}_seeing_profile.png"))
             pl.close(fig_psf)
 
@@ -199,9 +199,9 @@ if __name__ == '__main__':
             if args.do_photometry:
                 def photometry(i):
                     im.load_fits(files[i])
-                    im._cur_centroids_pix[:] = cc.calculate_centroid(im.reduced, im._cur_centroids_pix, args.cnt_aperture)
+                    im._cur_centroids_pix[:] = cc.calculate_centroid(im.reduced)
                     im._update_apertures(im._cur_centroids_pix)
-                    figp = cc.plot_profiles(figsize=(13, 6))
+                    figp = cc.plot_images()
                     figp.savefig(str(plotdir / f"psf_{pb}_{i:03d}.png"))
                     pl.close(figp)
 
