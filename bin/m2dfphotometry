@@ -199,12 +199,15 @@ if __name__ == '__main__':
             if args.do_photometry:
                 def photometry(i):
                     im.load_fits(files[i])
-                    im._cur_centroids_pix[:] = cc.calculate_centroid(im.reduced)
-                    im._update_apertures(im._cur_centroids_pix)
-                    figp = cc.plot_images()
-                    figp.savefig(str(plotdir / f"psf_{pb}_{i:03d}.png"))
-                    pl.close(figp)
-
+                    try:
+                        im._cur_centroids_pix[:] = cc.calculate_centroid(im.reduced)
+                        im._update_apertures(im._cur_centroids_pix)
+                        figp = cc.plot_images()
+                        figp.savefig(str(plotdir / f"psf_{pb}_{i:03d}.png"))
+                        pl.close(figp)
+                    except ValueError:
+                        pass
+                    
                     aux = [im._header['airmass'],
                            im._header['exptime'],
                            im._header['mjd-strt'] + 0.5 * im._header['exptime'] / 24 / 60 / 60]
