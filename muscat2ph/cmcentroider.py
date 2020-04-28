@@ -42,18 +42,20 @@ class CMCentroider(Centroider):
         self.apertures = CircularAperture(self.centers, self.r)
 
     def estimate_radii(self):
-        for i, apt in enumerate(self.apertures):
-            center = self.centers[i]
-            d = apt.to_mask().multiply(self.image)
-            l = d.shape[0]
-            x, y = meshgrid(arange(l), arange(l))
-            cx, cy = center[0] - apt.bbox.ixmin, center[1] - apt.bbox.iymin
-            r = sqrt((x - cx) ** 2 + (y - cy) ** 2).ravel()
-            sids = argsort(r)
-            r = r[sids]
-            cflux = d.ravel()[sids].cumsum()
-            cflux /= cflux.max()
-            self.radii[i] = r[argmin(abs(cflux - 0.95))]
+        try:
+            for i, apt in enumerate(self.apertures):
+                center = self.centers[i]
+                d = apt.to_mask().multiply(self.image)
+                x, y = meshgrid(arange(d.shape[1]), arange(d.shape[0]))
+                cx, cy = center[0] - apt.bbox.ixmin, center[1] - apt.bbox.iymin
+                r = sqrt((x - cx) ** 2 + (y - cy) ** 2).ravel()
+                sids = argsort(r)
+                r = r[sids]
+                cflux = d.ravel()[sids].cumsum()
+                cflux /= cflux.max()
+                self.radii[i] = r[argmin(abs(cflux - 0.95))]
+        except IndexError:
+            pass
 
     def calculate_relative_fluxes(self, centers: ndarray = None):
         if centers is None:
@@ -90,10 +92,8 @@ class CMCentroider(Centroider):
         if self.detect_jump():
             self.recover_from_jump()
 
-        self.radius = []
         masks = self.apertures.to_mask()
         centers = zeros_like(self.centers)
-        radii = zeros_like(self.radii)
         for i, (mask, bbox) in enumerate(zip(masks, self.apertures.bbox)):
             d = mask.multiply(self.image)
             m = median_filter(d, 5) > sigma * self.istd
