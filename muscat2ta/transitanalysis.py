@@ -352,7 +352,7 @@ class TransitAnalysis:
 
         for i, pb in enumerate(self.pbs):
             sl = lpf.lcslices[i]
-            df = Table(transpose([time[sl] + self.lpf._tref, detrended_flux[sl], relative_flux[sl], target_flux[sl],
+            df = Table(transpose([time[sl], detrended_flux[sl], relative_flux[sl], target_flux[sl],
                                   reference_flux[sl], baseline[sl], transit[sl]]),
                        names='time_bjd flux flux_rel flux_trg flux_ref baseline model'.split(),
                        meta={'extname': f"flux_{pb}", 'filter': pb, 'trends': 'linear', 'wn': lpf.wn[i],

@@ -207,7 +207,7 @@ if __name__ == '__main__':
                         pl.close(figp)
                     except ValueError:
                         pass
-                    
+
                     aux = [im._header['airmass'],
                            im._header['exptime'],
                            im._header['mjd-strt'] + 0.5 * im._header['exptime'] / 24 / 60 / 60]

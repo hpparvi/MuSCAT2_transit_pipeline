@@ -145,7 +145,8 @@ class M2BaseLPF(BaseLPF):
                  with_transit=True, with_contamination=False,
                  radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.25),
                  contamination_model: str = 'physical',
-                 contamination_reference_passband: str = "r'"):
+                 contamination_reference_passband: str = "r'",
+                 bin=None):
 
         assert radius_ratio in ('chromatic', 'achromatic')
         assert noise_model in ('white', 'gp')
@@ -162,8 +163,7 @@ class M2BaseLPF(BaseLPF):
         self.contamination_reference_passband = contamination_reference_passband
 
         filters, times, fluxes, covariates, wns, pbids, nids = self._read_data()
-        self.tref = floor(min([t.min() for t in times]))
-        times = [t-self.tref for t in times]
+        tref = floor(min([t.min() for t in times]))
 
         if use_opencl:
             import pyopencl as cl
@@ -174,7 +174,8 @@ class M2BaseLPF(BaseLPF):
             tm = QuadraticModel(interpolate=True, klims=klims, nk=1024, nz=1024)
 
         self.wns = wns
-        BaseLPF.__init__(self, target, filters, times, fluxes, pbids=pbids, covariates=covariates, wnids=nids, tm=tm)
+        BaseLPF.__init__(self, target, filters, times, fluxes, pbids=pbids, covariates=covariates, wnids=nids, tm=tm,
+                         tref=tref)
 
     def _read_data(self):
         raise NotImplementedError
@@ -247,43 +248,6 @@ class M2BaseLPF(BaseLPF):
         passbands = [f for f,pb in zip((sdss_g, sdss_r, sdss_i, sdss_z), 'g r i z'.split()) if pb in ' '.join(self.passbands)]
         BaseLPF.add_ldtk_prior(self, teff, logg, z, passbands, uncertainty_multiplier, **kwargs)
 
-    def create_pv_population(self, npop=50):
-        pvp = self.ps.sample_from_prior(npop)
-        if self.with_transit:
-
-            # With LDTk
-            # ---------
-            # Use LDTk to create the sample if LDTk has been initialised.
-            if self.ldps:
-                istart = self._start_ld
-                cms, ces = self.ldps.coeffs_tq()
-                for i, (cm, ce) in enumerate(zip(cms.flat, ces.flat)):
-                    pvp[:, i + istart] = normal(cm, ce, size=pvp.shape[0])
-
-            # No LDTk
-            # -------
-            # Ensure that the total limb darkening decreases towards
-            # red passbands.
-            else:
-                pvv = uniform(size=(npop, 2*self.npb))
-                pvv[:, ::2] = sort(pvv[:, ::2], 1)[:, ::-1]
-                pvv[:, 1::2] = sort(pvv[:, 1::2], 1)[:, ::-1]
-                pvp[:,self._sl_ld] = pvv
-                #for i in range(pvp.shape[0]):
-                #    pid = argsort(pvp[i, ldsl][::2])[::-1]
-                #    pvp[i, ldsl][::2] = pvp[i, ldsl][::2][pid]
-                #    pvp[i, ldsl][1::2] = pvp[i, ldsl][1::2][pid]
-
-        # Baseline coefficients
-        # ---------------------
-        #for i,p in enumerate(self.ps[self._sl_bl]):
-        #    pvp[:, self._start_bl+i] = normal(p.prior.mean, 0.2*p.prior.std, size=npop)
-
-        # Estimate white noise from the data
-        # ----------------------------------
-        #for i in range(self.nlc):
-        #    pvp[:, self._start_err+i] = log10(uniform(0.5*self.wn[i], 2*self.wn[i], size=npop))
-        return pvp
 
     def set_radius_ratio_prior(self, kmin, kmax):
         for p in self.ps[self._sl_k2]:
@@ -338,7 +302,7 @@ class M2BaseLPF(BaseLPF):
 
     def transit_model(self, pv, copy=True):
         pv = atleast_2d(pv).copy()
-        pv[:,0] -= self.tref
+        pv[:,0] -= self._tref
         if self.with_transit:
             if self.achromatic_transit:
                 if self.with_contamination:
@@ -361,7 +325,7 @@ class M2BaseLPF(BaseLPF):
 
     def lnlikelihood(self, pv):
         flux_m = self.flux_model(pv)
-        wn = 10**(atleast_2d(pv)[:,self._sl_err])
+        wn = 10**(atleast_2d(pv)[:,self._sl_wn])
         return lnlike_logistic_v1d(self.ofluxa, flux_m, wn, self.lcids)
 
     def ldprior(self, pv):
@@ -426,7 +390,7 @@ class M2BaseLPF(BaseLPF):
     def posterior_samples(self, burn: int = 0, thin: int = 1, derived_parameters: bool = True, add_tref = True):
         df = BaseLPF.posterior_samples(self, burn, thin, derived_parameters)
         if add_tref:
-            df.tc += self.tref
+            df.tc += self._tref
         return df
 
     def plot_light_curves(self, model: str = 'de', figsize: tuple = (13, 8), fig=None, gridspec=None,
@@ -489,7 +453,7 @@ class M2BaseLPF(BaseLPF):
         setp(axs[1, 0], ylabel='Transit + Systematics')
         setp(axs[2, 0], ylabel='Transit - Systematics')
         setp(axs[3, 0], ylabel='Residuals')
-        setp(axs[3, :], xlabel=f'Time - {self.tref:9.0f} [BJD]')
+        setp(axs[3, :], xlabel=f'Time - {self._tref:9.0f} [BJD]')
         setp(axs[0, :], xlabel='Residual [ppt]', yticks=[])
 
         if ylim_transit is not None:
@@ -544,9 +508,9 @@ class M2BaseLPF(BaseLPF):
         p = self.ps.priors[0]
         trange = p.mean - 3 * p.std, p.mean + 3 * p.std
         x = linspace(*trange)
-        axs[0, 1].hist(df.tc - self.tref, 50, density=True, range=trange, alpha=0.5, edgecolor='k',
+        axs[0, 1].hist(df.tc - self._tref, 50, density=True, range=trange, alpha=0.5, edgecolor='k',
                        histtype='stepfilled')
-        axs[0, 1].set_xlabel(f'Transit center - {self.tref:9.0f} [BJD]')
+        axs[0, 1].set_xlabel(f'Transit center - {self._tref:9.0f} [BJD]')
         axs[0, 1].fill_between(x, exp(p.logpdf(x)), alpha=0.5, edgecolor='k')
 
         # Period

@@ -122,8 +122,8 @@ class TFOPAnalysis(TransitAnalysis):
         self.pr = ufloat(*self.toi.period)
         self.t14 = ufloat(*self.toi.duration/24)
         if self.lpf:
-            self.ep = epoch(self.lpf.timea.mean() + self.lpf.tref, self.t0.n, self.pr.n)
-            self.tc = self.t0 + self.ep * self.pr - self.lpf.tref
+            self.ep = epoch(self.lpf.timea.mean(), self.t0.n, self.pr.n)
+            self.tc = self.t0 + self.ep * self.pr
             tmin, tmax = self.lpf.timea.min(), self.lpf.timea.max()
         else:
             self.ep = epoch(array(self.phs[0]._bjd).mean(), self.t0.n, self.pr.n)
@@ -619,6 +619,6 @@ class TFOPAnalysis(TransitAnalysis):
                         attrs={'created': strftime('%Y-%m-%d %H:%M:%S'),
                                'obsnight': self.date,
                                'target': self.target,
-                               'tref': self.lpf.tref})
+                               'tref': self.lpf._tref})
 
         ds.to_netcdf(self._dres.joinpath(self.savefile_name+'.nc'))
