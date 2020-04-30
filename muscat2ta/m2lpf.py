@@ -19,7 +19,6 @@ import seaborn as sb
 
 from astropy.stats import sigma_clip, mad_std
 from astropy.table import Table
-from build.lib.muscat2ta.lpf import lnlike_normal
 from ldtk import LDPSetCreator
 from matplotlib.pyplot import subplots, setp, figure
 from astropy.io import fits as pf
@@ -381,7 +380,7 @@ class M2LPF(BaseLPF):
 
         # 2. Chromatic radius ratio
         # -------------------------
-        else:
+        elif self.radius_ratio == 'chromatic':
             pk2 = [PParameter(f'k2_{pb}', f'area_ratio {pb}', 'A_s', UP(0.005**2, 0.25**2), (0.005**2, 0.25**2)) for pb in self.passbands]
             self.ps.add_passband_block('k2', 1, self.npb, pk2)
             self._pid_k2 = arange(self.npb) + self.ps.blocks[-1].start
@@ -395,6 +394,10 @@ class M2LPF(BaseLPF):
                 self.ps.add_global_block('contamination', pcn)
                 self._pid_cn = arange(self.ps.blocks[-1].start, self.ps.blocks[-1].stop)
                 self._sl_cn = self.ps.blocks[-1].slice
+
+        else:
+            raise NotImplementedError
+
 
     def _init_p_photometry(self):
         if not self.photometry_frozen:
@@ -669,16 +672,14 @@ class M2LPF(BaseLPF):
 
     def _transit_model_chromatic_nocnt(self, pvp, copy=True):
         pvp = atleast_2d(pvp)
-        mean_ar = pvp[:, self._sl_k2].mean(1)
-        pvv = zeros((pvp.shape[0], pvp.shape[1] - self.npb + 1))
-        pvv[:, :4] = pvp[:, :4]
-        pvv[:, 4] = mean_ar
-        pvv[:, 5:] = pvp[:, 4 + self.npb:]
-        pvt = map_pv(pvv)
+        pvm = zeros((pvp.shape[0], 6+self.npb))
+        pvm[:, :self.npb] = sqrt(pvp[:,self._sl_k2])
+        pvm[:, self.npb] = pvp[:, 0] - self._tref
+        pvm[:, self.npb+1] = p = pvp[:, 1]
+        pvm[:, self.npb+2] = a = as_from_rhop(pvp[:,2], p)
+        pvm[:, self.npb+3] = i_from_ba(pvp[:,3], a)
         ldc = map_ldc(pvp[:, self._sl_ld])
-        flux = self.tm.evaluate_pv(pvt, ldc, copy)
-        rel_ar = pvp[:, self._sl_k2] / mean_ar[:, newaxis]
-        return change_depth(rel_ar, flux, self.lcids, self.pbids)
+        return self.tm.evaluate_pv(pvm, ldc, copy=copy)
 
     def _transit_model_chromatic_cnt(self, pvp, copy=True):
         pvp = atleast_2d(pvp)
@@ -820,11 +821,11 @@ class M2LPF(BaseLPF):
             return ll2 - ll1 + 0.5 * (d1 - d2) * log(n)
 
         pv_all = self.de.minimum_location.copy()
-        pv_bl = pv_all[self._sl_bl]
+        pv_bl = pv_all[self._sl_lm]
         wn = atleast_2d(10 ** pv_all[self._sl_wn])
 
         def lnlikelihood_baseline(self, pv):
-            pv_all[self._sl_bl] = pv
+            pv_all[self._sl_lm] = pv
             flux_m = self.baseline(pv_all)
 
             if self.photometry_frozen:
@@ -837,14 +838,12 @@ class M2LPF(BaseLPF):
         ll_no_transit = -minimize(lambda pv: -lnlikelihood_baseline(self, pv), pv_bl).fun
         ll_with_transit = float(self.lnlikelihood(self.de.minimum_location.copy()))
         d_with_transit = len(self.ps)
-        d_no_transit = d_with_transit - self._start_bl
+        d_no_transit = d_with_transit - self._start_lm
         #return bic(ll_with_transit, ll_no_transit, d_with_transit, d_no_transit, self.timea.size)
         return bic(ll_no_transit, ll_with_transit, d_no_transit, d_with_transit, self.timea.size)
 
     def posterior_samples(self, burn: int = 0, thin: int = 1, derived_parameters: bool = True, add_tref = True):
         df = BaseLPF.posterior_samples(self, burn, thin, derived_parameters)
-        if add_tref:
-            df.tc += self._tref
         return df
 
     def plot_light_curves(self, model: str = 'de', figsize: tuple = (13, 8), fig=None, gridspec=None,
