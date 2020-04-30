@@ -212,7 +212,7 @@ if __name__ == '__main__':
 
         # Loop over passbands
         # -------------------
-        stars_file = rdir.joinpath('{}_stars.fits'.format(object))
+        stars_file = rdir.joinpath(f'{object}_stars.csv')
         for ipb, pb in enumerate(pbs):
             files = all_files[pb]
 
