@@ -509,11 +509,11 @@ class M2LPF(BaseLPF):
         for ipb in range(self.npb):
             ft = self.target_fluxes[ipb][:, aid] / nanmedian(self.target_fluxes[ipb][:, aid])
 
-            mask = ~((self.times[ipb] > tstart) & (self.times[ipb] < tend))
+            mask = ~((self.times[ipb] - self._tref > tstart) & (self.times[ipb] - self._tref < tend))
 
             if plot:
-                axs[ipb].plot(self.times[ipb][mask], ft[mask], '.')
-                axs[ipb].plot(self.times[ipb][~mask], ft[~mask], 'kx')
+                axs[ipb].plot(self.times[ipb][mask] - self._tref, ft[mask], '.')
+                axs[ipb].plot(self.times[ipb][~mask] - self._tref, ft[~mask], 'kx')
             if apply:
                 fluxes.append(ft[mask])
                 self.times[ipb] = self.times[ipb][mask]
