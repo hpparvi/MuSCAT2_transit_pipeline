@@ -594,7 +594,7 @@ class ScienceFrame(ImageFrame):
 
         # Plot the circle of inclusion
         self._separation_cut = 2.5 * u.arcmin
-        if self._separation_cut is not None and self._wcs is not None:
+        if self._separation_cut is not None and self._wcs is not None and self._target_center is not None:
             from photutils import SkyCircularAperture
             sa = SkyCircularAperture(self._target_center, self._separation_cut).to_pixel(wcs)
             ax.plot(*self._target_center.to_pixel(wcs), marker='x', c='k', ms=15)
