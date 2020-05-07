@@ -158,6 +158,10 @@ class TransitAnalysis:
             self.lpf = None
             self.pv = None
 
+    def flux_ratio(self, pbi, s1, s2, aid: int = -1):
+        flux = self.phs[pbi].flux
+        return nanmedian(flux[:, s1, aid]) / nanmedian(flux[:, s2, aid])
+
     def print_ptp_scatter(self):
         r1s = [res.std() for res in self.gplpf.residuals(self.gp_pv)]
         r2s = [(res - pre).std() for res, pre in zip(self.gplpf.residuals(self.gp_pv), self.gplpf.predict(self.gp_pv))]
