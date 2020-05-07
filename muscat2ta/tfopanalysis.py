@@ -291,9 +291,9 @@ class TFOPAnalysis(TransitAnalysis):
                  in fig.axes[npb:]]
                 [ax.axvline(t.n, ymin=ymin, ymax=ymax) for ax in fig.axes[npb:]]
 
-            plot_vprior(self.transit_center, 0.03, 0.9)
-            plot_vprior(self.transit_start, 0.93, 0.98)
-            plot_vprior(self.transit_end, 0.93, 0.98)
+            plot_vprior(self.transit_center - self.lpf._tref, 0.03, 0.9)
+            plot_vprior(self.transit_start - self.lpf._tref, 0.93, 0.98)
+            plot_vprior(self.transit_end - self.lpf._tref, 0.93, 0.98)
 
             [ax.axhline(1 - self.toi.depth[0] * 1e-6, ls=':') for ax in fig.axes[npb:3 * npb]]
 

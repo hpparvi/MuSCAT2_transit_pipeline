@@ -494,6 +494,7 @@ class M2LPF(BaseLPF):
                 self.covariates[ipb] = self.covariates[ipb][ids, :]
         if apply:
             self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
+            self._baseline_models[0].init_data()
         if plot:
             fig.tight_layout()
 
@@ -522,6 +523,7 @@ class M2LPF(BaseLPF):
                 self.covariates[ipb] = self.covariates[ipb][mask, :]
         if apply:
             self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
+            self._baseline_models[0].init_data()
         if plot:
             fig.tight_layout()
 
@@ -561,6 +563,7 @@ class M2LPF(BaseLPF):
                 self.covariates[ipb] = self.covariates[ipb][mask, :]
         if apply:
             self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
+            self._baseline_models[0].init_data()
         if plot:
             fig.tight_layout()
 
@@ -881,7 +884,7 @@ class M2LPF(BaseLPF):
         bl = percentile(atleast_2d(self.baseline(pv)), ps, 0)
 
         for i, sl in enumerate(self.lcslices):
-            t = self.timea[sl]
+            t = self.timea[sl] - self._tref
             axs[1, i].plot(t, self.ofluxa[sl], '.', alpha=0.5)
             axs[1, i].plot(t, fm[0][sl], 'k', lw=2)
             axs[2, i].plot(t, self.ofluxa[sl] / bl[0][sl], '.', alpha=0.5)
@@ -921,7 +924,7 @@ class M2LPF(BaseLPF):
         else:
             setp(axs.flat[3 * self.nlc:], ylim=array([0.995, 1.005]) * percentile(self.ofluxa / bl[0] - tm[0], [2, 98]))
 
-        setp(axs[1:,:], xlim=(self.timea.min(), self.timea.max()))
+        setp(axs[1:,:], xlim=(self.timea.min()-self._tref, self.timea.max()-self._tref))
 
         [sb.despine(ax=ax, offset=5, left=True) for ax in axs[0]]
         return fig, axs
@@ -961,8 +964,7 @@ class M2LPF(BaseLPF):
         p = self.ps.priors[0]
         trange = p.mean - 3 * p.std, p.mean + 3 * p.std
         x = linspace(*trange)
-        axs[0, 1].hist(df.tc - self._tref, 50, density=True, range=trange, alpha=0.5, edgecolor='k',
-                       histtype='stepfilled')
+        axs[0, 1].hist(df.tc, 50, density=True, range=trange, alpha=0.5, edgecolor='k', histtype='stepfilled')
         axs[0, 1].set_xlabel(f'Transit center - {self._tref:9.0f} [BJD]')
         axs[0, 1].fill_between(x, exp(p.logpdf(x)), alpha=0.5, edgecolor='k')
 
