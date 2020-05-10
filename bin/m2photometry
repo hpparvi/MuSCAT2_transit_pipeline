@@ -17,6 +17,7 @@
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import logging
+import warnings
 
 from argparse import ArgumentParser
 from datetime import datetime, timedelta
@@ -27,6 +28,7 @@ from pathlib import Path
 import xarray as xa
 from astropy.io import fits as pf
 from astropy.wcs.wcs import NoConvergence
+from astropy.utils.exceptions import AstropyDeprecationWarning
 from numpy import zeros, inf, array, c_, nan, full_like, float32, seterr
 from tqdm import tqdm
 
@@ -36,29 +38,20 @@ import matplotlib.pyplot as pl
 
 from muscat2ph.photometry import ScienceFrame
 from muscat2ph.centroider import COMCentroider
-from muscat2ph.catalog import get_m2_coords, get_toi, get_toi_or_tic_coords, get_coords
+from muscat2ph.catalog import get_toi, get_coords
 
-from astropy.utils.exceptions import AstropyDeprecationWarning
-import warnings
 warnings.filterwarnings("error", category=AstropyDeprecationWarning)
-
 seterr(invalid='ignore')
+logging.basicConfig(level=logging.INFO)
 
 passbands = 'g r i z_s'.split()
 
-logging.basicConfig(level=logging.INFO)
-
-def init(root, pb, stars_file, apertures, centroider, use_wcs, dc_obj_id=0, dc_apt_id=0):
-    isize = 1024
-    global im, dcoid, dcaid, cc_pmin, cc_pmax
-    im = ScienceFrame(root, pb, aperture_radii=apertures, use_wcs=use_wcs)
-    im.centroider = centroider
-    im.aperture_radii = apertures
-    im.napt = len(apertures)
-    im.load_reference_stars(stars_file)
-    im._data = zeros((isize, isize))
+def init(scframe, dc_obj_id=0, dc_apt_id=0):
+    global im, dcoid, dcaid
+    im = scframe
     dcoid = dc_obj_id
     dcaid = dc_apt_id
+
 
 def photometry(filename):
     try:
@@ -67,9 +60,15 @@ def photometry(filename):
                im._header['exptime'],
                im._header['mjd-strt'] + 0.5 * im._header['exptime'] / 24 / 60 / 60]
         aux = xa.DataArray(aux, dims='quantity', coords={'quantity':'airmass exptime mjd'.split()})
-        return im.photometry(centroid=True) + (aux,)
+        im.centroid()
+        #fig_field, ax_field = pl.subplots(figsize=(9, 9))
+        #im.plot_reduced(minp=90, offset=10, ax=ax_field)
+        #fig_field.savefig(Path(Path(filename).name).with_suffix('.png'))
+        #pl.close(fig_field)
+        return im.photometry(centroid=False) + (aux,)
     except NoConvergence:
         return None
+
 
 def create_datacube(filename):
     im.load_fits(filename)
@@ -298,7 +297,7 @@ if __name__ == '__main__':
             # -----------------
             if args.create_dc:
                 with Pool(processes=args.n_processes,
-                          initializer=init, initargs=(root, pb, stars_file, apertures,  centroider_kwargs, args.dc_obj_id, args.dc_apt_id)) as pool:
+                          initializer=init, initargs=(im, args.dc_obj_id, args.dc_apt_id)) as pool:
                     dc = array(list(tqdm(pool.imap(create_datacube, files, chunksize=args.chunksize), total=len(files),desc='Creating a datacube'))).astype(float32)
                     hdu = pf.PrimaryHDU(dc)
                     hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, obsdate, pb))), overwrite=True)
@@ -306,7 +305,7 @@ if __name__ == '__main__':
             # Photometry
             # ----------
             if args.do_photometry:
-                with Pool(processes=args.n_processes, initializer=init, initargs=(root, pb, stars_file, apertures, im.centroider, args.use_wcs)) as pool:
+                with Pool(processes=args.n_processes, initializer=init, initargs=(im,)) as pool:
                     result = list(tqdm(pool.imap(photometry, files, chunksize=args.chunksize), total=len(files), desc='Photometry for {}'.format(pb)))
                 result = list(filter(lambda r:r is not None, result))
 
