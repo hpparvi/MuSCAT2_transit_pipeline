@@ -143,12 +143,13 @@ class ScienceFrame(ImageFrame):
     width  = 1024
 
     def __init__(self, root, passband, masterdark=None, masterflat=None, data_is_raw=True,
-                 aperture_radii=(6, 8, 12, 16, 20, 24, 30, 40, 50, 60), margin=20):
+                 aperture_radii=(6, 8, 12, 16, 20, 24, 30, 40, 50, 60), margin=20, use_wcs=True):
         self.passband = passband
         self.aperture_radii = aperture_radii
         self.napt = len(aperture_radii)
         self.margin = margin
         self.data_is_prereduced = not data_is_raw
+        self.use_wcs_if_available = use_wcs
 
         # Calibration files
         # ------------------
@@ -184,10 +185,8 @@ class ScienceFrame(ImageFrame):
         self._xad_star = None
         self._xad_apt = xa.IndexVariable(data=array(aperture_radii), dims='aperture')
 
-        self.soft_centroider = self.centroid_soft
-        self.rigid_centroider = None
         self.centroider: Centroider = None
-        self.centroid_star_ids = None
+        self.centroid_star_ids = []
 
 
     def load_fits(self, filename: Path, extension: int = 0, wcs_in_header: bool = False) -> None:
@@ -198,16 +197,17 @@ class ScienceFrame(ImageFrame):
             self._ones = ones_like(self._data)
             self._header = f[extension].header
 
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', category=FITSFixedWarning)
-            if wcs_in_header:
-                self._wcs = WCS(self._header)
-            else:
-                wcsfile = filename.parent.joinpath(filename.stem+'.wcs')
-                if wcsfile.exists():
-                    self._wcs = WCS(pf.getheader(wcsfile))
-                    if self._ref_centroids_sky is not None:
-                        self._cur_centroids_pix = array(self._ref_centroids_sky.to_pixel(self._wcs)).T
+        if self.use_wcs_if_available:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', category=FITSFixedWarning)
+                if wcs_in_header:
+                    self._wcs = WCS(self._header)
+                else:
+                    wcsfile = filename.parent.joinpath(filename.stem+'.wcs')
+                    if wcsfile.exists():
+                        self._wcs = WCS(pf.getheader(wcsfile))
+                        if self._ref_centroids_sky is not None:
+                            self._cur_centroids_pix = array(self._ref_centroids_sky.to_pixel(self._wcs)).T
 
     def _initialize_tables(self, nstars, napt):
         iapt = self._xad_apt
@@ -276,7 +276,7 @@ class ScienceFrame(ImageFrame):
     def save_reference_stars(self, fname):
         cids = zeros(self.nstars, bool)
         try:
-            cids[self.centroider.sids] = True
+            cids[self.centroid_star_ids] = True
         except AttributeError:
             pass
 
@@ -410,7 +410,6 @@ class ScienceFrame(ImageFrame):
         else:
             self.set_reference_stars(cpix)
 
-
     def cut_margin(self, margin=None):
         if not margin:
             margin = self.margin
@@ -423,7 +422,6 @@ class ScienceFrame(ImageFrame):
         else:
             self.set_reference_stars(self._ref_centroids_pix[mask], None)    
         self._margins_cut = True
-
 
     def cut_separation(self, target=None, max_separation=3.0, keep_n_brightest=20):
         if self._wcs is not None:
@@ -459,38 +457,51 @@ class ScienceFrame(ImageFrame):
             self.set_reference_stars(stars.to_pixel(self._wcs), stars)
         self._min_separation_cut = min_separation*u.arcmin
 
+    # Centroiding
+    # -----------
+    def _cnt_calculate_minimum_distances(self):
+        pos = self._cur_centroids_pix
+        dmin = zeros(pos.shape[0])
+        for i in range(pos.shape[0]):
+            d = sqrt(((pos - pos[i]) ** 2).sum(1))
+            d[i] = inf
+            dmin[i] = d.min()
+        return dmin
 
-    def centroid_single(self, star, r=20, pmin=80, pmax=95, niter=1):
-        #if any(cpix < 0.) or any(cpix > im._data.shape[0]):
-        #    self.centroid = [nan, nan]
-        #    raise ValueError("Star outside the image FOV.")
-        apt = CircularAperture(list(self._cur_centroids_pix[star, :]), r)
-        reduced_frame = self.reduced
-        for iiter in range(niter):
-            mask = apt.to_mask()
-            cutout = mask.cutout(reduced_frame).copy()
-            p = percentile(cutout, [pmin, pmax])
-            clipped_cutout = clip(cutout, *p) - p[0]
-            c = com(clipped_cutout)
-            apt.positions[:] = flip(c, 0) + array([mask.bbox.slices[1].start, mask.bbox.slices[0].start])
-        self._cur_centroids_pix[star, :] = apt.positions
-        if self._wcs:
-            csky = pd.DataFrame(self._wcs.all_pix2world(self._cur_centroids_pix, 0), columns='RA Dec'.split())
-            self.set_reference_stars(self._cur_centroids_pix, csky=csky)
-        else:
-            self.set_reference_stars(self._cur_centroids_pix)
+    def _cnt_create_saturation_mask(self, saturation_limit: float = 50_000, apt_radius: float = 15):
+        """Creates a mask that excludes stars close to the linearity limit"""
+        apts = CircularAperture(self._cur_centroids_pix, r=apt_radius)
+        data = self.reduced.copy()
+        data[data > saturation_limit] = nan
+        return isfinite(apts.do_photometry(data)[0])
 
-    def centroid_soft(self, r=20, pmin=80, pmax=95, niter=1):
-        for istar in range(self.nstars):
-            try:
-                self.centroid_single(istar, r, pmin, pmax, niter)
-            except ValueError:
-                pass
+    def _cnt_create_separation_mask(self, minimum_separation: float = 15):
+        dmin = self._cnt_calculate_minimum_distances()
+        return dmin > minimum_separation
 
-    def centroid_rigid(self):
-        self.rigid_centroider.set_data(self.reduced)
-        self._centroid_result = r = self.rigid_centroider()
-        self._cur_centroids_pix[:] += r.x
+    def select_centroiding_stars(self, nstars: int = 8,
+                     min_separation: float = 15,
+                     sat_limit: float = 50_000,
+                     apt_radius: float = 15,
+                     border_margin: float = 50):
+
+        def is_inside_frame(p, width: float = 1024, height: float = 1024, xpad: float = 15, ypad: float = 15):
+            return (p[:, 0] > ypad) & (p[:, 0] < height - ypad) & (p[:, 1] > xpad) & (p[:, 1] < width - xpad)
+
+        centroid_mask = (self._cnt_create_separation_mask(min_separation)
+                         & self._cnt_create_saturation_mask(sat_limit, apt_radius)
+                         & is_inside_frame(self._ref_centroids_pix, xpad=border_margin, ypad=border_margin))
+
+        sids = arange(self.nstars)
+        centroid_mask = centroid_mask[sids]
+        ids = arange(centroid_mask.size)[sids]
+        ids = ids[centroid_mask][:nstars]
+        self.centroid_star_ids = ids
+        return ids
+
+    def centroid(self):
+        self.centroider.calculate_centroids(self.reduced)
+        self._cur_centroids_pix = self.centroider.transform(self._cur_centroids_pix)
         self._update_apertures(self._cur_centroids_pix)
 
     def get_aperture(self, aid=0, oid=0):
@@ -668,7 +679,7 @@ class ScienceFrame(ImageFrame):
 
     def photometry(self, centroid=True):
         if centroid:
-            self.centroid_rigid()
+            self.centroid()
         self.estimate_sky()
         self.estimate_entropy()
         reduced_data = self.reduced

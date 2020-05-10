@@ -16,10 +16,12 @@
 
 import warnings
 
+from astropy.stats import sigma_clipped_stats
+from matplotlib.pyplot import subplots
 from numpy import inf, amin, nan, argsort, meshgrid, clip, percentile, flip, nanmean, log
-from numpy import arange, zeros, sqrt, isfinite, array, all, squeeze
+from numpy import arange, zeros, sqrt, isfinite, array, all, squeeze, ndarray, zeros_like, ceil, argmin
 from photutils import CircularAperture
-from scipy.ndimage import median_filter as mf, center_of_mass as com
+from scipy.ndimage import median_filter as mf, center_of_mass as com, median_filter, center_of_mass
 from scipy.optimize import minimize
 
 import nudged
@@ -33,61 +35,86 @@ def entropy(a):
     return -(a*log(a)).sum()
 
 class Centroider:
+    def __init__(self, ref_image: ndarray, ref_centers: ndarray, apt_radius: float = 20) -> None:
+        _, self.imed, self.istd = sigma_clipped_stats(ref_image)
+        self.image = ref_image - self.imed
+        self.r = apt_radius
+        self.nstars = len(ref_centers)
 
-    def __init__(self, image, sids=None, nstars: int = 10, aperture_radius: float = 20):
-        self.image = image
-        self.image.centroider = self
-        self.r = aperture_radius
+        self.centers = None
+        self.old_centers = None
+        self.apertures = None
+        self._transform = None
 
-        if sids is None:
-            self.select_stars(nstars)
+        self.update(ref_centers.copy())
+        self.ref_relative_fluxes = self.calculate_relative_fluxes()
+        self.radii = zeros(self.nstars)
+
+    def update(self, centers):
+        if self.centers is not None:
+            self.old_centers = self.centers.copy()
         else:
-            self.sids = squeeze(sids)
-            self.nstars = self.sids.size
-            self.apt = CircularAperture(self.image._cur_centroids_pix[self.sids], self.r)
+            self.old_centers = centers.copy()
+        self.centers = centers
+        self.apertures = CircularAperture(self.centers, self.r)
 
-    def calculate_minimum_distances(self):
-        pos = self.image._cur_centroids_pix
-        dmin = zeros(pos.shape[0])
-        for i in range(pos.shape[0]):
-            d = sqrt(((pos - pos[i]) ** 2).sum(1))
-            d[i] = inf
-            dmin[i] = d.min()
-        return dmin
+        if self.old_centers is not None:
+            self._transform = nudged.estimate(self.old_centers, self.centers)
 
-    def create_saturation_mask(self, saturation_limit: float = 50_000, apt_radius: float = 15):
-        """Creates a mask that excludes stars close to the linearity limit"""
-        apts = CircularAperture(self.image._cur_centroids_pix, r=apt_radius)
-        data = self.image.reduced.copy()
-        data[data > saturation_limit] = nan
-        return isfinite(apts.do_photometry(data)[0])
+    def estimate_radii(self):
+        try:
+            for i, apt in enumerate(self.apertures):
+                center = self.centers[i]
+                d = apt.to_mask().multiply(self.image)
+                x, y = meshgrid(arange(d.shape[1]), arange(d.shape[0]))
+                cx, cy = center[0] - apt.bbox.ixmin, center[1] - apt.bbox.iymin
+                r = sqrt((x - cx) ** 2 + (y - cy) ** 2).ravel()
+                sids = argsort(r)
+                r = r[sids]
+                cflux = d.ravel()[sids].cumsum()
+                cflux /= cflux.max()
+                self.radii[i] = r[argmin(abs(cflux - 0.95))]
+        except IndexError:
+            pass
 
-    def create_separation_mask(self, minimum_separation: float = 15):
-        dmin = self.calculate_minimum_distances()
-        return dmin > minimum_separation
+    def calculate_relative_fluxes(self, centers: ndarray = None):
+        if centers is None:
+            apts = self.apertures
+        else:
+            apts = CircularAperture(centers, self.r)
+        return apts.do_photometry(self.image)[0] / self.image.sum()
 
-    def select_stars(self, nstars: int = 8,
-                                 min_separation: float = 15,
-                                 sat_limit: float = 50_000,
-                                 apt_radius: float = 15,
-                                 border_margin: float = 50):
-        centroid_mask = (self.create_separation_mask(min_separation)
-                         & self.create_saturation_mask(sat_limit, apt_radius)
-                         & is_inside_frame(self.image._ref_centroids_pix, xpad=border_margin, ypad=border_margin))
+    def detect_jump(self):
+        relative_fluxes = self.calculate_relative_fluxes()
+        if all(relative_fluxes < 0.8 * self.ref_relative_fluxes):
+            return True
+        else:
+            return False
 
-        sids = argsort(self.image._flux_ratios)[::-1]
-        centroid_mask = centroid_mask[sids]
-        ids = arange(centroid_mask.size)[sids]
-        ids = ids[centroid_mask][:nstars]
-        self.sids = ids
-        self.nstars = len(self.sids)
-        self.apt = CircularAperture(self.image._cur_centroids_pix[self.sids], self.r)
-        self.image.centroid_star_ids = ids
+    def recover_from_jump(self):
+        for radius in [100, 200, 300]:
+            apt = CircularAperture(self.centers[0], radius)
+            mask = apt.to_mask()
+            d = mask.multiply(self.image)
+            m = median_filter(d, 5) > 3 * self.istd
+            xy = array(center_of_mass(m))[[1, 0]] + array([apt.bbox.ixmin, apt.bbox.iymin])
+            new_centers = self.centers + (xy - self.centers[0])
+            new_rfs = self.calculate_relative_fluxes(new_centers)
+            if all(new_rfs > 0.8 * self.ref_relative_fluxes):
+                self.update(new_centers)
+                return True
+        raise ValueError('Could not recover from a jump')
 
-    def set_data(self, image, filter_footprint=4):
-        self.data = mf(self.image.reduced, filter_footprint)
+    def transform(self, p):
+        return array(self._transform.transform(p.T)).T
 
-    def calculate_centroid_shift(self):
+    def calculate_centroids(self, image: ndarray, *nargs, **kwargs):
+        raise NotImplementedError
+
+    def plot_profiles(self):
+        raise NotImplementedError
+
+    def plot_images(self):
         raise NotImplementedError
 
     def __call__(self):
@@ -135,36 +162,62 @@ class EntropyCentroider(Centroider):
 
 class COMCentroider(Centroider):
 
-    def calculate_centroid_shift(self, pmin=80, pmax=95, niter=3):
-        c0 = self.image._cur_centroids_pix[self.sids].copy()
-        self.apt.positions[:] = c0
-        reduced_frame = self.image.reduced
-        shifts = zeros((self.nstars, 2))
-        self.transform = None
+    def calculate_centroids(self, image: ndarray, sigma: float = 4):
+        _, self.imed, self.istd = sigma_clipped_stats(image)
+        self.image = image - self.imed
 
-        for iiter in range(niter):
-            masks = self.apt.to_mask()
-            for istar, mask in enumerate(masks):
-                try:
-                    cutout = mask.cutout(reduced_frame)
-                except ValueError:
-                    cutout = None
-                if cutout is not None:
-                    cutout = cutout.copy()
-                    p = percentile(cutout, [pmin, pmax])
-                    clipped_cutout = clip(cutout, *p) - p[0]
-                    c = com(clipped_cutout)
-                    shifts[istar,:] = flip(c,0) - self.apt.r
-                else:
-                    shifts[istar,:] = (nan, nan)
-            m = all(isfinite(shifts),1)
-            t = nudged.estimate(c0[m], c0[m]+shifts[m])
-            self.apt.positions[:] = array(t.transform(c0.T)).T
-        return c0 + shifts
+        if self.detect_jump():
+            self.recover_from_jump()
 
-    def calculate_and_apply(self, pmin=80, pmax=95, niter=3):
-        shifts = self.calculate_centroid_shift(pmin, pmax, niter)
-        m = all(isfinite(shifts), 1)
-        self.transform = nudged.estimate(self.image._ref_centroids_pix[self.sids][m], shifts[m])
-        self.image._cur_centroids_pix[:] = array(self.transform.transform(self.image._ref_centroids_pix.T)).T
-        self.image._update_apertures(self.image._cur_centroids_pix)
+        masks = self.apertures.to_mask()
+        centers = zeros_like(self.centers)
+        for i, (mask, bbox) in enumerate(zip(masks, self.apertures.bbox)):
+            d = mask.multiply(self.image)
+            m = d > sigma * self.istd
+            xy = array(center_of_mass(m))[[1, 0]] + array([bbox.ixmin, bbox.iymin])
+            centers[i] = xy
+
+            if not all(isfinite(xy)):
+                print(m.sum())
+
+        self.update(centers)
+        self.estimate_radii()
+        return self.centers
+
+    def plot_images(self, max_cols: int = 3):
+        ncols = min(max_cols, self.nstars)
+        nrows = int(ceil(self.nstars / ncols))
+
+        aps = CircularAperture(self.centers, self.r)
+        masks = aps.to_mask()
+
+        fig, axs = subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows))
+
+        for i in range(self.nstars):
+            ax = axs.flat[i]
+            dd = masks[i].cutout(self.image, fill_value=nan)
+            ax.imshow(dd, extent=aps[i].bbox.extent)
+            ax.plot(*self.centers[i], marker='x', c='w', ms=25)
+            a = CircularAperture(self.centers[i], r=self.radii[i])
+            a.plot(edgecolor='w', linestyle='--', axes=ax)
+            aps[i].plot(edgecolor='w', axes=ax)
+        fig.tight_layout()
+        return fig
+
+    def plot_psf_profile(self, ax=None, figsize=None):
+        if ax is None:
+            fig, ax = subplots(figsize=figsize)
+        else:
+            fig, ax = None, ax
+
+        center = self.centers[0]
+        apt = self.apertures[0]
+        d = apt.to_mask().multiply(self.image)
+        l = d.shape[0]
+        x, y = meshgrid(arange(l), arange(l))
+        cx, cy = center[0] - apt.bbox.ixmin, center[1] - apt.bbox.iymin
+        r = sqrt((x - cx) ** 2 + (y - cy) ** 2).ravel()
+        sids = argsort(r)
+        r = r[sids]
+
+        ax.plot(r, d.ravel()[sids])
