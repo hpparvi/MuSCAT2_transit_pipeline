@@ -248,11 +248,11 @@ class M2LPF(BaseLPF):
 
         # Target and comparison star IDs
         # ------------------------------
-        self.tid = atleast_1d(tid)
+        self.tid = atleast_1d(tid).astype('int')
         if self.tid.size == 1:
             self.tid = tile(self.tid, self.nph)
 
-        self.cids = atleast_2d(cids)
+        self.cids = atleast_2d(cids).astype('int')
         if self.cids.shape[0] == 1:
             self.cids = atleast_2d(tile(self.cids, (self.nph, 1)))
 
@@ -261,7 +261,7 @@ class M2LPF(BaseLPF):
 
         masks = []
         for i, ph in enumerate(self.phs):
-            ids = concatenate([[self.tid[i]], self.cids[i]])
+            ids = concatenate([[self.tid[i]], self.cids[i]]).astype('int')
             nanmask = isfinite(ph._flux[:, ids, amin:amax+1]).all(['star', 'aperture']).values
             masks.append(nanmask)
             ph._fmask &= nanmask

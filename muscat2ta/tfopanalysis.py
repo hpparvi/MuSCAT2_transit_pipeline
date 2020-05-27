@@ -81,7 +81,8 @@ class TFOPAnalysis(TransitAnalysis):
                  aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
                  radius_ratio: str = 'chromatic', excluded_stars=(), toi=None, klims=(0.005, 0.25),
-                 clear_field_only: bool = False, contamination_model: str = 'physical',
+                 clear_field_only: bool = False, check_saturation: bool = True,
+                 contamination_model: str = 'physical',
                  contamination_reference_passband: str = "r'"):
 
         super().__init__(target, date, tid, cids, dataroot=dataroot,
@@ -89,7 +90,7 @@ class TFOPAnalysis(TransitAnalysis):
                  excluded_mjd_ranges=excluded_mjd_ranges,
                  aperture_lims=aperture_lims, passbands=passbands,
                  use_opencl=use_opencl, with_transit=with_transit, with_contamination=with_contamination,
-                 radius_ratio=radius_ratio, klims=klims, init_lpf=(not clear_field_only),
+                 radius_ratio=radius_ratio, klims=klims, init_lpf=(not clear_field_only), check_saturation=check_saturation,
                  contamination_model=contamination_model, contamination_reference_passband=contamination_reference_passband)
 
         # Get the TOI information
@@ -496,9 +497,9 @@ class TFOPAnalysis(TransitAnalysis):
              in fig.axes[1 + self.lpf.npb:]]
             [ax.axvline(t.n, ymin=ymin, ymax=ymax) for ax in fig.axes[1 + self.lpf.npb:]]
 
-        plot_vprior(self.transit_center, 0.03, 0.9)
-        plot_vprior(self.transit_start, 0.93, 0.98)
-        plot_vprior(self.transit_end, 0.93, 0.98)
+        plot_vprior(self.transit_center - self.lpf._tref, 0.03, 0.9)
+        plot_vprior(self.transit_start - self.lpf._tref, 0.93, 0.98)
+        plot_vprior(self.transit_end - self.lpf._tref, 0.93, 0.98)
 
         [ax.axhline(1 - self.toi.depth[0] * 1e-6, ls=':') for ax in fig.axes[1 + self.lpf.npb:3 * self.lpf.npb]]
 
