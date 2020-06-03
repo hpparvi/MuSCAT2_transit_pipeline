@@ -21,6 +21,7 @@ from numpy import floor, atleast_2d, where, diff, inf, all, arange
 from pandas import Categorical
 from pytransit import LinearModelBaseline
 from pytransit.lpf.eclipselpf import EclipseLPF
+from pytransit.lpf.loglikelihood.fmcloglikelihood import FrozenMultiCeleriteLogLikelihood
 
 from muscat2ta.m2mnlpf import read_reduced_m2
 
