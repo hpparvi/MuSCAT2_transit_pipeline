@@ -8,29 +8,44 @@ if __name__ == '__main__':
     ap.add_argument('target', type=str, help='Target name')
     ap.add_argument('date', type=str, help='Observation night as YYMMDD')
     ap.add_argument('--dataroot', type=Path, default=None, help='Light curve repository root')
+    ap.add_argument('--type', type=str, choices=('standard', 'tfop', 'eclipse', None), default=None)
     ap.add_argument('--tid', type=int, default=0, help='Target ID')
     ap.add_argument('--cids',   type=int,  nargs='+', help='Comparison star IDs')
     args = ap.parse_args()
 
-    if 'toi' in args.target.lower():
+    if args.type is not None:
+        ttype = args.type
+    else:
+        if 'toi' in args.target.lower():
+            ttype = 'tfop'
+        else:
+            ttype = 'standard'
+
+    if ttype == 'standard':
+        tfile = Path(resource_filename(__name__, '../data/templates/transit_analysis_template.ipynb'))
+    elif ttype == 'tfop':
         tfile = Path(resource_filename(__name__, '../data/templates/tfop_template.ipynb'))
     else:
-        tfile = Path(resource_filename(__name__, '../data/templates/transit_analysis_template.ipynb'))
+        tfile = Path(resource_filename(__name__, '../data/templates/eclipse_analysis_template.ipynb'))
 
     t = Template(tfile.read_text())
 
-    photometry_dir = Path('photometry', args.date)
-    if not photometry_dir.exists():
-        raise ValueError(f'The photometry directory {photometry_dir} does not exist.')
+    if ttype in ('standard', 'tfop'):
+        photometry_dir = Path('photometry', args.date)
+        if not photometry_dir.exists():
+            raise ValueError(f'The photometry directory {photometry_dir} does not exist.')
 
-    files = [str(p) for p in photometry_dir.glob('*field.png')]
-    def choose_frame(files):
-        pb_order = 'r i z_s g'.split()
-        for pb in pb_order:
-            for i, f in enumerate(files):
-                if f'MuSCAT2_{pb}_f' in f:
-                    return files[i]
-    field_frame = choose_frame(files)
+        files = [str(p) for p in photometry_dir.glob('*field.png')]
+        def choose_frame(files):
+            pb_order = 'r i z_s g'.split()
+            for pb in pb_order:
+                for i, f in enumerate(files):
+                    if f'MuSCAT2_{pb}_f' in f:
+                        return files[i]
+        field_frame = choose_frame(files)
 
-    with open(f"{args.target}_{args.date}.ipynb", "w") as f:
-        f.write(t.safe_substitute(target= args.target, night=args.date, field=field_frame))
+        with open(f"{args.target}_{args.date}.ipynb", "w") as f:
+            f.write(t.safe_substitute(target= args.target, night=args.date, field=field_frame))
+    else:
+        with open(f"{args.target}_eclipse_analysis.ipynb", "w") as f:
+            f.write(t.safe_substitute(target= args.target))
