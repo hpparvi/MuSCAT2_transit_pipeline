@@ -311,7 +311,6 @@ class TransitAnalysis:
         delm = None
         if self.lpf.de:
             dep = self.lpf.de.population.copy()
-            dep[:,0] += self.lpf._tref
             delm = xa.DataArray(dep, dims='pvector lm_parameter'.split(), coords={'lm_parameter': self.lpf.ps.names})
 
         lmmc = None
