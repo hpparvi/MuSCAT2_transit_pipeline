@@ -159,7 +159,7 @@ class TransitAnalysis:
             self.pv = None
 
     def flux_ratio(self, pbi, s1, s2, aid: int = -1):
-        flux = self.phs[pbi].flux
+        flux = self.phs[pbi]._flux
         return nanmedian(flux[:, s1, aid]) / nanmedian(flux[:, s2, aid])
 
     def print_ptp_scatter(self):
@@ -171,6 +171,10 @@ class TransitAnalysis:
     def apply_normalized_limits(self, iapt: int, lower: float = -inf, upper: float = inf, plot: bool = True,
                                 apply: bool = True, npoly: int = 0, iterations: int = 5, erosion: int = 0) -> None:
         self.lpf.apply_normalized_limits(iapt, lower, upper, plot, apply, npoly, iterations, erosion)
+
+    def apply_relative_limits(self, iapt: int, lower: float = -inf, upper: float = inf, plot: bool = True,
+                                apply: bool = True, npoly: int = 0, iterations: int = 5, erosion: int = 0) -> None:
+        self.lpf.apply_relative_limits(iapt, lower, upper, plot, apply, npoly, iterations, erosion)
 
     def cut(self, tstart: float = -inf, tend: float = inf, plot: bool = True, apply: bool = True,
             aid: int = None) -> None:
@@ -313,7 +317,6 @@ class TransitAnalysis:
         lmmc = None
         if self.lpf.sampler is not None:
             chain = self.lpf.sampler.chain.copy()
-            chain[:,:,0] += self.lpf._tref
             lmmc = xa.DataArray(chain, dims='pvector step lm_parameter'.split(),
                                 coords={'lm_parameter': self.lpf.ps.names},
                                 attrs={'ndim': self.lpf.de.n_par, 'npop': self.lpf.de.n_pop})
