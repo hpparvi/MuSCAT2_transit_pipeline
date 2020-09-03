@@ -21,6 +21,8 @@ from os.path import join, split
 from astropy.stats import sigma_clip, mad_std
 from ldtk import LDPSetCreator
 from matplotlib.pyplot import subplots, setp, figure
+from pytransit.lpf.loglikelihood import WNLogLikelihood
+
 from muscat2ph.catalog import get_toi
 from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
@@ -40,6 +42,9 @@ from pytransit.param.parameter import NormalPrior as NP, UniformPrior as UP, LPa
 from scipy.ndimage import binary_erosion
 from scipy.stats import logistic, norm
 from uncertainties import ufloat
+
+from muscat2ta.multiceleriteloglikelihood import MultiCeleriteLogLikelihood
+
 
 def downsample_time(time, values, inttime=30.):
     if values.ndim == 1:
@@ -146,7 +151,7 @@ class M2BaseLPF(BaseLPF):
                  radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.25),
                  contamination_model: str = 'physical',
                  contamination_reference_passband: str = "r'",
-                 bin=None):
+                 use_linear_baseline_model: bool = True):
 
         assert radius_ratio in ('chromatic', 'achromatic')
         assert noise_model in ('white', 'gp')
@@ -157,10 +162,12 @@ class M2BaseLPF(BaseLPF):
         self.with_transit = with_transit
         self.with_contamination = with_contamination
         self.achromatic_transit = radius_ratio == 'achromatic'
+        self.conntamination_model = contamination_model
         self.noise_model = noise_model
         self.radius_ratio = radius_ratio
         self.n_legendre = n_legendre
         self.contamination_reference_passband = contamination_reference_passband
+        self.use_linear_baseline_model = use_linear_baseline_model
 
         filters, times, fluxes, covariates, wns, pbids, nids = self._read_data()
         tref = floor(min([t.min() for t in times]))
@@ -181,7 +188,14 @@ class M2BaseLPF(BaseLPF):
         raise NotImplementedError
 
     def _init_baseline(self):
-        self._add_baseline_model(LinearModelBaseline(self))
+        if self.use_linear_baseline_model:
+            self._add_baseline_model(LinearModelBaseline(self))
+
+    def _init_lnlikelihood(self):
+        if self.noise_model == 'white':
+            self._add_lnlikelihood_model(WNLogLikelihood(self))
+        else:
+            self._add_lnlikelihood_model(MultiCeleriteLogLikelihood(self))
 
     def _init_parameters(self):
         self.ps = ParameterSet()
@@ -260,7 +274,10 @@ class M2BaseLPF(BaseLPF):
         raise NotImplementedError
 
     def _transit_model_achromatic_nocnt(self, pvp, copy=True):
-        return super().transit_model(pvp, copy)
+        pvp = atleast_2d(pvp)
+        pvt = map_pv(pvp)
+        ldc = map_ldc(pvp[:, self._sl_ld])
+        return self.tm.evaluate_pv(pvt, ldc, copy)
 
     def _transit_model_achromatic_cnt(self, pvp, copy=True):
         pvp = atleast_2d(pvp)
@@ -277,17 +294,13 @@ class M2BaseLPF(BaseLPF):
         return contaminate(flux, cnt, self.lcids, self.pbids)
 
     def _transit_model_chromatic_nocnt(self, pvp, copy=True):
-        pvp = atleast_2d(pvp)
-        mean_ar = pvp[:, self._sl_k2].mean(1)
-        pvv = zeros((pvp.shape[0], pvp.shape[1] - self.npb + 1))
-        pvv[:, :4] = pvp[:, :4]
-        pvv[:, 4] = mean_ar
-        pvv[:, 5:] = pvp[:, 4 + self.npb:]
-        pvt = map_pv(pvv)
+        k = sqrt(pvp[:,self._sl_k2])
+        tc = pvp[:, 0]
+        p = pvp[:, 1]
+        a = as_from_rhop(pvp[:, 2], p)
+        i = i_from_ba(pvp[:,3], a)
         ldc = map_ldc(pvp[:, self._sl_ld])
-        flux = self.tm.evaluate_pv(pvt, ldc, copy)
-        rel_ar = pvp[:, self._sl_k2] / mean_ar[:, newaxis]
-        return change_depth(rel_ar, flux, self.lcids, self.pbids)
+        return self.tm.evaluate(k, ldc, tc, p, a, i, copy=copy)
 
     def _transit_model_chromatic_cnt(self, pvp, copy=True):
         pvp = atleast_2d(pvp)
@@ -323,17 +336,6 @@ class M2BaseLPF(BaseLPF):
         model_flux = self.transit_model(pv, copy=True)
         return baseline * model_flux + trends
 
-    def lnlikelihood(self, pv):
-        flux_m = self.flux_model(pv)
-        wn = 10**(atleast_2d(pv)[:,self._sl_wn])
-        return lnlike_logistic_v1d(self.ofluxa, flux_m, wn, self.lcids)
-
-    def ldprior(self, pv):
-        ld = pv[:, self._sl_ld]
-        #lds = ld[:,::2] + ld[:, 1::2]
-        #return where(any(diff(lds, 1) > 0., 1), -inf, 0.)
-        return where(any(diff(ld[:,::2], 1) > 0., 1) | any(diff(ld[:,1::2], 1) > 0., 1), -inf, 0)
-
     def inside_obs_prior(self, pv):
         return where(transit_inside_obs(pv, self._tmin, self._tmax, 20.), 0., -inf)
 
@@ -341,8 +343,7 @@ class M2BaseLPF(BaseLPF):
         pv = atleast_2d(pv)
         lnp = self.ps.lnprior(pv)
         if self.with_transit:
-            lnp += self.additional_priors(pv) + self.ldprior(pv)
-            #lnp += self.ldprior(pv) + self.inside_obs_prior(pv) + self.additional_priors(pv)
+            lnp += self.additional_priors(pv)
         return lnp
 
     def add_inside_window_prior(self, min_duration=20):

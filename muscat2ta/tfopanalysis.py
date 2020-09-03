@@ -303,7 +303,7 @@ class TFOPAnalysis(TransitAnalysis):
             fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{ptype}.pdf"))
         return fig, axs
 
-    def plot_possible_blends(self, cid: int, aid: int, stars: list = None, c_flux_factor: float = None,
+    def plot_possible_blends(self, cid: int, aid: int, caid: int = None, stars: list = None, c_flux_factor: float = None,
                              ncols: int = 3, nrows: int = 4,
                              max_separation: float = 2.5, figwidth: float = 13, axheight: float = 2.5,
                              pbs: tuple = None, save: bool = True, close_figures: bool = False) -> None:
@@ -343,6 +343,7 @@ class TFOPAnalysis(TransitAnalysis):
         -------
             None
         """
+        caid = caid if caid is not None else aid
 
         if stars is None:
             m_excl = ones(self.distances.size, bool)
@@ -373,7 +374,7 @@ class TFOPAnalysis(TransitAnalysis):
                     fig, axs = subplots(nrows, ncols, figsize=(figwidth, nrows * axheight), sharex='all')
                     iax = 0
                 try:
-                    self.plot_single_raw(pbi, istar, cid=cid, aid=aid, ax=axs.flat[iax], reference_flux=ref_flux)
+                    self.plot_single_raw(pbi, istar, cid=cid, taid=aid, caid=caid, ax=axs.flat[iax], reference_flux=ref_flux)
                 except:
                     pass
                 iax += 1
@@ -392,7 +393,7 @@ class TFOPAnalysis(TransitAnalysis):
             if save:
                 pdf.close()
 
-    def plot_single_raw(self, phi: int, sid: int, cid: int, aid: int = -1, btime=300., nsamples=500,
+    def plot_single_raw(self, phi: int, sid: int, cid: int, taid: int = -1, caid: int = -1, btime=300., nsamples=500,
                         reference_flux: float = None, ax=None):
         """Plot the raw flux of star `sid` normalized to the median of star `tid`."""
 
@@ -400,21 +401,21 @@ class TFOPAnalysis(TransitAnalysis):
         ph = self.phs[phi]
         toi = self.toi
 
-        m = isfinite(ph._bjd) & isfinite(ph._flux[:,sid,aid]) & isfinite(ph._flux[:,cid,aid]) & ph.exclusion_mask
+        m = isfinite(ph._bjd) & isfinite(ph._flux[:,sid,taid]) & isfinite(ph._flux[:,cid,caid]) & ph.exclusion_mask
         time = ph._bjd[m]
         t0 = floor(time[0])
-        flux = array(ph._flux[m, sid, aid] / ph._flux[m, cid, aid])
+        flux = array(ph._flux[m, sid, taid] / ph._flux[m, cid, caid])
         flux /= median(flux)
 
         if reference_flux is not None:
             target_flux = reference_flux
         else:
-            target_flux = nanmedian(ph._flux[m, self.tid, aid])
+            target_flux = nanmedian(ph._flux[m, self.tid, taid])
             if not isfinite(target_flux):
                 print("WARNING: The target is completely saturated, blending analysis will fail")
                 target_flux = 1.
 
-        fratio = nanmedian(array(ph._flux[m, sid, aid])) / target_flux
+        fratio = nanmedian(array(ph._flux[m, sid, taid])) / target_flux
 
         # Mark outliers
         # -------------

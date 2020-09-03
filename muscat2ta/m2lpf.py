@@ -527,6 +527,47 @@ class M2LPF(BaseLPF):
         if plot:
             fig.tight_layout()
 
+    def apply_relative_limits(self, iapt: int, lower: float = -inf, upper: float = inf, plot: bool = True,
+                                apply: bool = True, npoly: int = 0, iterations: int = 5, erosion: int = 0) -> None:
+        fluxes = []
+        if plot:
+            fig, axs = subplots(1, self.npb, figsize=(13, 4), sharey='all')
+            axs = atleast_1d(axs)
+        for ipb in range(self.npb):
+            ft = self.target_fluxes[ipb][:, iapt] / self.reference_fluxes[ipb][:, :, iapt].mean(1)
+            ft /= nanmedian(ft)
+            mask = ones(ft.size, bool)
+
+            if npoly > 0:
+                for i in range(iterations):
+                    p = Polynomial.fit(self.times[ipb][mask], ft[mask], npoly)
+                    baseline = p(self.times[ipb])
+                    mask[mask] &= ((ft / baseline)[mask] > lower) & ((ft / baseline)[mask] < upper)
+            else:
+                baseline = ones_like(ft)
+                mask &= (ft > lower) & (ft < upper)
+
+            if erosion > 0:
+                mask = binary_erosion(mask, iterations=erosion)
+
+            if plot:
+                axs[ipb].plot(self.times[ipb][mask], ft[mask], '.')
+                axs[ipb].plot(self.times[ipb][~mask], ft[~mask], 'kx')
+                axs[ipb].plot(self.times[ipb], baseline, 'k-')
+                axs[ipb].plot(self.times[ipb], baseline * upper, 'k--')
+                axs[ipb].plot(self.times[ipb], baseline * lower, 'k--')
+            if apply:
+                fluxes.append(ft[mask])
+                self.times[ipb] = self.times[ipb][mask]
+                self.target_fluxes[ipb] = self.target_fluxes[ipb][mask, :]
+                self.reference_fluxes[ipb] = self.reference_fluxes[ipb][mask, :, :]
+                self.covariates[ipb] = self.covariates[ipb][mask, :]
+        if apply:
+            self._init_data(self.times, fluxes, pbids=self.pbids, covariates=self.covariates, wnids=self.noise_ids)
+            self._baseline_models[0].init_data()
+        if plot:
+            fig.tight_layout()
+
     def apply_normalized_limits(self, iapt: int, lower: float = -inf, upper: float = inf, plot: bool = True,
                                 apply: bool = True, npoly: int = 0, iterations: int = 5, erosion: int = 0) -> None:
         fluxes = []

@@ -53,7 +53,7 @@ def read_reduced_m2(datadir, pattern='*.fits', remove_trends=True, downsample=No
                 if downsample is None:
                     times.append(time[mask])
                     fluxes.append(fobs[mask])
-                    residuals.append(fobs-fmod)
+                    residuals.append((fobs-fmod)[mask])
                     vars.append((fobs - fmod)[mask].var())
                     covs.append(Table.read(f, 1 + npb + ipb).to_pandas().values[mask, 1:])
                 else:
@@ -77,16 +77,19 @@ class M2MultiNightLPF(M2BaseLPF):
                  datadir='results', filename_pattern='*.fits',
                  contamination_model: str = 'physical',
                  contamination_reference_passband: str = "r'",
-                 downsampling=None):
+                 use_linear_baseline_model: bool = True,
+                 downsampling: float = None):
 
         self.datadir = datadir
         self.pattern = filename_pattern
         self._reduction_residuals = None
         self.downsampling = downsampling
 
-        super().__init__(target, use_opencl, n_legendre, with_transit, with_contamination, radius_ratio, noise_model, klims,
+        super().__init__(target, use_opencl, n_legendre, with_transit, with_contamination, radius_ratio,
+                         noise_model=noise_model, klims=klims,
                          contamination_model=contamination_model,
-                         contamination_reference_passband=contamination_reference_passband)
+                         contamination_reference_passband=contamination_reference_passband,
+                         use_linear_baseline_model=use_linear_baseline_model)
 
     def _read_data(self):
         times, fluxes, pbs, wns, covs, vars, residuals = read_reduced_m2(self.datadir, self.pattern, downsample=self.downsampling)
@@ -98,12 +101,13 @@ class M2MultiNightLPF(M2BaseLPF):
         return pbnames, times, fluxes, covs, wns, pbids, arange(len(fluxes))
 
     def create_pv_population(self, npv: int = 50) -> ndarray:
-        pvp = super().create_pv_population(npv)
-        for p in self.ps[self._sl_lm]:
-            if 'lm_i' in p.name:
-                pvp[:, p.pid] = 0.01 * (pvp[:, p.pid] - 1.0) + 1.0
-            else:
-                pvp[:, p.pid] *= 0.01
+        pvp = self.ps.sample_from_prior(npv)
+        if self.use_linear_baseline_model:
+            for p in self.ps[self._sl_lm]:
+                if 'lm_i' in p.name:
+                    pvp[:, p.pid] = 0.01 * (pvp[:, p.pid] - 1.0) + 1.0
+                else:
+                    pvp[:, p.pid] *= 0.01
         return pvp
 
     # def create_pv_population_b(self, npop=50):
@@ -134,6 +138,7 @@ class M2MultiNightLPF(M2BaseLPF):
     #     return pvp
 
     def downsample(self, exptime: float) -> None:
+        raise NotImplementedError('Downsampling after data reading is not yet supported.')
         bts, bfs, brs, bcs = [], [], [], []
         for i in range(len(self.times)):
             bt, bf = downsample_time(self.times[i], self.fluxes[i], exptime)
@@ -155,24 +160,33 @@ class M2MultiNightLPF(M2BaseLPF):
             df = self.posterior_samples(derived_parameters=False, add_tref=False)
             t0, p = df.tc.median(), df.p.median()
             pvs = permutation(df.values)[:max_samples]
-            fbasel = self.baseline(pvs)
-            fmodel = self.transit_model(pvs)
+
+            if self.noise_model == 'white':
+                fbasel = self.baseline(pvs)
+            else:
+                fbasel = self._lnlikelihood_models[0].predict_baseline(median(pvs, 0)).reshape([1, -1])
+
+            fmodel = self.flux_model(pvs)
             if remove_baseline:
-                fobs = self.ofluxa - median(fbasel, 0)
+                fobs = self.ofluxa/median(fbasel, 0)
             else:
                 fobs = self.ofluxa
-                fmodel += fbasel
+                fmodel *= fbasel
             fmperc = percentile(fmodel, [50, 16, 84, 2.5, 97.5], 0)
 
         else:
             t0, p = self.de.minimum_location[0], self.de.minimum_location[1]
-            fbasel = squeeze(self.baseline(self.de.minimum_location))
+            if self.noise_model == 'white':
+                fbasel = squeeze(self.baseline(self.de.minimum_location))
+            else:
+                fbasel = squeeze(self._lnlikelihood_models[0].predict_baseline(self.de.minimum_location))
+
             if remove_baseline:
-                fobs = self.ofluxa - fbasel
+                fobs = self.ofluxa/fbasel
                 fmodel = squeeze(self.transit_model(self.de.minimum_location))
             else:
                 fobs = self.ofluxa
-                fmodel = squeeze(self.flux_model(self.de.minimum_location))
+                fmodel = squeeze(self.flux_model(self.de.minimum_location))*fbasel
             fmperc = None
 
         epochs = [epoch(t.mean(), t0, p) for t in self.times]
@@ -181,25 +195,26 @@ class M2MultiNightLPF(M2BaseLPF):
 
         fig, axs = subplots(n_epochs, 4, figsize=figsize, sharey='all', sharex='all')
         for i in range(self.nlc):
+            sl = self.lcslices[i]
             e = epochs[i]
             irow = epoch_to_row[e]
             icol = self.pbids[i]
             ax = axs[irow, icol]
 
-            tc = t0 + e * p
-            time = self.times[i] - tc
+            tc = t0 + e*p
+            time = self.timea[sl] - tc
 
-            ax.plot(time, self.fluxes[i], '.', alpha=data_alpha)
+            ax.plot(time, fobs[sl], '.', alpha=data_alpha)
 
             if method == 'de':
-                ax.plot(time, fmodel[self.lcslices[i]], 'w', lw=4)
-                ax.plot(time, fmodel[self.lcslices[i]], 'k', lw=1)
+                ax.plot(time, fmodel[sl], 'w', lw=4)
+                ax.plot(time, fmodel[sl], 'k', lw=1)
             else:
-                ax.fill_between(time, *fmperc[3:5, self.lcslices[i]], alpha=0.55)
-                ax.fill_between(time, *fmperc[1:3, self.lcslices[i]], alpha=0.75)
-                ax.plot(time, fmperc[0, self.lcslices[i]], 'k')
+                ax.fill_between(time, *fmperc[3:5, sl], alpha=0.55)
+                ax.fill_between(time, *fmperc[1:3, sl], alpha=0.75)
+                ax.plot(time, fmperc[0, sl], 'k')
 
-        setp(axs, xlim=(-width / 2 / 24, width / 2 / 24))
+        setp(axs, xlim=(-width/2/24, width/2/24))
         setp(axs[:, 0], ylabel='Normalised flux')
         setp(axs[-1], xlabel=f'Time - T$_c$ [d]')
 
