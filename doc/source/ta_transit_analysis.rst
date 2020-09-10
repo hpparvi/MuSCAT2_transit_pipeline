@@ -19,7 +19,11 @@ cases.
 Multiple epochs
 ***************
 
+.. code-block:: python
 
+    from muscat2ta..m2mnlpf import M2MultiNightLPF
+
+    lpf = M2MultiNightLPF(name, use_opencl=USE_OPENCL)
 
 
 OpenCL

@@ -20,8 +20,9 @@ and transit analysis.
    :caption: Contents:
 
    overview
-   photometry
-   transit_analysis
+   tutorials
+..   photometry
+..   transit_analysis
 
 
 Indices and tables
