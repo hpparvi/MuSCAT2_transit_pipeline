@@ -80,9 +80,20 @@ Transit modelling
 Wrapping up the analysis
 ************************
 
-After finishing the notebook, make sure you fill the report file that has been created under the
-``submit`` directory. The analysis code prefills most of the required information, but not the final
-analysis conclusions. These should clearly state whether a transit signal occurs on the target and if
+The analysis is finished by calling the three ``TFOPAnalysis`` methods
+
+.. code-block:: python
+
+    ta.save()
+    ta.save_fits()
+    ta.finalize()
+
+The first one saves the optimisation result and the MCMC samples, the second one saves the reduced light curves in fits format,
+and the last one copies all the necessary files to the ``submit`` directory, including a partially filled **report.txt** file
+that contains the final report that will be included into the ExoFOP submission.
+
+**After finishing the notebook, make sure you fill the report file.** The analysis code prefills most of the required information,
+but not the final analysis conclusions. These should clearly state whether a transit signal occurs on the target and if
 the fitted transit signal shows significant chromatic variability. Also include any note you believe
 can be useful for people reading the report in ExoFOP and trying to decide if the observations show
 support for a planet transit or something else.
