@@ -10,3 +10,4 @@ and transit modelling tasks.
 
    ta_pre_analysis
    ta_tfop_analysis
+   ta_transit_analysis

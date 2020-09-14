@@ -16,8 +16,3 @@ tools for light curve reduction and detrending (whether the light curve contains
    ta_no_transit
    ta_transit_analysis
    ta_tfop_analysis
-
-
-
-
-

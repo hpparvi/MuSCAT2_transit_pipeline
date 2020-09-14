@@ -25,26 +25,7 @@ Multiple epochs
 
     lpf = M2MultiNightLPF(name, use_opencl=USE_OPENCL)
 
+Secondary eclipse modelling
+***************************
 
-OpenCL
-******
-
-The pipeline can use PyTransit's OpenCL transit model for transit modelling, which can significantly accelerate the
-analysis. This can be done by initialising `TransitAnalysis` with the `with_opencl` argument set to `True`.
-
-.. code-block:: python
-
-    ta = TransitAnalysis(target, night, tid=TID, cids=CIDS, with_opencl=True)
-
-Trimming the light curves
-*************************
-
-The light curves can be trimmed from the beginning and end by setting the `mjd_start` and `mjd_end` in the `TransitAnalysis`
-initialisation. This may be necessary if a part of the light curve is corrupted, or has strong systematics due to large
-airmass or similar.
-
-Restricting apertures used in the optimisation
-**********************************************
-
-The apreture ranges used in the optimisation can be constrained by the `aperture_lims` argument in `TransitAnalysis`
-initialisation.
+TBD

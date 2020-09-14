@@ -17,7 +17,7 @@
 
 # -- Project information -----------------------------------------------------
 
-project = 'MuSCAT2_pipeline'
+project = 'MuSCAT2 pipeline'
 copyright = '2020, Hannu Parviainen'
 author = 'Hannu Parviainen'
 

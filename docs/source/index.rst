@@ -1,8 +1,8 @@
 MuSCAT2 data analysis pipeline
 ==============================
 
-MuSCAT2 transit analysis pipeline consists of a set of Python scripts and classes that aim to make the analysis of
-MuSCAT2 photometry easy and painless. The pipeline covers the reduction of generic (non-transit) photometry, transit
+MuSCAT2 photometry and transit analysis pipeline consists of a set of Python scripts and classes that aim to make the
+MuSCAT2 photometry and its analysis easy and painless. The pipeline covers the reduction of generic (non-transit) photometry, transit
 analysis, and more specific TESS follow up analysis. The pipeline is mainly aimed to be used from inside a Jupyter
 notebook, but it can also be used from inside a Python script.
 
@@ -16,6 +16,8 @@ and transit analysis.
 
    overview
    tutorials
+   common_problems
+
 ..   photometry
 ..   transit_analysis
 
