@@ -11,3 +11,5 @@ and transit modelling tasks.
    ta_pre_analysis
    ta_tfop_analysis
    ta_transit_analysis
+   multiepoch_modelling/multiepoch_modelling
+   eclipse_modelling/eclipse_modelling

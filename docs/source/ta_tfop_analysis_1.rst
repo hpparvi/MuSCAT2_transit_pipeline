@@ -1,9 +1,30 @@
-Full analysis
--------------
+Full TFOP analysis
+------------------
 
-The full analysis (with transit fitting) carries out the steps required for ExoFOP submission and
-creates reduced light curves in fits-format that can be used in subsequent analyses (or shared with
-collaborators).
+The full TFOP analysis with transit fitting carries out the steps required for ExoFOP submission and
+creates reduced light curves in fits-format that can be shared with collaborators. The main task of a multicolour
+transit candidate follow-up is to test whether the transit signal shows colour dependent variability in the transit
+depth (that is, the transit depth is chromatic), or whether the transit depth is same in all passbands (that is, the
+transit depth is achromatic).
+
+The main steps for the full analysis are:
+
+    #. **Data appraisal:** This is a fancy way of saying that we really need to have a look at
+       the field and raw photometry before continuing anything else. It might be that all the
+       necessary stars weren't included into the photometry, or that the the photometry is useless
+       because of weather, in which case we either need to redo the photometry of mark the observations
+       as useless.
+    #. **Data cleanup:** The photometry may be mostly good but contain outliers and strong systematics.
+       These need to be cleared before continuing.
+    #. **Creation of the main TFOP output**
+        #. Plotting possible blends
+        #. Plotting the covariates
+        #. **Saving the data in text tables**
+    #. **Transit signal modelling**
+        #. Posterior optimisation
+        #. Posterior estimation through MCMC sampling
+    #. **Light curve exporting**
+       The reduced photometry needs to be saved in fits format so that it can be easily used in subsequent analyses.
 
 Field overview
 **************
@@ -31,7 +52,9 @@ for the TFOP data reduction and analysis.
 
 ``TFOPAnalysis`` is initialised as
 
-.. image:: img/tfopanalysis_1.png
+.. code-block:: python
+
+    ta = TFOPAnalysis(TARGET, DATE, TID, CIDS)
 
 where
 
@@ -59,15 +82,20 @@ where
 The pipeline prefills the ``TARGET``, ``DATE``, and ``TID`` arguments, but you'll need to choose the comparison stars. The comparison
 stars should be bright but not saturated, not blended with other stars of similar brightness, and without any intrinsic variability.
 
-Continuing this example, we initialise the anaysis as
+For example, analysis of TOI 1557.01 observed 19.8.2020 (the field shown above) would be initialised as
 
-.. image:: img/tfopanalysis_2.png
+.. code-block:: python
 
-where we are warned that some of the star 2 points are saturated. We generally avoid including comparison stars with saturated points,
-but here the count is small enough to include star 2.
+    ta = TFOPAnalysis('toi01557.01', '200819', 0, [2,3,4])
+
+A warning is printed if the target or any of the comparison stars have saturated photometric points.
+
 
 Light curve cleanup
 *******************
+
+Plotting raw light curves
+_________________________
 
 The first step is to look at the raw data, because this can already show any major issues with the observations (clouds, for example).
 This is done with the ``TFOPAnalysis.plot_raw_light_curves`` method after the ``TFOPAnalysis`` has been initialised. By default, the
@@ -75,6 +103,9 @@ method plots the raw light curve for the target and five brightest stars for all
 everything else can be modified using the optional method arguments.
 
 .. image:: img/tfopanalysis_3.png
+
+Cutting out sections of bad data
+________________________________
 
 The raw light curves for our example case show that something weird happens around one thirds to the observations. All the fluxes drop
 to zero for some time (could be a cloud or a dome failure), and we do not want to include this data to our analysis. We can use the
@@ -87,16 +118,48 @@ the points up to time ``t`` by setting ``tstart=-inf, tend=t``, or all the point
 The section to be removed can be visualised by setting ``apply=false``, in which case the method creates a plot but does not touch
 the data, and multiple sections can be removed from the data by calling the method multiple times with different parameters.
 
+Outlier removal
+_______________
+
 Next, we can remove outliers using ``TFOPAnalysis.apply_normalised_limits`` (the method name may change soon...). The method fits a
 polynomial to the normalised light curve and allows one to remove the points below a lower limit or above an upper limit.
 
 .. image:: img/tfopanalysis_5.png
 
+Binning in time
+_______________
+
 Finally, we can bin the observations in time using the ``TFOPAnalysis.downsample`` method. While binning should be avoided in many
 science cases, for TFOP analyses we can generally bin to 60 seconds without any loss in information.
 
+.. code-block:: python
+
+    ta.downsample(60)
+
 Creating the ExoFOP output
 **************************
+
+Plotting possible blends
+________________________
+
+Checking the field for possible blended eclipsing binaries is one of the main tasks in ground-based photometric TESS follow-up.
+TESS pixels are large and it is common that many stars contribute to the photometry calculated over any aperture, and a signal identified
+as a transit can also be a faint eclipsing binary blended with a brighter star.
+
+
+Plot the raw fluxes from all the stars that are within 2.5 arcmin from the target. The plot is saved to the final output directory.
+
+These plots are important for TFOP and will be saved in the result directory. The plots show the raw light curves for the target star and
+all the stars around it within a given radius (unbinned and binned). The plots also show the expected times for the transit start, centre,
+and end (with their uncertainties), and the expected transit signal with depth corresponding to the depth that would be observed if the
+transit would be on the blending star (in reality we'd expect to see even deeper signal, because these plots assume blending only between
+the target and the possible blend, while in reality the blend is blended with multiple sources). The plots show the flux ratio between the
+target and the possible contaminant on the top-right corner.
+
+`ta.plot_possible_blends` requires two arguments
+
+- `cid:` comparison star index. Should be a bright (non-saturated) star outside a 2 arcmin radius of the target star.
+- `aid:` aperture index. The aperture should be large enough to capture the flux of the brightest star within 2 arcmin from the target.
 
 The possible blends are plotted using ``TFOPAnalysis.plot_possible_blends`` method:
 
