@@ -86,7 +86,7 @@ For example, analysis of TOI 1557.01 observed 19.8.2020 (the field shown above) 
 
 .. code-block:: python
 
-    ta = TFOPAnalysis('toi01557.01', '200819', 0, [2,3,4])
+    ta = TFOPAnalysis('toi01557.01', '200819', 0, [2,3,4])`
 
 A warning is printed if the target or any of the comparison stars have saturated photometric points.
 
