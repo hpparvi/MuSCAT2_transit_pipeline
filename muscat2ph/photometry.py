@@ -27,6 +27,7 @@ from astropy.coordinates import SkyCoord, FK5
 from astropy.io import fits as pf
 from astropy.stats import sigma_clipped_stats
 from astropy.table import Table
+from astropy.time import Time
 from astropy.visualization import simple_norm as sn
 from astropy.wcs import WCS, FITSFixedWarning
 from astroquery.gaia import Gaia
@@ -76,8 +77,7 @@ class ImageFrame:
         if not ax:
             ax = subplot(projection=wcs) if wcs else subplot()
             ax.grid()
-        ax.imshow(data, cmap=cm.gray_r, origin='image',
-                  norm=sn(data, stretch='log', min_percent=minp, max_percent=maxp))
+        ax.imshow(data, cmap=cm.gray_r, norm=sn(data, stretch='log', min_percent=minp, max_percent=maxp))
         ax.set_title(title)
         return fig, ax
 
@@ -343,7 +343,7 @@ class ScienceFrame(ImageFrame):
         else:
             self.set_reference_stars(cpix)
 
-    def find_stars_gaia(self, target_sky: SkyCoord, radius: float = 11, min_flux_ratio: float = 0.005):
+    def find_stars_gaia(self, target_sky: SkyCoord, radius: float = 11, min_flux_ratio: float = 0.005, maxn: int = 300):
         cs = Gaia.cone_search_async(target_sky, radius * u.arcmin)
         tb = cs.get_results()
 
@@ -351,10 +351,18 @@ class ScienceFrame(ImageFrame):
         relative_fluxes = relative_fluxes / relative_fluxes[0]
         m = ~relative_fluxes.mask
 
-        relative_fluxes = relative_fluxes[m]
-        tb = tb[m]
+        relative_fluxes = relative_fluxes[m][:maxn]
+        tb = tb[m][:maxn]
 
-        stars = SkyCoord(tb['ra'], tb['dec'])
+        mjd = Time(self._header['MJD_STRT'], format='mjd')
+        ref_epoch = tb['ref_epoch'].data.data
+        cur_epoch = mjd.to_value('decimalyear')
+        dt = cur_epoch - ref_epoch
+
+        ra = (tb['ra'].data.data * u.deg + dt * tb['pmra'].filled(0.0).data * u.mas)
+        dec = (tb['dec'].data.data * u.deg + dt * tb['pmdec'].filled(0.0).data * u.mas)
+
+        stars = SkyCoord(ra, dec)
         cpix = array(stars.to_pixel(self._wcs)).T
 
         # Flux ratio cut
@@ -479,7 +487,7 @@ class ScienceFrame(ImageFrame):
         dmin = self._cnt_calculate_minimum_distances()
         return dmin > minimum_separation
 
-    def select_centroiding_stars(self, nstars: int = 8,
+    def select_centroiding_stars(self, nstars: int = 6,
                      min_separation: float = 15,
                      sat_limit: float = 50_000,
                      apt_radius: float = 15,
@@ -517,8 +525,7 @@ class ScienceFrame(ImageFrame):
         for m, ax in zip(aps.to_mask(), axs.flat):
             #d = m.multiply(self.reduced)
             d = where(m.data.astype('bool'), m.cutout(self.reduced), nan)
-            ax.imshow(d, cmap=cm.gray_r, origin='image',
-                      norm=sn(d, stretch='log', min_percent=minp, max_percent=maxp))
+            ax.imshow(d, cmap=cm.gray_r, norm=sn(d, stretch='log', min_percent=minp, max_percent=maxp))
         fig.tight_layout()
 
     def plot_sky_masks(self, r1, r2, minp=0.0, maxp=99.9, cols=5, figsize=(11, 2.5)):
@@ -526,8 +533,7 @@ class ScienceFrame(ImageFrame):
         fig, axs = subplots(int(ceil(self.nstars / cols)), cols, figsize=figsize, sharex=True, sharey=True)
         for m, ax in zip(aps.to_mask(), axs.flat):
             d = where(m.data.astype('bool'), m.cutout(self.reduced), nan) #m.multiply(self.reduced)
-            ax.imshow(d, cmap=cm.gray_r, origin='image',
-                      norm=sn(d, stretch='linear', min_percent=minp, max_percent=maxp))
+            ax.imshow(d, cmap=cm.gray_r, norm=sn(d, stretch='linear', min_percent=minp, max_percent=maxp))
         fig.tight_layout()
 
     def plot_apertures(self, ax, offset=9, wcs:WCS=None):
