@@ -76,7 +76,7 @@ class ImageFrame:
         if not ax:
             ax = subplot(projection=wcs) if wcs else subplot()
             ax.grid()
-        ax.imshow(data, cmap=cm.gray_r, origin='image',
+        ax.imshow(data, cmap=cm.gray_r,
                   norm=sn(data, stretch='log', min_percent=minp, max_percent=maxp))
         ax.set_title(title)
         return fig, ax
@@ -506,7 +506,7 @@ class ScienceFrame(ImageFrame):
         for m, ax in zip(aps.to_mask(), axs.flat):
             #d = m.multiply(self.reduced)
             d = where(m.data.astype('bool'), m.cutout(self.reduced), nan)
-            ax.imshow(d, cmap=cm.gray_r, origin='image',
+            ax.imshow(d, cmap=cm.gray_r,
                       norm=sn(d, stretch='log', min_percent=minp, max_percent=maxp))
         fig.tight_layout()
 
@@ -515,7 +515,7 @@ class ScienceFrame(ImageFrame):
         fig, axs = subplots(int(ceil(self.nstars / cols)), cols, figsize=figsize, sharex=True, sharey=True)
         for m, ax in zip(aps.to_mask(), axs.flat):
             d = where(m.data.astype('bool'), m.cutout(self.reduced), nan) #m.multiply(self.reduced)
-            ax.imshow(d, cmap=cm.gray_r, origin='image',
+            ax.imshow(d, cmap=cm.gray_r,
                       norm=sn(d, stretch='linear', min_percent=minp, max_percent=maxp))
         fig.tight_layout()
 
