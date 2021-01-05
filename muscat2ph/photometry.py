@@ -18,6 +18,7 @@ import logging
 import warnings
 
 from pathlib import Path
+from typing import Union, Iterable, Optional
 
 import astropy.units as u
 import pandas as pd
@@ -30,7 +31,6 @@ from astropy.table import Table
 from astropy.time import Time
 from astropy.visualization import simple_norm as sn
 from astropy.wcs import WCS, FITSFixedWarning
-from astroquery.gaia import Gaia
 from matplotlib import cm
 from matplotlib.pyplot import subplots, figure, subplot, setp
 from numpy import *
@@ -41,7 +41,7 @@ from scipy.ndimage import label, median_filter as mf
 from scipy.stats import scoreatpercentile as sap
 from tqdm import tqdm
 
-from .centroider import Centroider
+from .centroider import Centroider, COMCentroider
 
 passbands = 'g r i z_s'.split()
 
@@ -248,6 +248,58 @@ class ScienceFrame(ImageFrame):
     def cshift(self):
         return self._cshift.copy()
 
+    def find_reference_stars(self, fname: Union[str, Path], method: Optional[str] = None,
+                             target_sky_coords=None, target_pix_coords=None,
+                             max_stars: int = 50, method_kwargs=None, border_margin: int = 25,
+                             apply_separation_cut: bool = True, separation_cut_distance: float = 2.0,
+                             double_removal_distance: float = 0.1,
+                             cnt_sids: Optional[Iterable] = None, cnt_refine: Optional[Iterable] = None,
+                             cnt_aperture: float = 15.0,
+                             savefile: Optional[Union[str, Path]] = None):
+
+        self.load_fits(fname)
+
+        if savefile is not None:
+            savefile = Path(savefile)
+
+        if not method:
+            if self._wcs:
+                method = 'gaia'
+            else:
+                method = 'dao'
+
+        method_kwargs = method_kwargs or {}
+
+        if method == 'gaia':
+            self.find_stars_gaia(target_sky=target_sky_coords, savefile=savefile.with_name(f"{savefile.stem}_gaia.fits"), **method_kwargs)
+        elif method == 'dao':
+            self.find_stars_dao(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords,
+                                **method_kwargs)
+        elif method == 'defoc':
+            self.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords, **method_kwargs)
+        else:
+            raise ValueError('The method needs to be one of ["gaia", "dao", "defoc"]')
+
+        self.cut_margin(border_margin)
+
+        #if apply_separation_cut and target_sky_coords is not None:
+        #    self.cut_separation(target_sky_coords, separation_cut_distance)
+        #    self.remove_doubles(target_sky_coords, double_removal_distance)
+
+        if cnt_sids is not None:
+            self.centroid_star_ids = array(cnt_sids)
+        else:
+            self.select_centroiding_stars()
+
+        if cnt_refine is not None:
+            self.centroider = COMCentroider(self.reduced, self._ref_centroids_pix[cnt_refine], cnt_aperture)
+            self.centroider.calculate_centroids(self.reduced)
+            self._ref_centroids_pix[cnt_refine] = self.centroider.centers
+        self.set_reference_stars(self._ref_centroids_pix)
+
+        if savefile is not None:
+            self.save_reference_stars(savefile)
+
     def load_reference_stars(self, fname):
         csv_file = Path(fname).with_suffix('.csv')
         fits_file = Path(fname).with_suffix('.fits')
@@ -284,8 +336,14 @@ class ScienceFrame(ImageFrame):
         if self._ref_centroids_sky is not None:
             df['ra'] = self._ref_centroids_sky.ra.value
             df['dec'] = self._ref_centroids_sky.dec.value
+        else:
+            df['ra'] = nan
+            df['dec'] = nan
+
         if hasattr(self, '_flux_ratios'):
             df['fratio'] = self._flux_ratios
+        else:
+            df['fratio'] = 1.0
         df['center'] = cids
         df.to_csv(Path(fname).with_suffix('.csv'))
 
@@ -343,53 +401,60 @@ class ScienceFrame(ImageFrame):
         else:
             self.set_reference_stars(cpix)
 
-    def find_stars_gaia(self, target_sky: SkyCoord, radius: float = 11, min_flux_ratio: float = 0.005, maxn: int = 300):
-        cs = Gaia.cone_search_async(target_sky, radius * u.arcmin)
-        tb = cs.get_results()
+    def find_stars_gaia(self, target_sky: SkyCoord, radius: float = 11, min_flux_ratio: float = 0.005,
+                        savefile: Optional[Union[Path, str]] = None, overwrite: bool = False):
+        tb = None
+        if savefile is not None:
+            savefile = Path(savefile)
+            if savefile.exists():
+                tb = Table.read(savefile)
 
-        relative_fluxes = tb['phot_rp_mean_flux'] + tb['phot_g_mean_flux'] + tb['phot_bp_mean_flux']
-        relative_fluxes = relative_fluxes / relative_fluxes[0]
-        m = ~relative_fluxes.mask
+        if tb is None or overwrite:
+            from astroquery.gaia import Gaia
+            Gaia.ROW_LIMIT = 5000
 
-        relative_fluxes = relative_fluxes[m][:maxn]
-        tb = tb[m][:maxn]
+            cs = Gaia.cone_search_async(target_sky, radius * u.arcmin)
+            tb = cs.get_results()
+            tb = tb[
+                ['source_id', 'dist', 'ref_epoch', 'ra', 'dec', 'pmra', 'pmdec', 'phot_g_mean_flux', 'phot_g_mean_mag']]
+            tb['pmra'] = tb['pmra'].filled(0.0)
+            tb['pmdec'] = tb['pmdec'].filled(0.0)
 
-        mjd = Time(self._header['MJD_STRT'], format='mjd')
-        ref_epoch = tb['ref_epoch'].data.data
+            relative_fluxes = tb['phot_g_mean_flux'] / tb['phot_g_mean_flux'][0]
+            relative_fluxes = array(relative_fluxes.filled(1e-8))
+            tb['flux_ratio'] = relative_fluxes
+
+            if savefile is not None:
+                tb.write(savefile, overwrite=True)
+
+        mask = tb['flux_ratio'] >= min_flux_ratio
+        tb = tb[mask]
+
+        mjd = Time(self._header['MJD-STRT'], format='mjd')
+        ref_epoch = tb['ref_epoch'].data
         cur_epoch = mjd.to_value('decimalyear')
         dt = cur_epoch - ref_epoch
 
-        ra = (tb['ra'].data.data * u.deg + dt * tb['pmra'].filled(0.0).data * u.mas)
-        dec = (tb['dec'].data.data * u.deg + dt * tb['pmdec'].filled(0.0).data * u.mas)
+        ra = (tb['ra'].data * u.deg + dt * tb['pmra'].data * u.mas)
+        dec = (tb['dec'].data * u.deg + dt * tb['pmdec'].data * u.mas)
 
         stars = SkyCoord(ra, dec)
         cpix = array(stars.to_pixel(self._wcs)).T
 
-        # Flux ratio cut
-        # --------------
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            mask = relative_fluxes > min_flux_ratio
-        relative_fluxes = relative_fluxes[mask]
-        tb = tb[mask]
-        cpix = cpix[mask]
-
         # Inside-frame cut
         # ----------------
         mask = is_inside_frame(cpix, self.height, self.width, self.margin, self.margin)
-        relative_fluxes = relative_fluxes[mask]
         tb = tb[mask]
         cpix = cpix[mask]
 
         # Sort the stars
         # --------------
-        sids = argsort(relative_fluxes[1:])[::-1]
-        relative_fluxes[1:] = relative_fluxes[1:][sids]
+        sids = argsort(array(tb['flux_ratio'])[1:])[::-1]
         cpix[1:] = cpix[1:][sids]
         tb[1:] = tb[1:][sids]
 
         self._gaia_source_table = tb
-        self._flux_ratios = relative_fluxes
+        self._flux_ratios = array(tb['flux_ratio'])
         self.nstars = cpix.shape[0]
         self._initialize_tables(self.nstars, self.napt)
         csky = pd.DataFrame(self._wcs.all_pix2world(cpix, 0), columns='RA Dec'.split())
@@ -425,6 +490,7 @@ class ScienceFrame(ImageFrame):
             self.margin = margin
         imsize = self._data.shape[0]
         mask = all((self._ref_centroids_pix > margin) & ((self._ref_centroids_pix < imsize - margin)), 1)
+        self._flux_ratios = self._flux_ratios[mask]
         if self._ref_centroids_sky is not None:
             self.set_reference_stars(self._ref_centroids_pix[mask], self._ref_centroids_sky[mask])
         else:
@@ -447,6 +513,7 @@ class ScienceFrame(ImageFrame):
             stars = self._ref_centroids_sky[mask]
             self.set_reference_stars(stars.to_pixel(self._wcs), stars)
             self._separation_cut = max_separation*u.arcmin
+            self._flux_ratios = self._flux_ratios[mask]
 
     def remove_doubles(self, target=None, min_separation=0.1):
         if self._wcs is not None:
@@ -463,6 +530,7 @@ class ScienceFrame(ImageFrame):
             mask[0] = True
             stars = self._ref_centroids_sky[mask]
             self.set_reference_stars(stars.to_pixel(self._wcs), stars)
+            self._flux_ratios = self._flux_ratios[mask]
         self._min_separation_cut = min_separation*u.arcmin
 
     # Centroiding
