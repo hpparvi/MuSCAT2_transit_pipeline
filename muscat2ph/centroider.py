@@ -59,10 +59,7 @@ class Centroider:
         self.apertures = CircularAperture(self.centers, self.r)
 
         if self.old_centers is not None:
-            #self._transform = nudged.estimate(self.old_centers, self.centers)
             self._transform = nudged.estimate(self.old_centers, self.centers)
-
-
 
     def estimate_radii(self):
         try:
@@ -162,8 +159,35 @@ class EntropyCentroider(Centroider):
     def __call__(self, bounds=((-20, 20), (-20, 20))):
         return minimize(self.c_entropy, array([0., 0.]), bounds=bounds)
 
-
 class COMCentroider(Centroider):
+
+    def calculate_centroids(self, image: ndarray, sigma: float = 4, maxiter: int = 5):
+        _, self.imed, self.istd = sigma_clipped_stats(image)
+        self.image = image - self.imed
+
+        if self.detect_jump():
+            self.recover_from_jump()
+
+        centers_p = zeros_like(self.centers)
+        centers_c = zeros_like(self.centers)
+        j, converged = 0, False
+        while not converged and j < maxiter:
+            masks = self.apertures.to_mask()
+            for i, (mask, bbox) in enumerate(zip(masks, self.apertures.bbox)):
+                d = mask.multiply(self.image)
+                xy = array(center_of_mass(d))[[1, 0]] + array([bbox.ixmin, bbox.iymin])
+                centers_c[i] = xy
+            if j > 0:
+                if all(((centers_c - centers_p)**2).sum(1) < 1.0):
+                    converged = True
+            centers_p[:] = centers_c
+            j += 1
+        self.update(centers_c)
+        self.estimate_radii()
+        return self.centers
+
+
+class DFCOMCentroider(Centroider):
 
     def calculate_centroids(self, image: ndarray, sigma: float = 4, maxiter: int = 5):
         self.image = median_filter(image, 3)

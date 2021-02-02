@@ -37,11 +37,14 @@ mpl.use('Agg')
 import matplotlib.pyplot as pl
 
 from muscat2ph.photometry import ScienceFrame
-from muscat2ph.centroider import COMCentroider
+from muscat2ph.centroider import COMCentroider, DFCOMCentroider
 from muscat2ph.catalog import get_toi, get_coords
 
 warnings.filterwarnings("error", category=AstropyDeprecationWarning)
 seterr(invalid='ignore')
+
+logger = logging.getLogger('m2photometry')
+
 logging.basicConfig(level=logging.INFO)
 
 passbands = 'g r i z_s'.split()
@@ -72,7 +75,11 @@ def photometry(filename):
 
 def create_datacube(filename):
     im.load_fits(filename)
-    im.centroid()
+    #im.centroid()
+    fig_field, ax_field = pl.subplots(figsize=(9, 9))
+    im.plot_reduced(minp=90, offset=10, ax=ax_field)
+    fig_field.savefig(Path(Path(filename).name).with_suffix('.png'))
+    pl.close(fig_field)
     return im.get_aperture(dcaid, dcoid)
 
 
@@ -100,8 +107,10 @@ if __name__ == '__main__':
     ap.add_argument('--double-removal-distance', type=float, default=0.1)
     ap.add_argument('--tfop', action='store_true', default=False)
     ap.add_argument('--no-tfop', action='store_true', default=False)
+    ap.add_argument('--find-method', choices=['gaia', 'dao', 'defoc'], type=str, default=None)
     ap.add_argument('--find-mf', type=int, default=6)
     ap.add_argument('--find-treshold', type=float, default=None)
+    ap.add_argument('--find-dao-fwhm', type=float, default=6.0)
     ap.add_argument('--min-fratio', type=float, default=0.005)
     ap.add_argument('--apertures', nargs='+', type=float, default=None)
     ap.add_argument('--cnt-aperture', type=float, default=25)
@@ -236,28 +245,26 @@ if __name__ == '__main__':
             # Find, cut, save, and load the stars
             # -----------------------------------
             if (args.save_stars and ipb==0) or not stars_file.exists():
-                if args.use_gaia and len(files_with_wcs[pb]) > 0:
-                    logging.info("Searching for stars from the GAIA catalog")
-                    im.load_fits(files_with_wcs[pb][0])
-                    im.find_stars_gaia(target_sky=target_sky_coords, radius=11, min_flux_ratio=args.min_fratio, maxn=max_stars)
-                    logging.info(f"- Found {im.nstars} stars")
-                else:
-                    logging.info("Searching for stars")
-                    im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords,
-                                  treshold=find_treshold, mf_size=args.find_mf)
-                    im.cut_margin(args.border_margin)
-                    if TFOP or args.apply_separation_cut:
-                        im.cut_separation(target_sky_coords, args.separation_cut_distance)
-                        im.remove_doubles(target_sky_coords, args.double_removal_distance)
-                        logging.info(f"Applying separation cut and double removal: {im.nstars} left")
-                csids = array(args.cnt_sids or im.select_centroiding_stars())
-                cpos = im._ref_centroids_pix[csids]
-                im.centroider = COMCentroider(im.reduced, cpos, args.cnt_aperture)
-                im.centroider.calculate_centroids(im.reduced)
-                im._ref_centroids_pix[csids] = im.centroider.centers
-                im.set_reference_stars(im._ref_centroids_pix)
-                im.save_reference_stars(stars_file)
+                find_method = args.find_method
+                ref_file = files[0]
 
+                if find_method is None:
+                    if args.use_gaia and len(files_with_wcs[pb]) > 0:
+                        ref_file = files_with_wcs[pb][0]
+
+                method_kwargs = {}
+
+                im.find_reference_stars(ref_file, find_method, target_sky_coords, target_pix_coords, max_stars,
+                                        method_kwargs, args.border_margin, args.apply_separation_cut,
+                                        args.separation_cut_distance, args.double_removal_distance,
+                                        args.cnt_sids, args.cnt_refine, args.cnt_aperture,
+                                        stars_file)
+
+                    #im.find_stars_gaia(target_sky=target_sky_coords, radius=11, min_flux_ratio=args.min_fratio, maxn=max_stars)
+                    #im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords,
+                    #              treshold=find_treshold, mf_size=args.find_mf)
+
+            logger.info(f"Reading stars")
             im.load_reference_stars(stars_file)
             cpos = im._ref_centroids_pix[im.centroid_star_ids]
             im.centroider = COMCentroider(im.reduced, cpos, args.cnt_aperture)

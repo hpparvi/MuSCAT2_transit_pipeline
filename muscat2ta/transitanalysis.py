@@ -86,7 +86,8 @@ class TransitAnalysis:
                  radius_ratio: str = 'achromatic', klims=(0.005, 0.25),
                  catalog_name: str = None, init_lpf: bool = True,
                  check_saturation: bool = True, contamination_model: str = 'physical',
-                 contamination_reference_passband: str = "r'"):
+                 contamination_reference_passband: str = "r'",
+                 target_coordinates=None):
 
         self.target: str = target
         self.date: str = date
@@ -122,7 +123,10 @@ class TransitAnalysis:
 
         # Get the target coordinates
         # --------------------------
-        self.target_coordinates = get_coords(catalog_name or self.target)
+        if target_coordinates is None:
+            self.target_coordinates = get_coords(catalog_name or self.target)
+        else:
+            self.target_coordinates = target_coordinates
 
         # Read in the data
         # ----------------

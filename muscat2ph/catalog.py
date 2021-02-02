@@ -170,7 +170,7 @@ def get_toi_or_tic_coords(toi_or_tic):
 
 def get_coords(target: str):
     try:
-        sc = NEA.query_planet(target)['sky_coord']
+        sc = NEA.query_object(target)['sky_coord']
         if sc.data.size > 0:
             return sc
         else:

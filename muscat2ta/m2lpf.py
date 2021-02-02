@@ -445,6 +445,14 @@ class M2LPF(BaseLPF):
 
     def create_pv_population(self, npop=50):
         pvp = self.ps.sample_from_prior(npop)
+
+        if hasattr(self, '_sl_lm'):
+            for p in self.ps[self._sl_lm]:
+                if 'lm_i' in p.name:
+                    pvp[:, p.pid] = normal(1.0, 0.005, npop)
+                else:
+                    pvp[:, p.pid] = normal(0.0, 0.005, npop)
+
         if self.with_transit:
 
             # With LDTk
@@ -465,10 +473,6 @@ class M2LPF(BaseLPF):
                 pvv[:, ::2] = sort(pvv[:, ::2], 1)[:, ::-1]
                 pvv[:, 1::2] = sort(pvv[:, 1::2], 1)[:, ::-1]
                 pvp[:,self._sl_ld] = pvv
-                #for i in range(pvp.shape[0]):
-                #    pid = argsort(pvp[i, ldsl][::2])[::-1]
-                #    pvp[i, ldsl][::2] = pvp[i, ldsl][::2][pid]
-                #    pvp[i, ldsl][1::2] = pvp[i, ldsl][1::2][pid]
 
         return pvp
 
