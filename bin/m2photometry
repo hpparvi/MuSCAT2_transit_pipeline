@@ -39,6 +39,7 @@ import matplotlib.pyplot as pl
 from muscat2ph.photometry import ScienceFrame
 from muscat2ph.centroider import COMCentroider, DFCOMCentroider
 from muscat2ph.catalog import get_toi, get_coords
+from muscat2ph.m2obsnight import M2ObservationNight, M2ObservationData
 
 warnings.filterwarnings("error", category=AstropyDeprecationWarning)
 seterr(invalid='ignore')
@@ -98,207 +99,76 @@ if __name__ == '__main__':
     ap.add_argument('--n-processes', type=int, default=5)
     ap.add_argument('--chunksize', type=int, default=5)
     ap.add_argument('--border-margin', type=int, default=30)
-    ap.add_argument('--save-stars', action='store_true', default=False)
     ap.add_argument('--create-dc', action='store_true', default=False)
     ap.add_argument('--dc-obj-id', type=int, default=0)
     ap.add_argument('--dc-apt-id', type=int, default=0)
-    ap.add_argument('--apply-separation-cut', action='store_true', default=False)
-    ap.add_argument('--separation-cut-distance', type=float, default=2.0)
-    ap.add_argument('--double-removal-distance', type=float, default=0.1)
     ap.add_argument('--tfop', action='store_true', default=False)
     ap.add_argument('--no-tfop', action='store_true', default=False)
-    ap.add_argument('--find-method', choices=['gaia', 'dao', 'defoc'], type=str, default=None)
-    ap.add_argument('--find-mf', type=int, default=6)
-    ap.add_argument('--find-treshold', type=float, default=None)
-    ap.add_argument('--find-dao-fwhm', type=float, default=6.0)
-    ap.add_argument('--min-fratio', type=float, default=0.005)
     ap.add_argument('--apertures', nargs='+', type=float, default=None)
     ap.add_argument('--cnt-aperture', type=float, default=25)
     ap.add_argument('--cnt-sids', type=int, nargs='+', default=None)
     ap.add_argument('--cnt-pmin', type=float, default=80)
     ap.add_argument('--cnt-pmax', type=float, default=95)
-    ap.add_argument('--cnt-refine', type=int, nargs='+', default=None)
-    ap.add_argument('--dont-use-gaia', dest='use_gaia', action='store_false', default=True)
     ap.add_argument('--ignore-wcs', dest='use_wcs', action='store_false', default=True)
     args = ap.parse_args()
 
-    root = Path(args.datadir)
-    obsdate = root.absolute().name
-    pbs = [args.passband] if args.passband != 'all' else 'r g i z_s'.split()
     target_sky_coords = None
     target_pix_coords = None
     centroider_kwargs = dict(sids=args.cnt_sids, aperture_radius=args.cnt_aperture, pmin=args.cnt_pmin, pmax=args.cnt_pmax)
 
-    # Find objects
-    # ------------
-    if args.object:
-        objects = [args.object]
+    if args.apertures is None:
+        apertures = (4, 6, 8, 10, 12, 14, 16, 18, 20, 23, 27, 32)
     else:
-        objects = [o.name for o in list(root.joinpath('obj').glob('*'))]
-    logging.info(f'Objects: {objects}')
+        apertures = args.apertures
+    logging.info(f"Apertures {apertures}")
+
+    on = M2ObservationNight(args.datadir, args.object, args.passband)
 
     # Do the photometry for all the targets
     # -------------------------------------
-    for object in objects:
-        max_stars = args.max_stars
+    for object in on.objects:
+        od = M2ObservationData(on, object)
 
         catalog_name = args.target_catalog_name or object
+        target_sky_coords = get_coords(catalog_name, on.date)
+        logging.info(f"Target sky coordinates {target_sky_coords}")
 
         try:
             toi = get_toi(catalog_name)
         except ValueError:
             toi = None
 
-        find_treshold = args.find_treshold
+        if args.result_dir:
+            rdir = Path(args.result_dir)
+        else:
+            rdir = Path('.').resolve().joinpath(object, on.night)
+            if not rdir.exists():
+                makedirs(rdir)
+
         if not args.no_tfop and toi is not None:
             logging.info(f"Calculating photometry for a TFOP target {catalog_name} (TIC {toi.tic}).")
-            find_treshold = find_treshold or 97.5
-            max_stars = max_stars or 150
             ticname = 'TIC{:d}-{}'.format(int(toi.tic), str(toi.toi).split('.')[1])
             TFOP = True
         else:
             logging.info(f"Calculating photometry for {catalog_name}.")
-            find_treshold = find_treshold or 99.
-            max_stars = max_stars or 20
             TFOP = False
-
-        target_sky_coords = get_coords(catalog_name)
-        logging.info(f"Target sky coordinates {target_sky_coords}")
-
-        if args.apertures is None:
-            apertures = (4, 6, 8, 10, 12, 14, 16, 18, 20, 23, 27, 32)
-        else:
-            apertures = args.apertures
-        logging.info(f"Apertures {apertures}")
-
-        all_files = {}
-        files_with_wcs = {}
-        for pb in pbs:
-            ddir = root.joinpath('obj', object, pb)
-            if ddir.exists():
-                all_files[pb] = sorted(list(ddir.glob('MCT2?_*.fits')))
-                istart = max(0, args.start_frame)
-                iend = min(args.end_frame, len(all_files[pb]))
-                all_files[pb] = all_files[pb][istart:iend]
-                files_with_wcs[pb] = list(filter(lambda f: f.with_suffix('.wcs').exists(), all_files[pb]))
-                logging.info(f"Found {len(all_files[pb])} fits files ({len(files_with_wcs[pb])} with wcs) in the {pb}-band.")
-
-        if args.with_wcs_only:
-            all_files = files_with_wcs
-
-        if sum([len(f) for f in all_files.values()]) == 0:
-            logging.warning("No files to process")
-            continue
-
-        for k, it in all_files.items():
-            if len(it) > 0:
-                h = pf.getheader(it[0])
-                break
-
-        obsnight = datetime.strptime(h['date-obs'], '%Y-%m-%d')
-        if h['MJD-STRT'] % 1 < 0.5:
-            obsnight -= timedelta(1)
-
-        if args.result_dir:
-            rdir = Path(args.result_dir)
-        else:
-            rdir = Path('.').resolve().joinpath(object, obsnight.strftime('%y%m%d'))
-            if not rdir.exists():
-                makedirs(rdir)
-
-        pbs = [pb for pb in pbs if pb in all_files]
-        logging.info(f"Found passbands {pbs}")
 
         # Loop over passbands
         # -------------------
-        stars_file = rdir.joinpath(f'{object}_stars.csv')
-        for ipb, pb in enumerate(pbs):
-            files = all_files[pb]
+        stars_file = rdir / f'{object}_stars.csv'
 
-            im = ScienceFrame(root, pb, aperture_radii=apertures, use_wcs=args.use_wcs)
+        for ipb, pb in enumerate(od.pbs):
+            im = ScienceFrame(on.root, pb, aperture_radii=apertures, use_wcs=args.use_wcs)
+
             if target_sky_coords is not None:
                 im._target_center = target_sky_coords
 
-            if toi is not None:
-                fits_name = f'{ticname}_20{obsdate}_MuSCAT2_{pb}_frame.fits'
-            else:
-                fits_name = f'{object}_20{obsdate}_MuSCAT2_{pb}_frame.fits'
+            files = od.files_with_wcs[pb]
 
-            if len(files_with_wcs[pb]) > 0:
-                f = files_with_wcs[pb][0]
-                im.load_fits(f)
-                header = im._header.copy()
-                header.append(('COMMENT', '*********************'))
-                header.append(('COMMENT', '  WCS '))
-                header.append(('COMMENT', '*********************'))
-                with pf.open(f.with_suffix('.wcs')) as f2:
-                    header.extend(f2[0].header, unique=True, bottom=True)
-                hdu = pf.PrimaryHDU(im.reduced, header=header)
-                hdu.writeto(rdir.joinpath(fits_name), overwrite=True)
-            else:
-                im.load_fits(files[0])
-                hdu = pf.PrimaryHDU(im.reduced, header=im._header)
-                hdu.writeto(rdir.joinpath(fits_name), overwrite=True)
-
-            logging.info(f'Wrote an example fits-frame {fits_name}')
-
-            # Find, cut, save, and load the stars
-            # -----------------------------------
-            if (args.save_stars and ipb==0) or not stars_file.exists():
-                find_method = args.find_method
-                ref_file = files[0]
-
-                if find_method is None:
-                    if args.use_gaia and len(files_with_wcs[pb]) > 0:
-                        ref_file = files_with_wcs[pb][0]
-
-                method_kwargs = {}
-
-                im.find_reference_stars(ref_file, find_method, target_sky_coords, target_pix_coords, max_stars,
-                                        method_kwargs, args.border_margin, args.apply_separation_cut,
-                                        args.separation_cut_distance, args.double_removal_distance,
-                                        args.cnt_sids, args.cnt_refine, args.cnt_aperture,
-                                        stars_file)
-
-                    #im.find_stars_gaia(target_sky=target_sky_coords, radius=11, min_flux_ratio=args.min_fratio, maxn=max_stars)
-                    #im.find_stars(maxn=max_stars, target_sky=target_sky_coords, target_pix=target_pix_coords,
-                    #              treshold=find_treshold, mf_size=args.find_mf)
-
-            logger.info(f"Reading stars")
             im.load_reference_stars(stars_file)
             cpos = im._ref_centroids_pix[im.centroid_star_ids]
             im.centroider = COMCentroider(im.reduced, cpos, args.cnt_aperture)
             im.centroid()
-
-            # Field plot with apertures
-            # -------------------------
-            if im._wcs:
-                for r in (None,5,2):
-                    fig_field = pl.figure(figsize=(9, 9))
-                    ax_field = fig_field.add_subplot(111, projection=im._wcs)
-                    ax_field.grid()
-                    im.plot_reduced(minp=90, offset=10, ax=ax_field, subfield_radius=r)
-                    ax_field.set_title(f"Reference frame - {catalog_name} {pb}'")
-                    pl.setp(ax_field, ylabel='Dec', xlabel='RA')
-                    fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
-                    if r:
-                        fig_field.savefig(str(rdir.joinpath(f"{object}_20{obsdate}_MuSCAT2_{pb}_field_{r:d}am.png")))
-                    else:
-                        fig_field.savefig(str(rdir.joinpath(f"{object}_20{obsdate}_MuSCAT2_{pb}_field.png")))
-                    pl.close(fig_field)
-            else:
-                fig_field, ax_field = pl.subplots(figsize=(9, 9))
-                im.plot_reduced(minp=90, offset=10, ax=ax_field)
-                ax_field.set_title(f"Reference frame - {object} {pb}")
-                pl.setp(ax_field, ylabel='Y [pix]', xlabel='X [pix]')
-                fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
-                fig_field.savefig(str(rdir.joinpath(f"{object}_20{obsdate}_MuSCAT2_{pb}_field.png")))
-                pl.close(fig_field)
-
-            fig_psf, _ = im.plot_psf(figsize=(9, 4.5))
-            fig_psf.tight_layout()
-            fig_psf.savefig(str(rdir.joinpath(f"{object}_20{obsdate}_MuSCAT2_{pb}_seeing_profile.png")))
-            pl.close(fig_psf)
 
             # Datacube creation
             # -----------------
@@ -307,7 +177,7 @@ if __name__ == '__main__':
                           initializer=init, initargs=(im, args.dc_obj_id, args.dc_apt_id)) as pool:
                     dc = array(list(tqdm(pool.imap(create_datacube, files, chunksize=args.chunksize), total=len(files),desc='Creating a datacube'))).astype(float32)
                     hdu = pf.PrimaryHDU(dc)
-                    hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, obsdate, pb))), overwrite=True)
+                    hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, on.night, pb))), overwrite=True)
 
             # Photometry
             # ----------
@@ -341,4 +211,4 @@ if __name__ == '__main__':
 
                 ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos,
                                      aux=aux, centroids_pix=cpix, centroids_sky=csky))
-                ds.to_netcdf(str(rdir.joinpath('{}_{}_{}.nc'.format(object, obsdate, pb))))
+                ds.to_netcdf(str(rdir.joinpath('{}_{}_{}.nc'.format(object, on.night, pb))))
