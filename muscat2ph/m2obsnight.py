@@ -18,12 +18,14 @@ import logging
 from pathlib import Path
 from typing import Union, Optional
 
+from astropy.time import Time
 
 class M2ObservationNight:
 
     def __init__(self, root: Union[Path, str], obj: Optional[str] = None, passbands=None):
         self.root = Path(root).resolve()
-        self.date = self.root.absolute().name
+        self.night = self.root.absolute().name
+        self.date = Time.strptime(self.night, '%y%m%d')
 
         if passbands == 'all' or passbands is None:
             self.pbs = 'r g i z_s'.split()
@@ -33,7 +35,7 @@ class M2ObservationNight:
         if obj:
             self.objects = [obj]
         else:
-            self.objects = [o.name for o in list(root.joinpath('obj').glob('*'))]
+            self.objects = [o.name for o in list(self.root.joinpath('obj').glob('*'))]
 
 
 class M2ObservationData:

@@ -58,7 +58,7 @@ passbands = 'g r i z_s'.split()
 
 if __name__ == '__main__':
     ap = ArgumentParser()
-    ap.add_argument('datadir', type=str)
+    ap.add_argument('datadir', type=Path)
     ap.add_argument('--object', type=str, default=None)
     ap.add_argument('--passband', choices='g r i z_s all'.split(), default='all')
     ap.add_argument('--target-catalog-name', type=str, default=None)
@@ -105,13 +105,13 @@ if __name__ == '__main__':
         od = M2ObservationData(on, object)
 
         catalog_name = args.target_catalog_name or object
-        target_sky_coords = get_coords(catalog_name)
+        target_sky_coords = get_coords(catalog_name, on.date)
         logging.info(f"Target sky coordinates {target_sky_coords}")
 
         if args.result_dir:
             rdir = Path(args.result_dir)
         else:
-            rdir = Path('.').resolve() / object / on.date
+            rdir = Path('.').resolve() / object / on.night
             if not rdir.exists():
                 makedirs(rdir)
         logging.info(f"Result directory: {rdir}")
@@ -128,7 +128,7 @@ if __name__ == '__main__':
             else:
                 ref_file = od.files[pb][args.frame]
 
-            fits_name = f'{object}_{on.date}_MuSCAT2_{pb}_frame.fits'
+            fits_name = f'{object}_{on.night}_MuSCAT2_{pb}_frame.fits'
             if len(od.files_with_wcs[pb]) > 0:
                 im.load_fits(ref_file)
                 header = im._header.copy()
@@ -184,9 +184,9 @@ if __name__ == '__main__':
                     pl.setp(ax_field, ylabel='Dec', xlabel='RA')
                     fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
                     if r:
-                        fig_field.savefig(str(rdir.joinpath(f"{object}_{on.date}_MuSCAT2_{pb}_field_{r:d}am.png")))
+                        fig_field.savefig(str(rdir.joinpath(f"{object}_{on.night}_MuSCAT2_{pb}_field_{r:d}am.png")))
                     else:
-                        fig_field.savefig(str(rdir.joinpath(f"{object}_{on.date}_MuSCAT2_{pb}_field.png")))
+                        fig_field.savefig(str(rdir.joinpath(f"{object}_{on.night}_MuSCAT2_{pb}_field.png")))
                     pl.close(fig_field)
             else:
                 fig_field, ax_field = pl.subplots(figsize=(9, 9))
@@ -194,11 +194,11 @@ if __name__ == '__main__':
                 ax_field.set_title(f"Reference frame - {object} {pb}")
                 pl.setp(ax_field, ylabel='Y [pix]', xlabel='X [pix]')
                 fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
-                fig_field.savefig(str(rdir.joinpath(f"{object}_20{on.date}_MuSCAT2_{pb}_field.png")))
+                fig_field.savefig(str(rdir.joinpath(f"{object}_20{on.night}_MuSCAT2_{pb}_field.png")))
                 pl.close(fig_field)
 
             fig_psf, _ = im.plot_psf(figsize=(9, 4.5))
             fig_psf.tight_layout()
-            fig_psf.savefig(str(rdir.joinpath(f"{object}_20{on.date}_MuSCAT2_{pb}_seeing_profile.png")))
+            fig_psf.savefig(str(rdir.joinpath(f"{object}_20{on.night}_MuSCAT2_{pb}_seeing_profile.png")))
             pl.close(fig_psf)
 
