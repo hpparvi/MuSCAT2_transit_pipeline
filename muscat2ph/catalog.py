@@ -17,6 +17,7 @@
 from difflib import get_close_matches
 from pathlib import Path
 from collections import namedtuple
+from typing import Optional
 
 import requests
 from datetime import datetime
@@ -24,9 +25,11 @@ from datetime import datetime
 import astropy.units as u
 import pandas as pd
 from astropy.coordinates import SkyCoord
+from astropy.time import Time
 from astroquery.nasa_exoplanet_archive import NasaExoplanetArchive as NEA
+from astroquery.simbad import Simbad
 
-from numpy import remainder, array
+from numpy import remainder, array, squeeze
 from pkg_resources import resource_filename
 
 TOI = namedtuple('TOI', 'tic toi tmag ra dec epoch period duration depth'.split())
@@ -168,13 +171,24 @@ def get_toi_or_tic_coords(toi_or_tic):
     return SkyCoord(toi.ra, toi.dec, frame='fk5', unit=(u.hourangle, u.deg))
 
 
-def get_coords(target: str):
+def get_coords(target: str, obsdate: Optional[Time] = None):
     try:
-        sc = NEA.query_object(target)['sky_coord']
-        if sc.data.size > 0:
-            return sc
-        else:
+        simbad = Simbad()
+        simbad.add_votable_fields('pm')
+        tbl = simbad.query_object(target)
+        if tbl is None:
             raise KeyError
+        else:
+            tbl = tbl.filled(0.0)
+            coo = squeeze(SkyCoord(tbl['RA'], tbl['DEC'], unit=(u.hourangle, u.deg)))
+            if obsdate is None:
+                return coo
+            else:
+                epoch = Time('2000-01-01')
+                dt = (obsdate - epoch).to(u.yr)
+                ra = coo.ra + dt * tbl['PMRA'].data * u.mas / u.yr
+                dec = coo.dec + dt * tbl['PMDEC'].data * u.mas / u.yr
+                return squeeze(SkyCoord(ra, dec))
     except KeyError:
         try:
             return get_toi_or_tic_coords(parse_toi(target))
