@@ -188,7 +188,6 @@ class ScienceFrame(ImageFrame):
         self.centroider: Centroider = None
         self.centroid_star_ids = []
 
-
     def load_fits(self, filename: Path, extension: int = 0, wcs_in_header: bool = False) -> None:
         """Load the image data and WCS information (if available)."""
         filename = Path(filename)
@@ -357,6 +356,7 @@ class ScienceFrame(ImageFrame):
         self._apertures_obj = [CircularAperture(list(cpix), r) for r in self.aperture_radii]
         self._apertures_sky = CircularAnnulus(list(cpix), self.aperture_radii[-1], self.aperture_radii[-1] + wsky)
         self.nstars = self._ref_centroids_pix.shape[0]
+        self._initialize_tables(self.nstars, self.napt)
 
     def _update_apertures(self, positions):
         if self._apertures_obj:
