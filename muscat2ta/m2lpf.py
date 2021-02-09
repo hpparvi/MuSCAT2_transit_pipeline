@@ -777,9 +777,14 @@ class M2LPF(BaseLPF):
         return flux.astype('d')
 
     def relative_flux(self, pv):
-        return self.target_flux(pv) / self.reference_flux(pv)
+        if self.photometry_frozen:
+            return self.ofluxa
+        else:
+            return self.target_flux(pv) / self.reference_flux(pv)
 
     def target_flux(self, pv):
+        if self.photometry_frozen:
+            return self._target_flux
         pv = atleast_2d(pv)
         p = floor(clip(pv[:, self._sl_tap], 0.0, self.napt*0.999)).astype('int')
         off = zeros((p.shape[0], self.timea.size))
@@ -788,6 +793,8 @@ class M2LPF(BaseLPF):
         return squeeze(off)
 
     def reference_flux(self, pvp):
+        if self.photometry_frozen:
+            return self._reference_flux
         if self.cids.size > 0:
             pvp = atleast_2d(pvp)
             ref_mask = pvp[:, self._sl_ref_include] >= 0.5
@@ -938,10 +945,6 @@ class M2LPF(BaseLPF):
             axs[2, i].plot(t, tm[0][sl], 'k', lw=2)
             axs[3, i].plot(t, self.ofluxa[sl] - fm[0][sl], '.', alpha=0.5)
 
-            #if bin_width:
-            #    bt, bf, be = downsample_time(t, self.ofluxa[sl] / bl[0][sl], 300)
-            #    axs[2, i].plot(bt, bf, 'ok')
-
             res = self.ofluxa[sl] - fm[0][sl]
             x = linspace(-4 * err, 4 * err)
             axs[0, i].hist(1e3 * res, 'auto', density=True, alpha=0.5)
@@ -1009,16 +1012,16 @@ class M2LPF(BaseLPF):
         p = self.ps.priors[0]
         trange = p.mean - 3 * p.std, p.mean + 3 * p.std
         x = linspace(*trange)
-        axs[0, 1].hist(df.tc, 50, density=True, range=trange, alpha=0.5, edgecolor='k', histtype='stepfilled')
-        axs[0, 1].set_xlabel(f'Transit center - {self._tref:9.0f} [BJD]')
-        axs[0, 1].fill_between(x, exp(p.logpdf(x)), alpha=0.5, edgecolor='k')
+        axs[0, 1].hist(df.tc - self._tref, bins='doane', density=True, range=array(trange) - self._tref, alpha=0.5, edgecolor='k', histtype='stepfilled')
+        axs[0, 1].set_xlabel(f'Transit center - {self._tref:.0f} [BJD]')
+        axs[0, 1].fill_between(x - self._tref, exp(p.logpdf(x)), alpha=0.5, edgecolor='k')
 
         # Period
         # ------
         p = self.ps.priors[1]
         trange = p.mean - 3 * p.std, p.mean + 3 * p.std
         x = linspace(*trange)
-        axs[1, 1].hist(df.p, 50, density=True, range=trange, alpha=0.5, edgecolor='k', histtype='stepfilled')
+        axs[1, 1].hist(df.p, bins='doane', density=True, range=trange, alpha=0.5, edgecolor='k', histtype='stepfilled')
         axs[1, 1].set_xlabel('Period [days]')
         axs[1, 1].fill_between(x, exp(p.logpdf(x)), alpha=0.5, edgecolor='k')
         setp(axs[1, 1], xticks=df.p.quantile([0.05, 0.5, 0.95]))
@@ -1027,7 +1030,7 @@ class M2LPF(BaseLPF):
         # -------------------
         names = 'stellar density, impact parameter'.split(', ')
         for i, ax in enumerate(axs.flat[[2, 5]]):
-            ax.hist(df.iloc[:, i + 2], 50, density=True, alpha=0.5, edgecolor='k', histtype='stepfilled')
+            ax.hist(df.iloc[:, i + 2], bins='doane', density=True, alpha=0.5, edgecolor='k', histtype='stepfilled')
             ax.set_xlabel(names[i])
 
         sb.despine(fig, offset=10)
@@ -1074,6 +1077,34 @@ class M2LPF(BaseLPF):
 
         if ylim:
             setp(axs, ylim=ylim)
+
+    def plot_combined_and_binned(self, binwidth: float = 10., figsize=None, ax=None,
+                                 plot_unbinned: bool = False):
+        from pytransit.lpf.tesslpf import downsample_time
+
+        if ax is None:
+            fig, ax = subplots(1, 1, figsize=figsize)
+        else:
+            fig, ax = None, ax
+
+        pv = self.de.minimum_location
+
+        sids = argsort(self.timea)
+
+        rflux = self.relative_flux(pv) / squeeze(self.baseline(pv))
+        mflux = self.transit_model(pv)
+
+        bt, bfo, be = downsample_time(self.timea[sids], rflux[sids], binwidth / 24 / 60)
+        btm, bfm, _ = downsample_time(self.timea[sids], mflux[sids], 2 / 24 / 60)
+
+        if plot_unbinned:
+            ax.plot(self.timea - self._tref, rflux, 'k.', alpha=0.1)
+        ax.errorbar(bt - self._tref, bfo, be, fmt='ok')
+        ax.fill_between(bt - self._tref, bfo - 3 * be, bfo + 3 * be, alpha=0.1, step='mid')
+        ax.plot(btm - self._tref, bfm, 'k')
+        ax.text(0.95, 0.05, f'Binning: {binwidth} min', ha='right', transform=ax.transAxes)
+        setp(ax, ylabel='Normalised flux', xlabel=f'Time - {self._tref:.0f} [BJD]')
+        return fig
 
     def save_fits(self, filename: str) -> None:
         phdu = pf.PrimaryHDU()

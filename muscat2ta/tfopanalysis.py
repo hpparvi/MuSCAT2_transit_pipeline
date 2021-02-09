@@ -502,14 +502,16 @@ class TFOPAnalysis(TransitAnalysis):
         plot_vprior(self.transit_start - self.lpf._tref, 0.93, 0.98)
         plot_vprior(self.transit_end - self.lpf._tref, 0.93, 0.98)
 
-        [ax.axhline(1 - self.toi.depth[0] * 1e-6, ls=':') for ax in fig.axes[1 + self.lpf.npb:3 * self.lpf.npb]]
+        # Transit depths
+        # --------------
+        [ax.axhline(1.0 - self.toi.depth[0] * 1e-6, ls=':') for ax in fig.axes[1 + self.lpf.npb:1 + 3*self.lpf.npb]]
 
         bic = self.lpf.transit_bic()
 
         # Parameter posterior plots
         # -------------------------
         figtext(0.05, 0.325,
-                f"Parameter posteriors {'' if bic > 6 else '(WARNING: low BIC, no strong evidence for a transit)'}",
+                f"Combined LC and posteriors {'' if bic > 6 else '(WARNING: no strong evidence for a transit)'}",
                 size=20, weight='bold', va='bottom')
         fig.add_axes((0.03, 0.32, 0.96, 0.001), facecolor='k', xticks=[], yticks=[])
         lpf.plot_posteriors(fig=fig,
@@ -524,6 +526,9 @@ class TFOPAnalysis(TransitAnalysis):
                  f"P(spans window) = {self.p_transit_covers_whole_window:4.2f},\n"
                  f"Transit model BIC: {bic:.2f} $\longmapsto$ {bic_evidence(bic)} evidence for a transit in the data")
         figtext(0.32, 0.95, ptext, size=16, va='top', ha='left')
+
+        fig.axes[18].cla()
+        self.lpf.plot_combined_and_binned(ax=fig.axes[18], plot_unbinned=False)
 
         if save:
             fig.savefig(plotname)
