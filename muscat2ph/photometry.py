@@ -24,6 +24,8 @@ import astropy.units as u
 import pandas as pd
 import xarray as xa
 import seaborn as sb
+
+from numba import njit
 from astropy.coordinates import SkyCoord, FK5
 from astropy.io import fits as pf
 from astropy.stats import sigma_clipped_stats
@@ -53,7 +55,7 @@ def dflat(root, passband):
 def ddark(root, passband):
     return root.joinpath('calibs', 'dark', passband)
 
-
+@njit
 def entropy(a):
     a = a - a.min() + 1e-10
     a = a / a.sum()
@@ -172,6 +174,8 @@ class ScienceFrame(ImageFrame):
         self._apertures_sky = None      # Photometry apertures
         self._ones = None
 
+        self.reduced: Optional[ndarray] = None
+
         self._target_center = None      # Target center in sky coordinates
         self._separation_cut = None     # Include all stars found within this distance to the target [arcmin]
         self._margins_cut = False       # Flag showing whether the stars close to the image borders have been removed
@@ -185,7 +189,7 @@ class ScienceFrame(ImageFrame):
         self._xad_star = None
         self._xad_apt = xa.IndexVariable(data=array(aperture_radii), dims='aperture')
 
-        self.centroider: Centroider = None
+        self.centroider: Optional[Centroider] = None
         self.centroid_star_ids = []
 
     def load_fits(self, filename: Path, extension: int = 0, wcs_in_header: bool = False) -> None:
@@ -195,6 +199,11 @@ class ScienceFrame(ImageFrame):
             self._data = f[extension].data.astype('d')
             self._ones = ones_like(self._data)
             self._header = f[extension].header
+
+        if self.data_is_prereduced:
+            self.reduced = self._data
+        else:
+            self.reduced = (self._data - self.dark._data) / self.flat._data
 
         if self.use_wcs_if_available:
             with warnings.catch_warnings():
@@ -222,14 +231,6 @@ class ScienceFrame(ImageFrame):
                                     coords={'star':istar, 'axis': ['x', 'y']})
         self._sky_median = xa.DataArray(zeros(nstars), name='sky_median', dims='star', coords={'star':istar})
         self._sky_entropy = xa.DataArray(zeros(nstars), name='sky_entropy', dims='star', coords={'star':istar})
-
-    @property
-    def reduced(self):
-        """Reduced image."""
-        if self.data_is_prereduced:
-            return self._data
-        else:
-            return (self._data - self.dark._data) / self.flat._data
 
     @property
     def raw(self):
@@ -355,6 +356,9 @@ class ScienceFrame(ImageFrame):
         self._cur_centroids_pix = cpix = self._ref_centroids_pix.copy()
         self._apertures_obj = [CircularAperture(list(cpix), r) for r in self.aperture_radii]
         self._apertures_sky = CircularAnnulus(list(cpix), self.aperture_radii[-1], self.aperture_radii[-1] + wsky)
+        self._masks_obj = [apertures.to_mask() for apertures in self._apertures_obj]
+        self._masks_sky = self._apertures_sky.to_mask()
+
         self.nstars = self._ref_centroids_pix.shape[0]
         self._initialize_tables(self.nstars, self.napt)
 
@@ -716,8 +720,7 @@ class ScienceFrame(ImageFrame):
         return fig, axs
 
     def estimate_sky(self):
-        masks = self._apertures_sky.to_mask()
-        for istar, m in enumerate(masks):
+        for istar, m in enumerate(self._masks_sky):
             d = m.cutout(self.reduced, fill_value=nan)
             if d is not None:
                 d = d[m.data.astype('bool')]
@@ -727,21 +730,19 @@ class ScienceFrame(ImageFrame):
         return self._sky_median
 
     def estimate_entropy(self):
-
         # Sky entropy
         # -----------
-        masks = self._apertures_sky.to_mask()
-        for istar, m in enumerate(masks):
+        for istar, m in enumerate(self._masks_sky):
             d = m.cutout(self.reduced)
             if d is not None:
                 self._sky_entropy[istar] = entropy(d[m.data.astype('bool')])
             else:
                 self._sky_entropy[istar] = nan
 
-                # Object entropy
+        # Object entropy
         # --------------
         for iaperture, apt in enumerate(self._apertures_obj):
-            masks = apt.to_mask()
+            masks = self._masks_obj[iaperture]
             for istar, m in enumerate(masks):
                 d = m.cutout(self.reduced)
                 if d is not None:
@@ -756,14 +757,13 @@ class ScienceFrame(ImageFrame):
             self.centroid()
         self.estimate_sky()
         self.estimate_entropy()
-        reduced_data = self.reduced
         for iapt, apt in enumerate(self._apertures_obj):
-            masks = apt.to_mask()
+            masks = self._masks_obj[iapt]
             for im, m in enumerate(masks):
                 t = m.multiply(self._ones)
                 if t is not None:
                     area = t.sum()
-                    data = m.multiply(reduced_data)
+                    data = m.multiply(self.reduced)
                     if any(data > 60000):
                         self._flux[im, iapt] = nan
                     else:
