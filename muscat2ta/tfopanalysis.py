@@ -527,8 +527,8 @@ class TFOPAnalysis(TransitAnalysis):
                  f"Transit model BIC: {bic:.2f} $\longmapsto$ {bic_evidence(bic)} evidence for a transit in the data")
         figtext(0.32, 0.95, ptext, size=16, va='top', ha='left')
 
-        fig.axes[18].cla()
-        self.lpf.plot_combined_and_binned(ax=fig.axes[18], plot_unbinned=False)
+        fig.axes[2+4*self.lpf.npb].cla()
+        self.lpf.plot_combined_and_binned(ax=fig.axes[2+4*self.lpf.npb], plot_unbinned=False)
 
         if save:
             fig.savefig(plotname)
