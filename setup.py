@@ -28,7 +28,7 @@ setup(name='MuSCAT2TA',
                         'corner', 'seaborn', 'numba', 'george', 'pytransit', 'ldtk', 'uncertainties', 'nudged'],
       include_package_data=True,
       scripts=['bin/m2organize', 'bin/m2photometry', 'bin/m2dfphotometry', 'bin/m2astrometry', 'bin/m2nbtemplate', 'bin/m2init', 'bin/m2update',
-               'bin/m2mkref'],
+               'bin/m2mkref', 'bin/m2findtarget'],
       license='GPLv2',
       classifiers=[
           "Topic :: Scientific/Engineering",
