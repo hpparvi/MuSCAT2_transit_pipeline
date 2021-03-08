@@ -15,7 +15,7 @@
 #
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
+import json
 import logging
 import warnings
 
@@ -97,7 +97,6 @@ if __name__ == '__main__':
     ap.add_argument('--dc-apt-id', type=int, default=0)
     ap.add_argument('--tfop', action='store_true', default=False)
     ap.add_argument('--no-tfop', action='store_true', default=False)
-    ap.add_argument('--apertures', nargs='+', type=float, default=None)
     ap.add_argument('--cnt-aperture', type=float, default=20)
     ap.add_argument('--cnt-pmin', type=float, default=80)
     ap.add_argument('--cnt-pmax', type=float, default=95)
@@ -107,12 +106,6 @@ if __name__ == '__main__':
 
     target_sky_coords = None
     target_pix_coords = None
-
-    if args.apertures is None:
-        apertures = (4, 6, 8, 10, 12, 14, 16, 18, 20, 23, 27, 32)
-    else:
-        apertures = args.apertures
-    logging.info(f"Apertures {apertures}")
 
     on = M2ObservationNight(args.datadir, args.object, args.passband)
 
@@ -147,6 +140,9 @@ if __name__ == '__main__':
         # Loop over passbands
         # -------------------
         stars_file = rdir / f'{object}_stars.csv'
+        with open(rdir / 'parameters.json', 'r') as f:
+            parameters = json.load(f)
+        apertures = parameters['apertures']
 
         for ipb, pb in enumerate(od.pbs):
             im = ScienceFrame(on.root, pb, aperture_radii=apertures, use_wcs=args.use_wcs)
@@ -182,22 +178,5 @@ if __name__ == '__main__':
                 eobj = xa.concat([r[2] for r in result], 'mjd').assign_coords(mjd = ctime)
                 esky = xa.concat([r[3] for r in result], 'mjd').assign_coords(mjd = ctime)
                 cpos = xa.concat([r[4] for r in result], 'mjd').assign_coords(mjd = ctime)
-
-                cpix = xa.DataArray(im._ref_centroids_pix,
-                                    name='centroids_pix',
-                                    dims='star centroid_pix'.split(),
-                                    coords={'centroid_pix': ['x', 'y']})
-
-                if im._ref_centroids_sky is not None:
-                    ca = c_[im._ref_centroids_sky.ra.deg, im._ref_centroids_sky.dec.deg]
-                else:
-                    ca = full_like(array(cpix), nan)
-
-                csky = xa.DataArray(ca,
-                                    name='centroids_sky',
-                                    dims='star centroid_sky'.split(),
-                                    coords={'centroid_sky': ['ra', 'dec']})
-
-                ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos,
-                                     aux=aux, centroids_pix=cpix, centroids_sky=csky))
+                ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos, aux=aux))
                 ds.to_netcdf(str(rdir.joinpath('{}_{}_{}.nc'.format(object, on.night, pb))))

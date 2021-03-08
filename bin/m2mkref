@@ -28,7 +28,7 @@
 #
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
+import json
 import logging
 import warnings
 
@@ -76,7 +76,7 @@ if __name__ == '__main__':
     ap.add_argument('--find-treshold', type=float, default=None)
     ap.add_argument('--find-dao-fwhm', type=float, default=6.0)
     ap.add_argument('--min-fratio', type=float, default=0.005)
-    ap.add_argument('--apertures', nargs='+', type=float, default=None)
+    ap.add_argument('--apertures', nargs='+', type=float, default=[4, 7, 10, 13, 16, 19, 22, 25])
     ap.add_argument('--cnt-aperture', type=float, default=25)
     ap.add_argument('--cnt-sids', type=int, nargs='+', default=None)
     ap.add_argument('--cnt-pmin', type=float, default=80)
@@ -92,12 +92,9 @@ if __name__ == '__main__':
     target_pix_coords = None
     max_stars = args.max_stars
     find_treshold = args.find_treshold
+    apertures = args.apertures
 
-    if args.apertures is None:
-        apertures = (4, 6, 8, 10, 12, 14, 16, 18, 20, 23, 27, 32)
-    else:
-        apertures = args.apertures
-    logging.info(f"Apertures {apertures}")
+    logging.info(f"Apertures {args.apertures}")
 
     # Do the photometry for all the targets
     # -------------------------------------
@@ -171,6 +168,10 @@ if __name__ == '__main__':
 
             logger.info(f"Reading stars")
             im.load_reference_stars(stars_file)
+
+            parameters = {'ref_file':str(ref_file), 'apertures': args.apertures}
+            with open(rdir / 'parameters.json', 'w') as f:
+                json.dump(parameters, f)
 
             # Field plot with apertures
             # -------------------------

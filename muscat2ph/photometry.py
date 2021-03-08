@@ -676,6 +676,7 @@ class ScienceFrame(ImageFrame):
             data, wcs = transform(self)
         height, width = data.shape
 
+        #breakpoint()
         fig, ax = super().plot(flt(data), ax=ax, figsize=figsize, title='Reduced image', minp=minp, maxp=maxp, wcs=wcs)
         setp(ax, xlim=(0,width), ylim=(0,height))
 
