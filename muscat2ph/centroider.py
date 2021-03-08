@@ -81,16 +81,19 @@ class Centroider:
                 # Isolate the star from any possible contaminating sources
                 m = d > 3 * istd
                 labels, nl = label(m)
-                label_centers = atleast_2d([center_of_mass(d, labels, i) for i in range(1, nl + 1)])
-                label_distances = ((label_centers[:, 0] - center[0] + apt.bbox.ixmin) ** 2
-                                   + (label_centers[:, 1] - center[1] + apt.bbox.iymin) ** 2)
-                m = binary_dilation(labels == argmin(label_distances) + 1, iterations=3)
-                d *= m
+                if nl == 0:
+                    self.radii[i] = nan
+                else:
+                    label_centers = atleast_2d([center_of_mass(d, labels, i) for i in range(1, nl + 1)])
+                    label_distances = ((label_centers[:, 0] - center[0] + apt.bbox.ixmin) ** 2
+                                       + (label_centers[:, 1] - center[1] + apt.bbox.iymin) ** 2)
+                    m = binary_dilation(labels == argmin(label_distances) + 1, iterations=3)
+                    d *= m
 
-                r = r[sids]
-                cflux = d.ravel()[sids].cumsum()
-                cflux /= cflux.max()
-                self.radii[i] = r[argmin(abs(cflux - 0.95))]
+                    r = r[sids]
+                    cflux = d.ravel()[sids].cumsum()
+                    cflux /= cflux.max()
+                    self.radii[i] = r[argmin(abs(cflux - 0.95))]
 
     def calculate_relative_fluxes(self, centers: ndarray = None):
         if centers is None:
@@ -186,8 +189,9 @@ class COMCentroider(Centroider):
                 ax.imshow(dd, extent=self.apertures[i].bbox.extent, origin='lower')
                 ax.plot(*self.ref_centers[i], marker='+', c='w', ms=25)
                 ax.plot(*self.new_centers[i], marker='x', c='k', ms=25)
-                a = CircularAperture(self.new_centers[i], r=self.radii[i])
-                a.plot(edgecolor='w', linestyle='--', axes=ax)
+                if isfinite(self.radii[i]):
+                    a = CircularAperture(self.new_centers[i], r=self.radii[i])
+                    a.plot(edgecolor='w', linestyle='--', axes=ax)
                 self.apertures[i].plot(edgecolor='w', axes=ax)
             except (ValueError, TypeError):
                 pass
@@ -238,8 +242,9 @@ class DFCOMCentroider(Centroider):
             dd = masks[i].cutout(self.image, fill_value=nan)
             ax.imshow(dd, extent=aps[i].bbox.extent)
             ax.plot(*self.new_centers[i], marker='x', c='w', ms=25)
-            a = CircularAperture(self.new_centers[i], r=self.radii[i])
-            a.plot(edgecolor='w', linestyle='--', axes=ax)
+            if isfinite(self.radii[i]):
+                a = CircularAperture(self.new_centers[i], r=self.radii[i])
+                a.plot(edgecolor='w', linestyle='--', axes=ax)
             aps[i].plot(edgecolor='w', axes=ax)
         fig.tight_layout()
         return fig
