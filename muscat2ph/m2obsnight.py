@@ -16,21 +16,17 @@
 import logging
 
 from pathlib import Path
-from typing import Union, Optional
+from typing import Union, Optional, List
 
 from astropy.time import Time
 
 class M2ObservationNight:
 
-    def __init__(self, root: Union[Path, str], obj: Optional[str] = None, passbands=None):
+    def __init__(self, root: Union[Path, str], obj: Optional[str] = None, passbands: Optional[List] = None):
         self.root = Path(root).resolve()
         self.night = self.root.absolute().name
         self.date = Time.strptime(self.night, '%y%m%d')
-
-        if passbands == 'all' or passbands is None:
-            self.pbs = 'r g i z_s'.split()
-        else:
-            self.pbs = passbands
+        self.pbs = passbands if passbands is not None else 'r g i z_s'.split()
 
         if obj:
             self.objects = [obj]
