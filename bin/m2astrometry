@@ -36,18 +36,15 @@ TMPEXTS = ".match .axy .rdls .solved -indx.xyls .corr".split()
 MAX_TIMEOUT = 60
 
 
-def run_astrometry(filename_and_obj, overwrite=True):
-    filename, object = filename_and_obj
-    object = object or pf.getval(filename, 'object').lower()
+def run_astrometry(filename_and_sc, overwrite=True):
+    filename, sc = filename_and_sc
     astcall = ["solve-field", "--overwrite", "--no-plots", "--new-fits=none", "--fits-image", '--downsample=2',
                "--scale-low=0.4", "--scale-high=0.5", "--scale-units=app"]
 
-    sc = None
-    try:
-        sc = get_coords(object)
+    if sc is not None:
         astcall.extend([f"--ra={sc.ra.deg}", f"--dec={sc.dec.deg}", "--radius=0.15"])
         logging.info(f" Solving {filename.stem} - {object} - RA: {sc.ra.deg:6.3f} DEC: {sc.dec.deg:6.3f}")
-    except:
+    else:
         logging.info(f" Solving {filename.stem} - {object} - Not found from any catalog")
 
     astcall.append(str(filename))
@@ -85,9 +82,15 @@ def process_datadir(datadir, logdir, file_prefix, file_postfix, start_frame, end
     pb = str(f.parts[-2])
 
     logging.basicConfig(filename=logdir.joinpath(f'00_m2astrometry_{target}_{pb}.log'), filemode='w', level=logging.DEBUG)
+    object = target_name or pf.getval(files[0], 'object').lower()
 
-    files = list(zip(files, (it.repeat(target_name, len(files)))))
+    sc = None
+    try:
+        sc = get_coords(object)
+    except:
+        pass
 
+    files = list(zip(files, (it.repeat(sc, len(files)))))
     with Pool(args.n_processes) as p:
         r = list(tqdm(p.imap(run_astrometry, files), total=len(files), desc='Solving astrometry for {} {}'.format(target, pb)))
         df = pd.DataFrame(r, columns='filename RA Dec rotation'.split())
