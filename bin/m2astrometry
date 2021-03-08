@@ -121,12 +121,18 @@ if __name__ == '__main__':
 
         if objdir.exists():
             targets = list(objdir.glob(args.name_glob))
+
+            if args.target_catalog_name is not None and len(targets) > 1:
+                print('Error: target catalog name given but processing more than one target.')
+                exit()
+
             for tdir in targets:
                 chdir(tdir.absolute())
                 for pb in passbands:
                     datadir = tdir.joinpath(pb)
                     if datadir.exists():
-                        process_datadir(datadir, tdir, args.file_prefix, args.file_postfix, args.start_frame, args.end_frame)
+                        process_datadir(datadir, tdir, args.file_prefix, args.file_postfix, args.start_frame, args.end_frame,
+                                        target_name=args.target_catalog_name)
             chdir(curdir)
         else:
             print('Error: Could not find "obj" directory.')
