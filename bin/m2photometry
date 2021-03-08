@@ -53,11 +53,8 @@ passbands = 'g r i z_s'.split()
 def init(root, pb, apertures, use_wcs, stars_file, rfile, cnt_aperture):
     global im
     im = ScienceFrame(root, pb, aperture_radii=apertures, use_wcs=use_wcs)
-    im.load_fits(rfile)
     im.load_reference_stars(stars_file)
-    cpos = im._ref_centroids_pix[im.centroid_star_ids]
-    im.centroider = COMCentroider(im.reduced, cpos, cnt_aperture)
-    im.centroid()
+    im.centroider = COMCentroider(im.centroid_star_ids.size, cnt_aperture)
 
 
 def photometry(filename):
@@ -75,19 +72,17 @@ def photometry(filename):
 
 def create_datacube(filename):
     im.load_fits(filename)
-    try:
-        im.centroid()
-        return im.get_aperture(2, 11)
-    except ValueError:
-        d = im.get_aperture(2, 11).copy()
-        d[:] = nan
-        return d
+    im.centroid()
+    #fig = im.centroider.plot_images()
+    #fig.savefig(filename.with_suffix('.png').name)
+    return im.get_aperture(4, 2)
+
 
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('datadir', type=str)
     ap.add_argument('--object', type=str, default=None)
-    ap.add_argument('--passband', choices='g r i z_s all'.split(), default='all')
+    ap.add_argument('--passband', nargs='+', type=str, default=['r', 'g', 'i', 'z_s'])
     ap.add_argument('--target-catalog-name', type=str, default=None)
     ap.add_argument('--result-dir', type=Path, default=None)
     ap.add_argument('--start-frame', type=int, default=0)
@@ -101,7 +96,7 @@ if __name__ == '__main__':
     ap.add_argument('--tfop', action='store_true', default=False)
     ap.add_argument('--no-tfop', action='store_true', default=False)
     ap.add_argument('--apertures', nargs='+', type=float, default=None)
-    ap.add_argument('--cnt-aperture', type=float, default=25)
+    ap.add_argument('--cnt-aperture', type=float, default=20)
     ap.add_argument('--cnt-pmin', type=float, default=80)
     ap.add_argument('--cnt-pmax', type=float, default=95)
     ap.add_argument('--with-wcs-only', action='store_true', default=False)
@@ -158,13 +153,6 @@ if __name__ == '__main__':
                 im._target_center = target_sky_coords
 
             files = od.files_with_wcs[pb]
-
-            im.load_fits(files[0])
-            im.load_reference_stars(stars_file)
-
-            cpos = im._ref_centroids_pix[im.centroid_star_ids]
-            im.centroider = COMCentroider(im.reduced, cpos, args.cnt_aperture)
-            im.centroid()
 
             centroider_kwargs = dict(sids=im.centroid_star_ids, aperture_radius=args.cnt_aperture, pmin=args.cnt_pmin, pmax=args.cnt_pmax)
 

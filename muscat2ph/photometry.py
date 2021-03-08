@@ -24,6 +24,7 @@ import astropy.units as u
 import pandas as pd
 import xarray as xa
 import seaborn as sb
+from matplotlib.patches import Rectangle
 
 from numba import njit
 from astropy.coordinates import SkyCoord, FK5
@@ -190,7 +191,7 @@ class ScienceFrame(ImageFrame):
         self._xad_apt = xa.IndexVariable(data=array(aperture_radii), dims='aperture')
 
         self.centroider: Optional[Centroider] = None
-        self.centroid_star_ids = []
+        self.centroid_star_ids: ndarray = array([])
 
     def load_fits(self, filename: Path, extension: int = 0, wcs_in_header: bool = False) -> None:
         """Load the image data and WCS information (if available)."""
@@ -293,8 +294,8 @@ class ScienceFrame(ImageFrame):
 
         if cnt_refine is not None:
             self.centroider = COMCentroider(self.reduced, self._ref_centroids_pix[cnt_refine], cnt_aperture)
-            self.centroider.calculate_centroids(self.reduced)
-            self._ref_centroids_pix[cnt_refine] = self.centroider.centers
+            self.centroider.centroid(self.reduced)
+            self._ref_centroids_pix[cnt_refine] = self.centroider.new_centers
         self.set_reference_stars(self._ref_centroids_pix)
 
         if savefile is not None:
@@ -315,7 +316,7 @@ class ScienceFrame(ImageFrame):
             self._initialize_tables(self.nstars, self.napt)
             if 'fratio' in df:
                 self._flux_ratios = df['fratio'].values
-            self.centroid_star_ids = where(df.center.values)
+            self.centroid_star_ids = where(df.center.values)[0]
         elif fits_file.exists():
             t = Table.read(fits_file)
             csky = array(t[['ra', 'dec']]) if 'ra' in t.colnames else None
@@ -580,7 +581,7 @@ class ScienceFrame(ImageFrame):
         return ids
 
     def centroid(self):
-        self.centroider.calculate_centroids(self.reduced)
+        self.centroider.centroid(self.reduced, self._cur_centroids_pix[self.centroid_star_ids])
         self._cur_centroids_pix = self.centroider.transform(self._cur_centroids_pix)
         self._update_apertures(self._cur_centroids_pix)
 
@@ -706,6 +707,13 @@ class ScienceFrame(ImageFrame):
             scale = SkyCoord.from_pixel(x0, py, wcs).separation(SkyCoord.from_pixel(x1, py, wcs))
             ax.annotate('', xy=(x0, py), xytext=(x1, py), arrowprops=dict(arrowstyle='|-|', lw=1.5, color='k'))
             ax.text(width/2, py - 7.5, "{:3.1f}'".format(scale.arcmin), va='top', ha='center', size='larger')
+
+        # Plot the centroiding stars
+        if self.centroider is not None:
+            cntw = 2*self.centroider.r
+            for i in self.centroid_star_ids:
+                fig.axes[0].add_patch(
+                    Rectangle(self._cur_centroids_pix[i] - 0.5 * cntw, cntw, cntw, fill=False))
 
         return fig, ax
 
