@@ -60,7 +60,7 @@ if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('datadir', type=Path)
     ap.add_argument('--object', type=str, default=None)
-    ap.add_argument('--passband', choices='g r i z_s all'.split(), default='all')
+    ap.add_argument('--passband', nargs='+', type=str, default=['r', 'g', 'i', 'z_s'])
     ap.add_argument('--target-catalog-name', type=str, default=None)
     ap.add_argument('--result-dir', type=Path, default=None)
     ap.add_argument('--max-stars', type=int, default=15)
