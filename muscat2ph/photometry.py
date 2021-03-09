@@ -587,7 +587,10 @@ class ScienceFrame(ImageFrame):
 
     def get_aperture(self, aid=0, oid=0):
         m = self._apertures_obj[aid].to_mask()[oid]
-        return m.multiply(self.reduced)
+        d = m.multiply(self.reduced)
+        if d is None:
+            d = zeros(m.shape)
+        return d
 
     def plot_aperture_masks(self, radius=None, minp=0.0, maxp=99.9, cols=5, figsize=(11, 2.5)):
         if radius is not None:
