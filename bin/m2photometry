@@ -29,7 +29,7 @@ import xarray as xa
 from astropy.io import fits as pf
 from astropy.wcs.wcs import NoConvergence
 from astropy.utils.exceptions import AstropyDeprecationWarning
-from numpy import zeros, inf, array, c_, nan, full_like, float32, seterr
+from numpy import zeros, inf, array, c_, nan, full_like, float32, seterr, errstate
 from tqdm import tqdm
 
 import matplotlib as mpl
@@ -74,7 +74,8 @@ def photometry(filename):
 
 def create_datacube(filename):
     im.load_fits(filename)
-    im.centroid()
+    with errstate(divide='ignore'):
+        im.centroid()
     #fig = im.centroider.plot_images()
     #fig.savefig(filename.with_suffix('.png').name)
     return im.get_aperture(dc_aid, dc_oid)
