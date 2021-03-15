@@ -88,6 +88,7 @@ if __name__ == '__main__':
     ap.add_argument('--centroider', type=str, choices=['com', 'defocus'], default='com')
     ap.add_argument('--dont-use-gaia', dest='use_gaia', action='store_false', default=True)
     ap.add_argument('--ignore-wcs', dest='use_wcs', action='store_false', default=True)
+    ap.add_argument('--shift-g', action='store_true', default=False)
     args = ap.parse_args()
 
     on = M2ObservationNight(args.datadir, args.object, args.passband)
@@ -176,7 +177,7 @@ if __name__ == '__main__':
             logger.info(f"Reading stars")
             im.load_reference_stars(stars_file)
 
-            if not args.use_wcs and pb == 'g':
+            if not args.use_wcs and pb == 'g' and args.shift_g:
                 im._ref_centroids_pix[:,1] += 100
                 im._cur_centroids_pix[:,1] += 100
 
