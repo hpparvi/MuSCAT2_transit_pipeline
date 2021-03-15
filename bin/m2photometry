@@ -50,14 +50,16 @@ logging.basicConfig(level=logging.INFO)
 
 passbands = 'g r i z_s'.split()
 
-def init(root, pb, apertures, use_wcs, stars_file, cnt_aperture, dc_aperture=0, dc_object=0):
+def init(root, pb, apertures, use_wcs, stars_file, cnt_aperture, dc_aperture=0, dc_object=0, centroider='com'):
     global im, dc_aid, dc_oid
     dc_aid = dc_aperture
     dc_oid = dc_object
     im = ScienceFrame(root, pb, aperture_radii=apertures, use_wcs=use_wcs)
     im.load_reference_stars(stars_file)
-    im.centroider = COMCentroider(im.centroid_star_ids.size, cnt_aperture)
-
+    if centroider == 'com':
+        im.centroider = COMCentroider(im.centroid_star_ids.size, cnt_aperture)
+    else:
+        im.centroider = DFCOMCentroider(im.centroid_star_ids.size, cnt_aperture)
 
 def photometry(filename):
     try:
@@ -90,7 +92,7 @@ if __name__ == '__main__':
     ap.add_argument('--target-catalog-name', type=str, default=None)
     ap.add_argument('--result-dir', type=Path, default=None)
     ap.add_argument('--start-frame', type=int, default=0)
-    ap.add_argument('--end-frame', type=int, default=inf)
+    ap.add_argument('--end-frame', type=int, default=None)
     ap.add_argument('--plot-only', action='store_false', dest='do_photometry', default=True)
     ap.add_argument('--n-processes', type=int, default=5)
     ap.add_argument('--chunksize', type=int, default=1)
@@ -102,6 +104,7 @@ if __name__ == '__main__':
     ap.add_argument('--cnt-aperture', type=float, default=20)
     ap.add_argument('--cnt-pmin', type=float, default=80)
     ap.add_argument('--cnt-pmax', type=float, default=95)
+    ap.add_argument('--centroider', type=str, choices=['com', 'defocus'], default='com')
     ap.add_argument('--with-wcs-only', action='store_true', default=False)
     ap.add_argument('--ignore-wcs', dest='use_wcs', action='store_false', default=True)
     args = ap.parse_args()
@@ -152,7 +155,12 @@ if __name__ == '__main__':
             if target_sky_coords is not None:
                 im._target_center = target_sky_coords
 
-            files = od.files_with_wcs[pb]
+            if args.use_wcs and len(od.files_with_wcs[pb]) > 0:
+                files = od.files_with_wcs[pb]
+            else:
+                files = od.files[pb]
+
+            files = files[args.start_frame : args.end_frame]
 
             centroider_kwargs = dict(sids=im.centroid_star_ids, aperture_radius=args.cnt_aperture, pmin=args.cnt_pmin, pmax=args.cnt_pmax)
 

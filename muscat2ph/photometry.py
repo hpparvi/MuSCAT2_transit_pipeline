@@ -399,6 +399,8 @@ class ScienceFrame(ImageFrame):
         elif target_pix is not None:
             cpix = concatenate([atleast_2d(target_pix), cpix])
 
+        self.nstars = cpix.shape[0]
+        self._flux_ratios = ones(self.nstars)
         self._initialize_tables(self.nstars, self.napt)
         if self._wcs:
             csky = pd.DataFrame(self._wcs.all_pix2world(cpix, 0), columns='RA Dec'.split())
@@ -583,6 +585,7 @@ class ScienceFrame(ImageFrame):
     def centroid(self):
         self.centroider.centroid(self.reduced, self._cur_centroids_pix[self.centroid_star_ids])
         self._cur_centroids_pix = self.centroider.transform(self._cur_centroids_pix)
+        self._cur_centroids_pix[self.centroid_star_ids] = self.centroider.new_centers
         self._update_apertures(self._cur_centroids_pix)
 
     def get_aperture(self, aid=0, oid=0):
@@ -679,7 +682,6 @@ class ScienceFrame(ImageFrame):
             data, wcs = transform(self)
         height, width = data.shape
 
-        #breakpoint()
         fig, ax = super().plot(flt(data), ax=ax, figsize=figsize, title='Reduced image', minp=minp, maxp=maxp, wcs=wcs)
         setp(ax, xlim=(0,width), ylim=(0,height))
 
@@ -716,8 +718,7 @@ class ScienceFrame(ImageFrame):
         if self.centroider is not None:
             cntw = 2*self.centroider.r
             for i in self.centroid_star_ids:
-                fig.axes[0].add_patch(
-                    Rectangle(self._cur_centroids_pix[i] - 0.5 * cntw, cntw, cntw, fill=False))
+                ax.add_patch(Rectangle(self._cur_centroids_pix[i] - 0.5 * cntw, cntw, cntw, fill=False))
 
         return fig, ax
 

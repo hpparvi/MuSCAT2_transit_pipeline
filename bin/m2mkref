@@ -41,6 +41,9 @@ from astropy.utils.exceptions import AstropyDeprecationWarning
 from numpy import seterr
 
 import matplotlib as mpl
+
+from muscat2ph.centroider import COMCentroider
+
 mpl.use('Agg')
 import matplotlib.pyplot as pl
 
@@ -73,7 +76,7 @@ if __name__ == '__main__':
     ap.add_argument('--double-removal-distance', type=float, default=0.1)
     ap.add_argument('--find-method', choices=['gaia', 'dao', 'defoc'], type=str, default=None)
     ap.add_argument('--find-mf', type=int, default=6)
-    ap.add_argument('--find-treshold', type=float, default=None)
+    ap.add_argument('--find-treshold', type=float, default=99.5)
     ap.add_argument('--find-dao-fwhm', type=float, default=6.0)
     ap.add_argument('--min-fratio', type=float, default=0.005)
     ap.add_argument('--apertures', nargs='+', type=float, default=[4, 7, 10, 13, 16, 19, 22, 25])
@@ -91,7 +94,6 @@ if __name__ == '__main__':
     target_sky_coords = None
     target_pix_coords = None
     max_stars = args.max_stars
-    find_treshold = args.find_treshold
     apertures = args.apertures
 
     logging.info(f"Apertures {args.apertures}")
@@ -120,13 +122,13 @@ if __name__ == '__main__':
             if target_sky_coords is not None:
                 im._target_center = target_sky_coords
 
-            if len(od.files_with_wcs[pb]) > 0:
+            if args.use_wcs and len(od.files_with_wcs[pb]) > 0:
                 ref_file = od.files_with_wcs[pb][args.frame]
             else:
                 ref_file = od.files[pb][args.frame]
 
             fits_name = f'{object}_{on.night}_MuSCAT2_{pb}_frame.fits'
-            if len(od.files_with_wcs[pb]) > 0:
+            if args.use_wcs and len(od.files_with_wcs[pb]) > 0:
                 im.load_fits(ref_file)
                 header = im._header.copy()
                 header.append(('COMMENT', '*********************'))
@@ -144,30 +146,30 @@ if __name__ == '__main__':
 
             # Find, cut, save, and load the stars
             # -----------------------------------
-            if (args.save_stars and ipb==0) or not stars_file.exists():
-                find_method = args.find_method
-                method_kwargs = {}
-                if find_method is None:
-                    if args.use_gaia and len(od.files_with_wcs[pb]) > 0:
-                        find_method = 'gaia'
-                    else:
-                        find_method = 'dao'
-
-                if find_method == 'gaia':
-                    method_kwargs = dict(radius=11, min_flux_ratio=args.min_fratio)
-                elif find_method == 'dao':
-                    method_kwargs = dict(fwhm=args.find_dao_fwhm)
+            find_method = args.find_method
+            method_kwargs = {}
+            if find_method is None:
+                if args.use_gaia and len(od.files_with_wcs[pb]) > 0:
+                    find_method = 'gaia'
                 else:
-                    method_kwargs = dict(treshold=find_treshold, mf_size=args.find_mf)
+                    find_method = 'dao'
 
-                im.find_reference_stars(ref_file, find_method, target_sky_coords, target_pix_coords, max_stars,
-                                        method_kwargs, args.border_margin, args.apply_separation_cut,
-                                        args.separation_cut_distance, args.double_removal_distance,
-                                        args.cnt_sids, args.cnt_refine, args.cnt_aperture,
-                                        stars_file)
+            if find_method == 'gaia':
+                method_kwargs = dict(radius=11, min_flux_ratio=args.min_fratio)
+            elif find_method == 'dao':
+                method_kwargs = dict(fwhm=args.find_dao_fwhm)
+            else:
+                method_kwargs = dict(treshold=args.find_treshold, mf_size=args.find_mf)
+
+            im.find_reference_stars(ref_file, find_method, target_sky_coords, target_pix_coords, max_stars,
+                                    method_kwargs, args.border_margin, args.apply_separation_cut,
+                                    args.separation_cut_distance, args.double_removal_distance,
+                                    args.cnt_sids, args.cnt_refine, args.cnt_aperture,
+                                    stars_file)
 
             logger.info(f"Reading stars")
             im.load_reference_stars(stars_file)
+            im.centroider = COMCentroider(im.centroid_star_ids.size, args.cnt_aperture)
 
             parameters = {'ref_file':str(ref_file), 'apertures': args.apertures}
             with open(rdir / 'parameters.json', 'w') as f:
@@ -195,11 +197,11 @@ if __name__ == '__main__':
                 ax_field.set_title(f"Reference frame - {object} {pb}")
                 pl.setp(ax_field, ylabel='Y [pix]', xlabel='X [pix]')
                 fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
-                fig_field.savefig(str(rdir.joinpath(f"{object}_20{on.night}_MuSCAT2_{pb}_field.png")))
+                fig_field.savefig(str(rdir.joinpath(f"{object}_{on.night}_MuSCAT2_{pb}_field.png")))
                 pl.close(fig_field)
 
             fig_psf, _ = im.plot_psf(figsize=(9, 4.5))
             fig_psf.tight_layout()
-            fig_psf.savefig(str(rdir.joinpath(f"{object}_20{on.night}_MuSCAT2_{pb}_seeing_profile.png")))
+            fig_psf.savefig(str(rdir.joinpath(f"{object}_{on.night}_MuSCAT2_{pb}_seeing_profile.png")))
             pl.close(fig_psf)
 

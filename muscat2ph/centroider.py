@@ -18,7 +18,8 @@ import warnings
 
 from astropy.stats import sigma_clipped_stats
 from astropy.utils.exceptions import AstropyUserWarning
-from matplotlib.pyplot import subplots
+from matplotlib.pyplot import subplots, plot
+from numba import njit
 from numpy import inf, amin, nan, argsort, meshgrid, clip, percentile, flip, nanmean, log
 from numpy import arange, zeros, sqrt, isfinite, array, all, squeeze, ndarray, zeros_like, ceil, argmin, ones, \
     full_like, atleast_2d
@@ -132,8 +133,27 @@ class Centroider:
     def plot_profiles(self):
         raise NotImplementedError
 
-    def plot_images(self):
-        raise NotImplementedError
+    def plot_images(self, max_cols: int = 3):
+        ncols = min(max_cols, self.nstars)
+        nrows = int(ceil(self.nstars / ncols))
+        masks = self.apertures.to_mask()
+
+        fig, axs = subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows))
+        for i in range(self.nstars):
+            try:
+                ax = axs.flat[i]
+                dd = masks[i].cutout(self.image, fill_value=nan)
+                ax.imshow(dd, extent=self.apertures[i].bbox.extent, origin='lower')
+                ax.plot(*self.ref_centers[i], marker='+', c='w', ms=25)
+                ax.plot(*self.new_centers[i], marker='x', c='k', ms=25)
+                if isfinite(self.radii[i]):
+                    a = CircularAperture(self.new_centers[i], r=self.radii[i])
+                    a.plot(edgecolor='w', linestyle='--', axes=ax)
+                self.apertures[i].plot(edgecolor='w', axes=ax)
+            except (ValueError, TypeError):
+                pass
+        fig.tight_layout()
+        return fig
 
     def __call__(self):
         raise NotImplementedError
@@ -176,78 +196,94 @@ class COMCentroider(Centroider):
         self.estimate_radii(good)
         return self.new_centers
 
-    def plot_images(self, max_cols: int = 3):
-        ncols = min(max_cols, self.nstars)
-        nrows = int(ceil(self.nstars / ncols))
-        masks = self.apertures.to_mask()
 
-        fig, axs = subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows))
-        for i in range(self.nstars):
-            try:
-                ax = axs.flat[i]
-                dd = masks[i].cutout(self.image, fill_value=nan)
-                ax.imshow(dd, extent=self.apertures[i].bbox.extent, origin='lower')
-                ax.plot(*self.ref_centers[i], marker='+', c='w', ms=25)
-                ax.plot(*self.new_centers[i], marker='x', c='k', ms=25)
-                if isfinite(self.radii[i]):
-                    a = CircularAperture(self.new_centers[i], r=self.radii[i])
-                    a.plot(edgecolor='w', linestyle='--', axes=ax)
-                self.apertures[i].plot(edgecolor='w', axes=ax)
-            except (ValueError, TypeError):
-                pass
-        fig.tight_layout()
-        return fig
+def create_profile(image, axis, cut=0.5):
+    p = image.sum(axis)
+    p /= p.max()
+    p[p > cut] = 1.0
+    return p
+
+
+def create_cprofile(image, axis, cut=0.5):
+    p = create_profile(image, axis, cut).cumsum()
+    return p / p[-1]
+
+
+@njit
+def smoothstep(x, e0, e1):
+    npt = x.size
+    y = zeros(npt)
+    iw = 1. / (e1 - e0)
+    for i in range(npt):
+        if x[i] < e0:
+            y[i] = 0.0
+        elif x[i] > e1:
+            y[i] = 1.0
+        else:
+            xx = (x[i] - e0) * iw
+            y[i] = xx * xx * (3. - 2. * xx)
+    return y
+
+
+def centroid_1d(csum, do_plot: bool = False):
+    size = csum.size
+    x = arange(size)
+
+    def minfun(pv):
+        return ((csum - smoothstep(x, pv[0], pv[1])) ** 2).sum()
+
+    res = minimize(minfun, array([2., size - 2.]))
+    if do_plot:
+        plot(x, csum)
+        plot(x, smoothstep(x, *res.x))
+
+    center = res.x.mean()
+    radius = 0.5 * (res.x[1] - res.x[0])
+    return center, radius
 
 
 class DFCOMCentroider(Centroider):
 
-    def centroid(self, image: ndarray, sigma: float = 4, maxiter: int = 5):
-        self.image = median_filter(image, 3)
-        _, self.imed, self.istd = sigma_clipped_stats(self.image)
-        self.image -= self.imed
+    def centroid(self, image: ndarray, ref_centers: ndarray, maxiter: int = 3):
+        self.image = image
+        centers_p = ref_centers.copy()
+        centers_c = ref_centers.copy()
 
-        if self.detect_jump():
-            self.recover_from_jump()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=(AstropyUserWarning, RuntimeWarning))
+            j, converged = 0, False
+            while not converged and j < maxiter:
+                self.apertures = CircularAperture(centers_p, self.r)
+                masks = self.apertures.to_mask()
 
-        centers_p = zeros_like(self.new_centers)
-        centers_c = zeros_like(self.new_centers)
-        j, converged = 0, False
-        while not converged and j < maxiter:
-            masks = self.apertures.to_mask()
-            for i, (mask, bbox) in enumerate(zip(masks, self.apertures.bbox)):
-                d = mask.multiply(self.image)
-                m = d > sigma * self.istd
-                xy = array(center_of_mass(m))[[1, 0]] + array([bbox.ixmin, bbox.iymin])
-                centers_c[i] = xy
-            if j > 0:
-                if all(((centers_c - centers_p)**2).sum(1) < 1.0):
+                for i, (m, b) in enumerate(zip(masks, self.apertures.bbox)):
+                    cut = m.cutout(image, fill_value=nan).copy()
+                    if cut is None or not all(isfinite(cut)):
+                        raise ValueError('Centroiding star not inside the field')
+
+                    _, imed, istd = sigma_clipped_stats(cut)
+                    cut -= imed
+                    cut *= m.data
+
+                    csx = create_cprofile(cut, 0)
+                    csy = create_cprofile(cut, 1)
+
+                    cx, rx = centroid_1d(csx)
+                    cy, ry = centroid_1d(csy)
+
+                    centers_c[i] = array([cx + b.ixmin, cy + b.iymin])
+                    self.radii[i] = 0.5 * (rx + ry)
+
+                if all(((centers_c - centers_p) ** 2).sum(1) < 0.5):
                     converged = True
-            centers_p[:] = centers_c
-            j += 1
-        self.update(centers_c)
-        self.estimate_radii()
+
+                centers_p[:] = centers_c
+                j += 1
+
+        self.ref_centers[:] = ref_centers
+        self.new_centers[:] = centers_p
+        self._transform = nudged.estimate(self.ref_centers, self.new_centers)
         return self.new_centers
-
-    def plot_images(self, max_cols: int = 3):
-        ncols = min(max_cols, self.nstars)
-        nrows = int(ceil(self.nstars / ncols))
-
-        aps = CircularAperture(self.new_centers, self.r)
-        masks = aps.to_mask()
-
-        fig, axs = subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows))
-
-        for i in range(self.nstars):
-            ax = axs.flat[i]
-            dd = masks[i].cutout(self.image, fill_value=nan)
-            ax.imshow(dd, extent=aps[i].bbox.extent)
-            ax.plot(*self.new_centers[i], marker='x', c='w', ms=25)
-            if isfinite(self.radii[i]):
-                a = CircularAperture(self.new_centers[i], r=self.radii[i])
-                a.plot(edgecolor='w', linestyle='--', axes=ax)
-            aps[i].plot(edgecolor='w', axes=ax)
-        fig.tight_layout()
-        return fig
 
     def plot_psf_profile(self, ax=None, figsize=None):
         if ax is None:
