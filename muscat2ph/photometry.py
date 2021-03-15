@@ -368,6 +368,8 @@ class ScienceFrame(ImageFrame):
             for apt in self._apertures_obj:
                 apt.positions[:] = positions
             self._apertures_sky.positions[:] = positions
+        self._masks_obj = [apertures.to_mask() for apertures in self._apertures_obj]
+        self._masks_sky = self._apertures_sky.to_mask()
 
     def is_inside_boundaries(self, boundary=40):
         blow = (self._aps.positions < self._data.shape[0] - boundary).all(1)
