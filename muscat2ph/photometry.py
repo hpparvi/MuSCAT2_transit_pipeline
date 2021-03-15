@@ -483,6 +483,9 @@ class ScienceFrame(ImageFrame):
         elif target_pix is not None:
             cpix = concatenate([atleast_2d(target_pix), cpix])
 
+        self.nstars = cpix.shape[0]
+        self._flux_ratios = ones(self.nstars)
+
         self._initialize_tables(self.nstars, self.napt)
         if self._wcs:
             csky = pd.DataFrame(self._wcs.all_pix2world(cpix, 0), columns='RA Dec'.split())
