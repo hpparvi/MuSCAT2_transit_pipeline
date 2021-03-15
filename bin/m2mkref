@@ -42,7 +42,7 @@ from numpy import seterr
 
 import matplotlib as mpl
 
-from muscat2ph.centroider import COMCentroider
+from muscat2ph.centroider import COMCentroider, DFCOMCentroider
 
 mpl.use('Agg')
 import matplotlib.pyplot as pl
@@ -85,6 +85,7 @@ if __name__ == '__main__':
     ap.add_argument('--cnt-pmin', type=float, default=80)
     ap.add_argument('--cnt-pmax', type=float, default=95)
     ap.add_argument('--cnt-refine', type=int, nargs='+', default=None)
+    ap.add_argument('--centroider', type=str, choices=['com', 'defocus'], default='com')
     ap.add_argument('--dont-use-gaia', dest='use_gaia', action='store_false', default=True)
     ap.add_argument('--ignore-wcs', dest='use_wcs', action='store_false', default=True)
     args = ap.parse_args()
@@ -146,34 +147,38 @@ if __name__ == '__main__':
 
             # Find, cut, save, and load the stars
             # -----------------------------------
-            find_method = args.find_method
-            method_kwargs = {}
-            if find_method is None:
-                if args.use_gaia and len(od.files_with_wcs[pb]) > 0:
-                    find_method = 'gaia'
+            if ipb == 0:
+                find_method = args.find_method
+                method_kwargs = {}
+                if find_method is None:
+                    if args.use_gaia and len(od.files_with_wcs[pb]) > 0:
+                        find_method = 'gaia'
+                    else:
+                        find_method = 'dao'
+
+                if find_method == 'gaia':
+                    method_kwargs = dict(radius=11, min_flux_ratio=args.min_fratio)
+                elif find_method == 'dao':
+                    method_kwargs = dict(fwhm=args.find_dao_fwhm)
                 else:
-                    find_method = 'dao'
+                    method_kwargs = dict(treshold=args.find_treshold, mf_size=args.find_mf)
 
-            if find_method == 'gaia':
-                method_kwargs = dict(radius=11, min_flux_ratio=args.min_fratio)
-            elif find_method == 'dao':
-                method_kwargs = dict(fwhm=args.find_dao_fwhm)
-            else:
-                method_kwargs = dict(treshold=args.find_treshold, mf_size=args.find_mf)
+                im.find_reference_stars(ref_file, find_method, target_sky_coords, target_pix_coords, max_stars,
+                                        method_kwargs, args.border_margin, args.apply_separation_cut,
+                                        args.separation_cut_distance, args.double_removal_distance,
+                                        args.cnt_sids, args.cnt_refine, args.cnt_aperture,
+                                        stars_file)
 
-            im.find_reference_stars(ref_file, find_method, target_sky_coords, target_pix_coords, max_stars,
-                                    method_kwargs, args.border_margin, args.apply_separation_cut,
-                                    args.separation_cut_distance, args.double_removal_distance,
-                                    args.cnt_sids, args.cnt_refine, args.cnt_aperture,
-                                    stars_file)
+                parameters = {'ref_file':str(ref_file), 'apertures': args.apertures}
+                with open(rdir / 'parameters.json', 'w') as f:
+                    json.dump(parameters, f)
 
             logger.info(f"Reading stars")
             im.load_reference_stars(stars_file)
-            im.centroider = COMCentroider(im.centroid_star_ids.size, args.cnt_aperture)
-
-            parameters = {'ref_file':str(ref_file), 'apertures': args.apertures}
-            with open(rdir / 'parameters.json', 'w') as f:
-                json.dump(parameters, f)
+            if args.centroider == 'com':
+                im.centroider = COMCentroider(im.centroid_star_ids.size, args.cnt_aperture)
+            else:
+                im.centroider = DFCOMCentroider(im.centroid_star_ids.size, args.cnt_aperture)
 
             # Field plot with apertures
             # -------------------------
