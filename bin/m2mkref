@@ -179,6 +179,7 @@ if __name__ == '__main__':
                 im.centroider = COMCentroider(im.centroid_star_ids.size, args.cnt_aperture)
             else:
                 im.centroider = DFCOMCentroider(im.centroid_star_ids.size, args.cnt_aperture)
+            im.centroid()
 
             # Field plot with apertures
             # -------------------------
