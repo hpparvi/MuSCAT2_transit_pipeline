@@ -56,6 +56,10 @@ def init(root, pb, apertures, use_wcs, stars_file, cnt_aperture, dc_aperture=0, 
     dc_oid = dc_object
     im = ScienceFrame(root, pb, aperture_radii=apertures, use_wcs=use_wcs)
     im.load_reference_stars(stars_file)
+    if not use_wcs and pb == 'g':
+        im._ref_centroids_pix[:, 1] += 100
+        im._cur_centroids_pix[:, 1] += 100
+
     if centroider == 'com':
         im.centroider = COMCentroider(im.centroid_star_ids.size, cnt_aperture)
     else:

@@ -63,7 +63,7 @@ if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('datadir', type=Path)
     ap.add_argument('--object', type=str, default=None)
-    ap.add_argument('--passband', nargs='+', type=str, default=['r', 'g', 'i', 'z_s'])
+    ap.add_argument('--passband', nargs='+', type=str, default=['i', 'r', 'z_s', 'g'])
     ap.add_argument('--target-catalog-name', type=str, default=None)
     ap.add_argument('--result-dir', type=Path, default=None)
     ap.add_argument('--max-stars', type=int, default=15)
@@ -175,6 +175,11 @@ if __name__ == '__main__':
 
             logger.info(f"Reading stars")
             im.load_reference_stars(stars_file)
+
+            if not args.use_wcs and pb == 'g':
+                im._ref_centroids_pix[:,1] += 100
+                im._cur_centroids_pix[:,1] += 100
+
             if args.centroider == 'com':
                 im.centroider = COMCentroider(im.centroid_star_ids.size, args.cnt_aperture)
             else:
