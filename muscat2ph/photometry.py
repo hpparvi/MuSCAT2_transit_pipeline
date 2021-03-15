@@ -770,7 +770,8 @@ class ScienceFrame(ImageFrame):
 
     def photometry(self, centroid=True):
         if centroid:
-            self.centroid()
+            with errstate(divide='ignore'):
+                self.centroid()
         self.estimate_sky()
         self.estimate_entropy()
         for iapt, apt in enumerate(self._apertures_obj):

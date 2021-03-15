@@ -50,10 +50,13 @@ logging.basicConfig(level=logging.INFO)
 
 passbands = 'g r i z_s'.split()
 
-def init(root, pb, apertures, use_wcs, stars_file, cnt_aperture, dc_aperture=0, dc_object=0, centroider='com', shift_g=False):
-    global im, dc_aid, dc_oid
+def init(root, pb, apertures, use_wcs, stars_file, cnt_aperture, dc_aperture=0, dc_object=0, centroider='com', shift_g=False,
+         create_dc=True):
+
+    global im, cdc, dc_aid, dc_oid
     dc_aid = dc_aperture
     dc_oid = dc_object
+    cdc = create_dc
     im = ScienceFrame(root, pb, aperture_radii=apertures, use_wcs=use_wcs)
     im.load_reference_stars(stars_file)
     if not use_wcs and pb == 'g' and shift_g:
@@ -72,9 +75,16 @@ def photometry(filename):
                im._header['exptime'],
                im._header['mjd-strt'] + 0.5 * im._header['exptime'] / 24 / 60 / 60]
         aux = xa.DataArray(aux, dims='quantity', coords={'quantity':'airmass exptime mjd'.split()})
+
         with errstate(divide='ignore'):
             im.centroid()
-        return im.photometry(centroid=False) + (aux,)
+
+        if cdc:
+            apt = im.get_aperture(dc_aid, dc_oid)
+        else:
+            apt = None
+
+        return im.photometry(centroid=False) + (aux, apt)
     except (NoConvergence, ValueError):
         return None
 
@@ -169,24 +179,17 @@ if __name__ == '__main__':
 
             centroider_kwargs = dict(sids=im.centroid_star_ids, aperture_radius=args.cnt_aperture, pmin=args.cnt_pmin, pmax=args.cnt_pmax)
 
-            # Datacube creation
-            # -----------------
-            if args.create_dc:
-                with Pool(processes=args.n_processes,
-                          initializer=init, initargs=(on.root, pb, apertures, args.use_wcs, stars_file, args.cnt_aperture,
-                                                      args.dc_apt_id, args.dc_obj_id, args.centroider, args.shift_g)) as pool:
-                    dc = array(list(tqdm(pool.imap(create_datacube, files, chunksize=args.chunksize), total=len(files),desc='Creating a datacube'))).astype(float32)
-                    hdu = pf.PrimaryHDU(dc)
-                    hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, on.night, pb))), overwrite=True)
-
-            # Photometry
-            # ----------
             if args.do_photometry:
                 with Pool(processes=args.n_processes, initializer=init,
                           initargs=(on.root, pb, apertures, args.use_wcs, stars_file, args.cnt_aperture,
-                                    args.dc_apt_id, args.dc_obj_id, args.centroider, args.shift_g)) as pool:
+                                    args.dc_apt_id, args.dc_obj_id, args.centroider, args.shift_g,  args.create_dc)) as pool:
                     result = list(tqdm(pool.imap(photometry, files, chunksize=args.chunksize), total=len(files), desc='Photometry for {}'.format(pb)))
                 result = list(filter(lambda r:r is not None, result))
+
+                if args.create_dc:
+                    dc = array([r[6] for r in result]).astype(float32)
+                    hdu = pf.PrimaryHDU(dc)
+                    hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, on.night, pb))), overwrite=True)
 
                 aux  = xa.concat([r[5] for r in result], 'frame')
                 ctime = xa.IndexVariable('mjd', aux.loc[:,'mjd'])
