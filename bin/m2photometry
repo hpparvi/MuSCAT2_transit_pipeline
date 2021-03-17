@@ -177,6 +177,7 @@ if __name__ == '__main__':
 
             files = files[args.start_frame : args.end_frame]
 
+            im.load_reference_stars(stars_file)
             centroider_kwargs = dict(sids=im.centroid_star_ids, aperture_radius=args.cnt_aperture, pmin=args.cnt_pmin, pmax=args.cnt_pmax)
 
             if args.do_photometry:
@@ -191,6 +192,25 @@ if __name__ == '__main__':
                     hdu = pf.PrimaryHDU(dc)
                     hdu.writeto(str(rdir.joinpath('{}_{}_{}-dc.fits'.format(object, on.night, pb))), overwrite=True)
 
+                # Centroids
+                # ---------
+                cpix = xa.DataArray(im._ref_centroids_pix,
+                                    name='centroids_pix',
+                                    dims='star centroid_pix'.split(),
+                                    coords={'centroid_pix': ['x', 'y']})
+
+                if im._ref_centroids_sky is not None:
+                    ca = c_[im._ref_centroids_sky.ra.deg, im._ref_centroids_sky.dec.deg]
+                else:
+                    ca = full_like(array(cpix), nan)
+
+                csky = xa.DataArray(ca,
+                                    name='centroids_sky',
+                                    dims='star centroid_sky'.split(),
+                                    coords={'centroid_sky': ['ra', 'dec']})
+
+                # Photometry
+                # ----------
                 aux  = xa.concat([r[5] for r in result], 'frame')
                 ctime = xa.IndexVariable('mjd', aux.loc[:,'mjd'])
                 flux = xa.concat([r[0] for r in result], 'mjd').assign_coords(mjd = ctime)
@@ -198,5 +218,6 @@ if __name__ == '__main__':
                 eobj = xa.concat([r[2] for r in result], 'mjd').assign_coords(mjd = ctime)
                 esky = xa.concat([r[3] for r in result], 'mjd').assign_coords(mjd = ctime)
                 cpos = xa.concat([r[4] for r in result], 'mjd').assign_coords(mjd = ctime)
-                ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos, aux=aux))
+                ds = xa.Dataset(dict(flux=flux, obj_entropy=eobj, sky_median=msky, sky_entropy=esky, centroid=cpos,
+                                     aux=aux, centroids_pix=cpix, centroids_sky=csky))
                 ds.to_netcdf(str(rdir.joinpath('{}_{}_{}.nc'.format(object, on.night, pb))))
