@@ -83,7 +83,8 @@ class TFOPAnalysis(TransitAnalysis):
                  radius_ratio: str = 'chromatic', excluded_stars=(), toi=None, klims=(0.005, 0.25),
                  clear_field_only: bool = False, check_saturation: bool = True,
                  contamination_model: str = 'physical',
-                 contamination_reference_passband: str = "r'"):
+                 contamination_reference_passband: str = "r'",
+                 files=None, pbs=None):
 
         super().__init__(target, date, tid, cids, dataroot=dataroot,
                  nlegendre=nlegendre,  npop=npop,  mjd_start=mjd_start, mjd_end=mjd_end,
@@ -91,7 +92,8 @@ class TFOPAnalysis(TransitAnalysis):
                  aperture_lims=aperture_lims, passbands=passbands,
                  use_opencl=use_opencl, with_transit=with_transit, with_contamination=with_contamination,
                  radius_ratio=radius_ratio, klims=klims, init_lpf=(not clear_field_only), check_saturation=check_saturation,
-                 contamination_model=contamination_model, contamination_reference_passband=contamination_reference_passband)
+                 contamination_model=contamination_model, contamination_reference_passband=contamination_reference_passband,
+                         files=files, pbs=pbs)
 
         # Get the TOI information
         # -----------------------
@@ -175,12 +177,12 @@ class TFOPAnalysis(TransitAnalysis):
             wcs = WCS(f1[0].header)
             data = f1[0].data.astype('d')
             fig = self.plot_tfop_field(data, wcs, figsize, markersize, loffset, subfield_radius=None)
-            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame.pdf"))
+            fig.savefig(self._dres.joinpath(f"{self.ticname}_{self.date}_MuSCAT2_{filter}_frame.pdf"))
             fig = self.plot_tfop_field(data, wcs, figsize, markersize, loffset, subfield_radius=2.5)
-            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame_5_arcmin.pdf"))
+            fig.savefig(self._dres.joinpath(f"{self.ticname}_{self.date}_MuSCAT2_{filter}_frame_5_arcmin.pdf"))
             close(fig)
             fig = self.plot_tfop_field(data, wcs, figsize, markersize, loffset, subfield_radius=1)
-            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{filter}_frame_2_arcmin.pdf"))
+            fig.savefig(self._dres.joinpath(f"{self.ticname}_{self.date}_MuSCAT2_{filter}_frame_2_arcmin.pdf"))
             close(fig)
 
     def plot_tfop_field(self, data, wcs=None, figsize=(9, 9), markersize=25, loffset=0, subfield_radius=None):
@@ -300,7 +302,7 @@ class TFOPAnalysis(TransitAnalysis):
 
         ptype = 'fit' if model == 'de' else 'mcmc'
         if save:
-            fig.savefig(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{ptype}.pdf"))
+            fig.savefig(self._dres.joinpath(f"{self.ticname}_{self.date}_MuSCAT2_{ptype}.pdf"))
         return fig, axs
 
     def plot_possible_blends(self, cid: int, aid: int, caid: int = None, stars: list = None, c_flux_factor: float = None,
@@ -361,7 +363,7 @@ class TFOPAnalysis(TransitAnalysis):
         stars_per_page = nrows * ncols
 
         for pbi, (pb, ph) in enumerate(zip(passbands, phs)):
-            plotname = self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_{pb}_possible_blends.pdf")
+            plotname = self._dres.joinpath(f"{self.ticname}_{self.date}_MuSCAT2_{pb}_possible_blends.pdf")
             pdf = PdfPages(plotname) if save else None
 
             if c_flux_factor is not None:
@@ -517,7 +519,7 @@ class TFOPAnalysis(TransitAnalysis):
         lpf.plot_posteriors(fig=fig,
                             gridspec=dict(top=0.30, bottom=0.05, left=0.1, right=0.95, wspace=0.03, hspace=0.3))
         fig.add_axes((0.03, 0.01, 0.96, 0.001), facecolor='k', xticks=[], yticks=[])
-        plotname = self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_transit_fit.pdf")
+        plotname = self._dres.joinpath(f"{self.ticname}_{self.date}_MuSCAT2_transit_fit.pdf")
 
         ptext = (f"P(full transit in window) = {self.p_full_transit_in_window:4.2f},\n"
                  f"P(ingress) = {self.p_ingress_in_window:4.2f},  "
@@ -537,7 +539,7 @@ class TFOPAnalysis(TransitAnalysis):
 
     def plot_covariates(self, figsize=(13, 5), close=False):
         cols = 'Sky, Airmass, X Shift [pix], Y Shift [pix], Aperture entropy'.split(',')
-        with PdfPages(self._dres.joinpath(f"{self.ticname}_20{self.date}_MuSCAT2_covariates.pdf")) as pdf:
+        with PdfPages(self._dres.joinpath(f"{self.ticname}_{self.date}_MuSCAT2_covariates.pdf")) as pdf:
             for ipb, ph in enumerate(self.phs):
                 fig, axs = subplots(2, 2, figsize=figsize, sharex=True)
                 aux, time = ph.nmaux, ph._bjd
@@ -565,7 +567,7 @@ class TFOPAnalysis(TransitAnalysis):
                                                                                                            'xshift',
                                                                                                            'yshift',
                                                                                                            'sky_entropy'])
-            df.to_csv(self._dres.joinpath(f'{self.ticname}_20{self.date}_MuSCAT2_{self.passbands[i]}_measurements.tbl'),
+            df.to_csv(self._dres.joinpath(f'{self.ticname}_{self.date}_MuSCAT2_{self.passbands[i]}_measurements.tbl'),
                       index=False, sep=" ")
 
     def finalize(self):
@@ -594,7 +596,7 @@ class TFOPAnalysis(TransitAnalysis):
         readme = (Path(muscat2ta.__path__[0]) / '..' / 'data' / 'templates' / 'tfop_readme.txt').resolve()
         report = (Path(muscat2ta.__path__[0]) / '..' / 'data' / 'templates' / 'tfop_report.txt').resolve()
 
-        copy2(readme, dsubmit / f"{self.ticname}_20{self.date}_MuSCAT2_readme.txt")
+        copy2(readme, dsubmit / f"{self.ticname}_{self.date}_MuSCAT2_readme.txt")
 
         try:
             tap, raps = self.lpf.frozen_apertures
@@ -603,7 +605,7 @@ class TFOPAnalysis(TransitAnalysis):
 
         df = self.posterior_samples()
 
-        with open(dsubmit / f"{self.ticname}_20{self.date}_MuSCAT2_report.txt", "w") as f:
+        with open(dsubmit / f"{self.ticname}_{self.date}_MuSCAT2_report.txt", "w") as f:
             t = Template(report.read_text())
             f.write(t.safe_substitute(ticname=self.ticname, night=self.date, tid=self.tid, cids=self.cids,
                                       tap=tap, raps=raps,

@@ -87,7 +87,7 @@ class TransitAnalysis:
                  catalog_name: str = None, init_lpf: bool = True,
                  check_saturation: bool = True, contamination_model: str = 'physical',
                  contamination_reference_passband: str = "r'",
-                 target_coordinates=None):
+                 target_coordinates=None, files=None, pbs=None):
 
         self.target: str = target
         self.date: str = date
@@ -112,8 +112,8 @@ class TransitAnalysis:
         # ----------------------------
         self.dataroot = Path(dataroot or 'photometry')
         self.datadir = datadir = self.dataroot.joinpath(date)
-        if not datadir.exists():
-            raise IOError("Data directory doesn't exist.")
+        #if not datadir.exists():
+        #    raise IOError("Data directory doesn't exist.")
         self.basename = basename = f"{self.target}_{self.date}"
 
         self._dres = Path("results")
@@ -130,7 +130,8 @@ class TransitAnalysis:
 
         # Read in the data
         # ----------------
-        files, pbs = get_files(self.dataroot, target, date, passbands)
+        if files is None:
+            files, pbs = get_files(self.dataroot, target, date, passbands)
         self.phs = [PhotometryData(f, tid, cids, objname=target, objskycoords=self.target_coordinates,
                                    mjd_start=mjd_start, mjd_end=mjd_end,
                                    excluded_ranges=excluded_mjd_ranges) for f in files]
