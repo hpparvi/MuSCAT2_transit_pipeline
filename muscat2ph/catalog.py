@@ -172,7 +172,6 @@ def get_toi_or_tic_coords(toi_or_tic):
     return SkyCoord(toi.ra, toi.dec, frame='fk5', unit=(u.hourangle, u.deg))
 
 
-def get_coords(target: str):
 def get_coords(target: str, obsdate: Optional[Time] = None):
     try:
         sc = NEA.query_object(target)['sky_coord']
