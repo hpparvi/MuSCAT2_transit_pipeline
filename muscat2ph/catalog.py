@@ -29,6 +29,7 @@ from astropy.time import Time
 from astroquery.nasa_exoplanet_archive import NasaExoplanetArchive as NEA
 from astroquery.simbad import Simbad
 
+from numpy import remainder, array
 from numpy import remainder, array, squeeze
 from pkg_resources import resource_filename
 
@@ -171,14 +172,19 @@ def get_toi_or_tic_coords(toi_or_tic):
     return SkyCoord(toi.ra, toi.dec, frame='fk5', unit=(u.hourangle, u.deg))
 
 
+def get_coords(target: str):
 def get_coords(target: str, obsdate: Optional[Time] = None):
     try:
+        sc = NEA.query_object(target)['sky_coord']
+        if sc.data.size > 0:
+            return sc
         simbad = Simbad()
         simbad.add_votable_fields('pm')
         tbl = simbad.query_object(target)
         if tbl is None:
             raise KeyError
         else:
+            raise KeyError
             tbl = tbl.filled(0.0)
             coo = squeeze(SkyCoord(tbl['RA'], tbl['DEC'], unit=(u.hourangle, u.deg)))
             if obsdate is None:
