@@ -142,9 +142,6 @@ class MasterFlat(MasterFrame):
 
 class ScienceFrame(ImageFrame):
 
-    height = 1024
-    width  = 1024
-
     def __init__(self, root, passband, masterdark=None, masterflat=None, data_is_raw=True,
                  aperture_radii=(6, 8, 12, 16, 20, 24, 30, 40, 50, 60), margin=20, use_wcs=True):
         self.passband = passband
@@ -154,11 +151,14 @@ class ScienceFrame(ImageFrame):
         self.data_is_prereduced = not data_is_raw
         self.use_wcs_if_available = use_wcs
 
+        self.xwindow = slice(0, None)
+        self.ywindow = slice(0, None)
+
         # Calibration files
         # ------------------
         if data_is_raw:
-            self.masterdark = self.dark = masterdark or MasterDark(root, self.passband)
-            self.masterflat = self.flat = masterflat or MasterFlat(root, self.passband)
+            self.masterdark = self.dark = masterdark if masterdark is not None else MasterDark(root, self.passband)
+            self.masterflat = self.flat = masterflat if masterflat is not None else MasterFlat(root, self.passband)
         else:
             self.masterdark = None
             self.masterflat = None
@@ -174,6 +174,8 @@ class ScienceFrame(ImageFrame):
         self._apertures_obj = None      # Photometry apertures
         self._apertures_sky = None      # Photometry apertures
         self._ones = None
+        self.height = None
+        self.width = None
 
         self.reduced: Optional[ndarray] = None
 
@@ -197,7 +199,9 @@ class ScienceFrame(ImageFrame):
         """Load the image data and WCS information (if available)."""
         filename = Path(filename)
         with pf.open(filename) as f:
-            self._data = f[extension].data.astype('d')
+            self._data = f[extension].data.astype('d')[self.ywindow, self.xwindow]
+            self.height = self._data.shape[0]
+            self.width = self._data.shape[1]
             self._ones = ones_like(self._data)
             self._header = f[extension].header
 
@@ -256,9 +260,10 @@ class ScienceFrame(ImageFrame):
                              double_removal_distance: float = 0.1,
                              cnt_sids: Optional[Iterable] = None, cnt_refine: Optional[Iterable] = None,
                              cnt_aperture: float = 15.0,
-                             savefile: Optional[Union[str, Path]] = None):
+                             savefile: Optional[Union[str, Path]] = None,
+                             extension: int = 0, wcs_in_header: bool = False):
 
-        self.load_fits(fname)
+        self.load_fits(fname, extension=extension, wcs_in_header=wcs_in_header)
 
         if savefile is not None:
             savefile = Path(savefile)
@@ -293,8 +298,8 @@ class ScienceFrame(ImageFrame):
             self.select_centroiding_stars()
 
         if cnt_refine is not None:
-            self.centroider = COMCentroider(self.reduced, self._ref_centroids_pix[cnt_refine], cnt_aperture)
-            self.centroider.centroid(self.reduced)
+            self.centroider = COMCentroider(len(cnt_refine), cnt_aperture)
+            self.centroider.centroid(self.reduced, self._ref_centroids_pix[cnt_refine])
             self._ref_centroids_pix[cnt_refine] = self.centroider.new_centers
         self.set_reference_stars(self._ref_centroids_pix)
 
@@ -439,7 +444,14 @@ class ScienceFrame(ImageFrame):
         mask = tb['flux_ratio'] >= min_flux_ratio
         tb = tb[mask]
 
-        mjd = Time(self._header['MJD-STRT'], format='mjd')
+        mjd_keys = ('mjd-obs', 'mjd-strt')
+        for mjd_key in mjd_keys:
+            if mjd_key in self._header:
+                break
+        else:
+            raise ValueError('Unknown fits format, cannot find the MJD value.')
+
+        mjd = Time(self._header[mjd_key], format='mjd')
         ref_epoch = tb['ref_epoch'].data
         cur_epoch = mjd.to_value('decimalyear')
         dt = cur_epoch - ref_epoch
@@ -578,7 +590,8 @@ class ScienceFrame(ImageFrame):
 
         centroid_mask = (self._cnt_create_separation_mask(min_separation)
                          & self._cnt_create_saturation_mask(sat_limit, apt_radius)
-                         & is_inside_frame(self._ref_centroids_pix, xpad=border_margin, ypad=border_margin))
+                         & is_inside_frame(self._ref_centroids_pix, self._data.shape[0], self._data.shape[1],
+                                           xpad=border_margin, ypad=border_margin))
 
         sids = arange(self.nstars)
         centroid_mask = centroid_mask[sids]
@@ -770,7 +783,7 @@ class ScienceFrame(ImageFrame):
 
         return self._entropy, self._sky_entropy
 
-    def photometry(self, centroid=True):
+    def photometry(self, centroid=True, max_value: float = 60_000):
         if centroid:
             with errstate(divide='ignore'):
                 self.centroid()
@@ -783,7 +796,7 @@ class ScienceFrame(ImageFrame):
                 if t is not None:
                     area = t.sum()
                     data = m.multiply(self.reduced)
-                    if any(data > 60000):
+                    if any(data > max_value):
                         self._flux[im, iapt] = nan
                     else:
                         self._flux[im, iapt] = data.sum() - self._sky_median[im].values * area
