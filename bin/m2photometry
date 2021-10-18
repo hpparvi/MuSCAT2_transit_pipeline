@@ -71,7 +71,13 @@ def init(root, pb, apertures, use_wcs, stars_file, cnt_aperture, dc_aperture=0, 
 def photometry(filename):
     try:
         im.load_fits(filename)
-        aux = [im._header['airmass'],
+
+        if 'airmass' in im._header:
+            airmass = im._header['airmass']
+        else:
+            airmass = im._header['secz']
+
+        aux = [airmass,
                im._header['exptime'],
                im._header['mjd-strt'] + 0.5 * im._header['exptime'] / 24 / 60 / 60]
         aux = xa.DataArray(aux, dims='quantity', coords={'quantity':'airmass exptime mjd'.split()})
@@ -133,12 +139,12 @@ if __name__ == '__main__':
     # -------------------------------------
     for object in on.objects:
         od = M2ObservationData(on, object)
-        catalog_name = args.target_catalog_name or object
-        target_sky_coords = get_coords(catalog_name, on.date)
+        object = args.target_catalog_name or object
+        target_sky_coords = get_coords(object, on.date)
         logging.info(f"Target sky coordinates {target_sky_coords}")
 
         try:
-            toi = get_toi(catalog_name)
+            toi = get_toi(object)
         except ValueError:
             toi = None
 
@@ -150,11 +156,11 @@ if __name__ == '__main__':
                 makedirs(rdir)
 
         if not args.no_tfop and toi is not None:
-            logging.info(f"Calculating photometry for a TFOP target {catalog_name} (TIC {toi.tic}).")
+            logging.info(f"Calculating photometry for a TFOP target {object} (TIC {toi.tic}).")
             ticname = 'TIC{:d}-{}'.format(int(toi.tic), str(toi.toi).split('.')[1])
             TFOP = True
         else:
-            logging.info(f"Calculating photometry for {catalog_name}.")
+            logging.info(f"Calculating photometry for {object}.")
             TFOP = False
 
         # Loop over passbands
