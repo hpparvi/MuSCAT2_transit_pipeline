@@ -104,9 +104,12 @@ if __name__ == '__main__':
     # -------------------------------------
     for object in on.objects:
         od = M2ObservationData(on, object)
+        data_is_raw = True if od.instrument != 'M3' else False
+        wcs_in_header = True if od.instrument == 'M3' else False
+        extension = 0 if od.instrument != 'M3' else 1
 
-        catalog_name = args.target_catalog_name or object
-        target_sky_coords = get_coords(catalog_name, on.date)
+        object = args.target_catalog_name or object
+        target_sky_coords = get_coords(object, on.date)
         logging.info(f"Target sky coordinates {target_sky_coords}")
 
         if args.result_dir:
@@ -120,7 +123,7 @@ if __name__ == '__main__':
         stars_file = rdir / f'{object}_stars.csv'
 
         for ipb, pb in enumerate(od.pbs):
-            im = ScienceFrame(on.root, pb, aperture_radii=apertures, use_wcs=args.use_wcs)
+            im = ScienceFrame(on.root, pb, aperture_radii=apertures, use_wcs=args.use_wcs, data_is_raw=data_is_raw)
             if target_sky_coords is not None:
                 im._target_center = target_sky_coords
 
@@ -130,14 +133,15 @@ if __name__ == '__main__':
                 ref_file = od.files[pb][args.frame]
 
             fits_name = f'{object}_{on.night}_MuSCAT2_{pb}_frame.fits'
-            if args.use_wcs and len(od.files_with_wcs[pb]) > 0:
-                im.load_fits(ref_file)
+            if args.use_wcs and (len(od.files_with_wcs[pb]) > 0 or wcs_in_header):
+                im.load_fits(ref_file, extension=extension, wcs_in_header=wcs_in_header)
                 header = im._header.copy()
-                header.append(('COMMENT', '*********************'))
-                header.append(('COMMENT', '  WCS '))
-                header.append(('COMMENT', '*********************'))
-                with pf.open(ref_file.with_suffix('.wcs')) as f2:
-                    header.extend(f2[0].header, unique=True, bottom=True)
+                if not wcs_in_header:
+                    header.append(('COMMENT', '*********************'))
+                    header.append(('COMMENT', '  WCS '))
+                    header.append(('COMMENT', '*********************'))
+                    with pf.open(ref_file.with_suffix('.wcs')) as f2:
+                        header.extend(f2[0].header, unique=True, bottom=True)
                 hdu = pf.PrimaryHDU(im.reduced, header=header)
                 hdu.writeto(rdir.joinpath(fits_name), overwrite=True)
             else:
@@ -168,7 +172,7 @@ if __name__ == '__main__':
                                         method_kwargs, args.border_margin, args.apply_separation_cut,
                                         args.separation_cut_distance, args.double_removal_distance,
                                         args.cnt_sids, args.cnt_refine, args.cnt_aperture,
-                                        stars_file)
+                                        stars_file, extension=extension, wcs_in_header=wcs_in_header)
 
                 parameters = {'ref_file':str(ref_file), 'apertures': args.apertures}
                 with open(rdir / 'parameters.json', 'w') as f:
@@ -195,7 +199,7 @@ if __name__ == '__main__':
                     ax_field = fig_field.add_subplot(111, projection=im._wcs)
                     ax_field.grid()
                     im.plot_reduced(minp=90, offset=10, ax=ax_field, subfield_radius=r)
-                    ax_field.set_title(f"Reference frame - {catalog_name} {pb}'")
+                    ax_field.set_title(f"Reference frame - {object} {pb}'")
                     pl.setp(ax_field, ylabel='Dec', xlabel='RA')
                     fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
                     if r:
