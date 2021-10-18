@@ -20,6 +20,8 @@ from typing import Union, Optional, List
 
 from astropy.time import Time
 
+glob_patterns = {'M1':'MSCT?_*.fits', 'M2':'MCT2?_*.fits', 'M3':'ogg2*fits.fz'}
+
 class M2ObservationNight:
 
     def __init__(self, root: Union[Path, str], obj: Optional[str] = None, passbands: Optional[List] = None):
@@ -27,12 +29,10 @@ class M2ObservationNight:
         self.night = self.root.absolute().name
         self.date = Time.strptime(self.night, '%y%m%d')
         self.pbs = passbands if passbands is not None else 'r g i z_s'.split()
-
         if obj:
             self.objects = [obj]
         else:
             self.objects = [o.name for o in list(self.root.joinpath('obj').glob('*'))]
-
 
 class M2ObservationData:
 
@@ -40,13 +40,19 @@ class M2ObservationData:
         self.night = night
         self.obj = obj
 
+        self.instrument = None
         self.files = {}
         self.files_with_wcs = {}
 
         for pb in night.pbs:
             ddir = night.root.joinpath('obj', obj, pb)
             if ddir.exists():
-                self.files[pb] = sorted(list(ddir.glob('MCT2?_*.fits')))
+                for instrument, pattern in glob_patterns.items():
+                    files = sorted(list(ddir.glob(pattern)))
+                    if files:
+                        self.files[pb] = files
+                        self.instrument = instrument
+                        break
                 self.files_with_wcs[pb] = list(filter(lambda f: f.with_suffix('.wcs').exists(), self.files[pb]))
         self.pbs = list(self.files.keys())
 
