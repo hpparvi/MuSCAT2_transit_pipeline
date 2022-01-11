@@ -337,9 +337,12 @@ class TransitAnalysis:
         phdu.header.update(target=self.target, night=self.date)
         hdul = pf.HDUList(phdu)
 
-        lpf = self.lpf
+        lpf: M2LPF = self.lpf
         pv = lpf.de.minimum_location
         time = lpf.timea
+
+        trg_apertures = lpf.target_apertures(pv)
+        trg_med_fluxes = lpf.target_median_fluxes[:, trg_apertures]
 
         baseline = squeeze(lpf.baseline(pv))
         if lpf.with_transit:
@@ -367,11 +370,11 @@ class TransitAnalysis:
                                   reference_flux[sl], baseline[sl], transit[sl]]),
                        names='time_bjd flux flux_rel flux_trg flux_ref baseline model'.split(),
                        meta={'extname': f"flux_{pb}", 'filter': pb, 'trends': 'linear', 'wn': lpf.wn[i],
-                             'radrat': lpf.radius_ratio})
+                             'radrat': lpf.radius_ratio, 'fnorm': trg_med_fluxes[i]})
             hdul.append(pf.BinTableHDU(df))
 
         for i, pb in enumerate(self.pbs):
-            df = Table(lpf.covariates[i], names='sky xshift yshift entropy'.split(),
+            df = Table(lpf.covariates[i], names='airmass xshift yshift entropy'.split(),
                        meta={'extname': f'aux_{pb}'})
             hdul.append(pf.BinTableHDU(df))
         hdul.writeto(self._dres.joinpath(self.savefile_name+'.fits'), overwrite=True)

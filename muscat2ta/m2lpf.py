@@ -306,12 +306,14 @@ class M2LPF(BaseLPF):
 
         # Create the target and reference star flux arrays
         # ------------------------------------------------
-        self.target_fluxes, self.reference_fluxes = [], []
+        self.target_fluxes, self.target_median_fluxes, self.reference_fluxes = [], [], []
         for ip, ph in enumerate(photometry):
             ids = concatenate([[self.tid[ip]], self.cids[ip]])
             flux = ph.flux[:, ids, amin:amax + 1]
             self.target_fluxes.append(array(flux[:, 0, :] / flux[:, 0, :].median('mjd')))
             self.reference_fluxes.append(array(flux[:, 1:, :]))
+            self.target_median_fluxes.append(flux[:, 0, :].median('mjd'))
+        self.target_median_fluxes = array(self.target_median_fluxes)
 
         if self.cids.shape[1] == 1:
             self.set_prior('ref_on_0', 'NP', 0.75, 1e-3)
@@ -635,7 +637,7 @@ class M2LPF(BaseLPF):
 
     def target_apertures(self, pv):
         pv = atleast_2d(pv)
-        p = floor(clip(pv[:, self._sl_tap], 0., 0.999) * (self.napt)).astype('int')
+        p = floor(clip(pv[:, self._sl_tap], 0., 0.999) * self.napt).astype('int')
         return squeeze(p)
 
     def reference_apertures(self, pv):
