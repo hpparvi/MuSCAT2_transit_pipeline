@@ -402,7 +402,7 @@ class TransitAnalysis:
                 apt_target = CircularAperture(stars[0], 0.7*aradius)
 
                 fig, ax = subplots(figsize=(13, 13))
-                ax.imshow(data, cmap=cm.gray_r, origin='image',
+                ax.imshow(data, cmap=cm.gray_r, origin='upper',
                           norm=sn(data, stretch='log', min_percent=10, max_percent=100))
                 apt_target.plot(axes=ax, color='k', linewidth=1)
                 apts.plot(axes=ax, color='k', linewidth=4)
