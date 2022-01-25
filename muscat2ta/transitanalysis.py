@@ -24,6 +24,7 @@ from astropy.utils.exceptions import AstropyWarning
 from matplotlib import cm
 from matplotlib.axis import Axis
 from numba import njit
+from numpy.linalg import lstsq
 from photutils import CircularAperture
 
 warnings.simplefilter('ignore', category=AstropyWarning)
@@ -38,7 +39,8 @@ from matplotlib.pyplot import figure, figtext, setp, subplots
 from muscat2ph.catalog import get_m2_coords, get_coords
 from muscat2ph.phdata import PhotometryData
 from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze, atleast_1d, ceil, floor, array, isfinite, median,
-                   nanmedian, arange, digitize, zeros, nan, full, clip, argmin, concatenate, full_like, atleast_2d)
+                   nanmedian, arange, digitize, zeros, nan, full, clip, argmin, concatenate, full_like, atleast_2d,
+                   ones, c_)
 
 from pytransit.param import NormalPrior as NP, UniformPrior as UP
 
@@ -438,6 +440,65 @@ class TransitAnalysis:
                 hdul.append(pf.BinTableHDU(df))
 
             hdul.writeto(self._dres / f"{self.target}_{self.date}_raw.fits", overwrite=True)
+
+    def save_relative_fits(self, aid: int, plot: bool = True, save: bool = True):
+        if plot:
+            ids = concatenate([[self.tid], self.cids])
+
+            dph = Path('.') / 'photometry' / self.date
+            stars = Table.read(list(dph.glob("*_stars.fits"))[0]).to_pandas()[['x', 'y']].values[ids]
+            ref_files = sorted(dph.glob("*frame.fits"))
+            if len(ref_files) > 0:
+                ref_file = ref_files[min(2, len(ref_files) - 1)]
+                data = pf.getdata(ref_file)
+
+                aradius = float(self.phs[0].flux.aperture[aid])
+                apts = CircularAperture(stars, aradius)
+                apt_target = CircularAperture(stars[0], 0.7*aradius)
+
+                fig, ax = subplots(figsize=(13, 13))
+                ax.imshow(data, cmap=cm.gray_r, origin='upper',
+                          norm=sn(data, stretch='log', min_percent=10, max_percent=100))
+                apt_target.plot(axes=ax, color='k', linewidth=1)
+                apts.plot(axes=ax, color='k', linewidth=4)
+                apts.plot(axes=ax, color='w', linewidth=1.5)
+
+                for sid, (x, y) in zip(ids, stars):
+                    ax.text(x + aradius + 12, y, sid, va='center', ha='left', size=15,
+                            bbox=dict(boxstyle='round4', facecolor='w'))
+
+                ax.set_title(f'{self.target} {self.date} raw photometry reference frame', size=15)
+                setp(ax, xlabel='x [pix]', ylabel='y [pix]')
+                fig.tight_layout()
+                fig.savefig(self._dplot / f"{self.target}_{self.date}_raw_reference.pdf")
+            else:
+                warnings.warn("Couldn't create a reference frame figure.")
+
+            for i in range(len(self.phs)):
+                fig = self.plot_raw_light_curves(i, ids, aid, sharey='all')[0]
+                fig.savefig(self._dplot / f"{self.target}_{self.date}_raw_{self.pbs[i]}.pdf")
+
+        if save:
+            hdul = pf.HDUList([pf.PrimaryHDU()])
+            for ipb, pb in enumerate(self.pbs):
+                ph = self.phs[ipb]
+                frel = (ph.flux[:, self.tid, aid] / ph.flux[:, self.cids, aid].sum('star')).values
+                cov = c_[ones(frel.size), ph.aux.values]
+                x = lstsq(cov, frel)[0]
+                ftr = cov @ x
+                fdet = frel / ftr * median(ftr)
+
+                tb = Table(c_[ph.bjd, fdet, frel, ftr],
+                           names='time_bjd flux_det flux_rel trend'.split(),
+                           meta={'extname': f"flux_{pb}", 'filter': pb, 'aperture': float(ph.flux.aperture[aid])})
+                hdul.append(pf.BinTableHDU(tb))
+
+            for i, pb in enumerate(self.pbs):
+                df = Table(ph.aux.values, names='mjd sky airmass xshift yshift entropy'.split(),
+                           meta={'extname': f'aux_{pb}'})
+                hdul.append(pf.BinTableHDU(df))
+
+            hdul.writeto(self._dres / f"{self.target}_{self.date}_relative.fits", overwrite=True)
 
     def plot_raw_light_curves(self, pbs: Optional[int] = None, sids: Optional[Union[List,int,ndarray]] = None,
                               aids: Optional[Union[List,int,ndarray]] = None, sharey='all', ylim=None, vlines=None):
