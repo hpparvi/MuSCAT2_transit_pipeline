@@ -88,7 +88,7 @@ class TransitAnalysis:
                  radius_ratio: str = 'achromatic', klims=(0.005, 0.25),
                  catalog_name: str = None, init_lpf: bool = True,
                  check_saturation: bool = True, contamination_model: str = 'physical',
-                 contamination_reference_passband: str = "r'",
+                 contamination_reference_passband: Optional[str] = None,
                  target_coordinates=None, files=None, pbs=None):
 
         self.target: str = target
@@ -109,6 +109,9 @@ class TransitAnalysis:
 
         self._old_de_population = None
         self._old_de_fitness = None
+
+        if contamination_reference_passband is not None:
+            warnings.warn('TransitAnalysis no longer uses "contamination_reference_passband"')
 
         # Define directories and names
         # ----------------------------
@@ -154,8 +157,7 @@ class TransitAnalysis:
             self.lpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl,
                              with_transit=with_transit, with_contamination=with_contamination,
                              n_legendre=nlegendre, radius_ratio=radius_ratio, klims=klims,
-                             contamination_model=contamination_model,
-                             contamination_reference_passband=contamination_reference_passband)
+                             contamination_model=contamination_model)
             if with_transit:
                 self.lpf.set_prior(0, NP(self.lpf.times[0].mean(), 0.2*self.lpf.times[0].ptp()))
 
