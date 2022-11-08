@@ -86,22 +86,9 @@ def update_toi_catalog(remove_fp: bool = False, remove_known_planets: bool = Fal
 
 
 def read_m2_catalog():
-    with open(m2_catalog_file, 'r') as f:
-        t = f.readlines()
-        names = t[0].lower().replace('decl','dec').strip().split(',')
-        names.remove('comments')
-        ccol = 9
-        ncols = len(names)
-        ids = []
-        targets = []
-        for i,l in enumerate(t[1:]):
-            items = l.strip().strip('"').split(';')
-            items = items[:ccol] + items[-(ncols-ccol):]
-            items[1] = items[1].lower()
-            ids.append(items[0])
-            targets.append(items[1:])
-        return pd.DataFrame(targets, index=ids, columns=names[1:])
-
+    df = pd.read_csv(m2_catalog_file, sep=";", quotechar='"', on_bad_lines='skip')
+    df.columns = [s.lower() for s in df.columns]
+    return df
 
 def parse_toi(toi):
     try:
@@ -152,7 +139,7 @@ def get_m2_coords(name):
     cat = read_m2_catalog()
     name = get_close_matches(name.lower(), cat.name, 1)[0]
     target = cat[cat.name==name]
-    return SkyCoord(float(target.ra), float(target.dec), frame='fk5', unit=(u.deg, u.deg))
+    return SkyCoord(float(target.ra), float(target.decl), frame='fk5', unit=(u.deg, u.deg))
 
 
 def get_toi_or_tic_coords(toi_or_tic):
