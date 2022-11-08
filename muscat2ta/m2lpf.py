@@ -212,8 +212,7 @@ class M2LPF(BaseLPF):
                  filters: tuple, aperture_lims: tuple = (0, inf), use_opencl: bool = False,
                  n_legendre: int = 0, use_toi_info=True, with_transit=True, with_contamination=False,
                  radius_ratio: str = 'achromatic', noise_model='white', klims=(0.005, 0.75),
-                 contamination_model: str = 'physical',
-                 contamination_reference_passband: str = "r'"):
+                 contamination_model: str = 'physical'):
         assert radius_ratio in ('chromatic', 'achromatic')
         assert noise_model in ('white', 'gp')
         assert contamination_model in ('physical', 'direct')
@@ -230,7 +229,6 @@ class M2LPF(BaseLPF):
         self.radius_ratio = radius_ratio
         self.n_legendre = n_legendre
         self.n_flares = 0
-        self.contamination_reference_passband = contamination_reference_passband
 
         # Set photometry
         # --------------
@@ -306,12 +304,14 @@ class M2LPF(BaseLPF):
 
         # Create the target and reference star flux arrays
         # ------------------------------------------------
-        self.target_fluxes, self.reference_fluxes = [], []
+        self.target_fluxes, self.target_median_fluxes, self.reference_fluxes = [], [], []
         for ip, ph in enumerate(photometry):
             ids = concatenate([[self.tid[ip]], self.cids[ip]])
             flux = ph.flux[:, ids, amin:amax + 1]
             self.target_fluxes.append(array(flux[:, 0, :] / flux[:, 0, :].median('mjd')))
             self.reference_fluxes.append(array(flux[:, 1:, :]))
+            self.target_median_fluxes.append(flux[:, 0, :].median('mjd'))
+        self.target_median_fluxes = array(self.target_median_fluxes)
 
         if self.cids.shape[1] == 1:
             self.set_prior('ref_on_0', 'NP', 0.75, 1e-3)
@@ -422,9 +422,10 @@ class M2LPF(BaseLPF):
                 self._start_ref_apt = self.ps.blocks[-1].start
 
     def _init_instrument(self):
-        filters = {'g': sdss_g, 'r': sdss_r, 'i':sdss_i, 'z_s':sdss_z}
-        self.instrument = Instrument('MuSCAT2', [filters[pb] for pb in self.passbands])
-        self.cm = SMContamination(self.instrument, self.contamination_reference_passband)
+        all_filters = {'g': sdss_g, 'r': sdss_r, 'i':sdss_i, 'z_s':sdss_z}
+        filters = [all_filters[pb] for pb in self.passbands]
+        self.instrument = Instrument('MuSCAT2', filters)
+        self.cm = SMContamination(self.instrument, filters[-1].name)
 
     def add_flare(self, loc, amp=(0, 0.2)):
         self.n_flares += 1
@@ -635,7 +636,7 @@ class M2LPF(BaseLPF):
 
     def target_apertures(self, pv):
         pv = atleast_2d(pv)
-        p = floor(clip(pv[:, self._sl_tap], 0., 0.999) * (self.napt)).astype('int')
+        p = floor(clip(pv[:, self._sl_tap], 0., 0.999) * self.napt).astype('int')
         return squeeze(p)
 
     def reference_apertures(self, pv):

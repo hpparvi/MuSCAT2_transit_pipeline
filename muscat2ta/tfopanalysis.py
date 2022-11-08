@@ -17,6 +17,7 @@
 
 from pathlib import Path
 from time import strftime
+from typing import Optional
 
 from astropy.utils.exceptions import AstropyDeprecationWarning
 import warnings
@@ -83,7 +84,7 @@ class TFOPAnalysis(TransitAnalysis):
                  radius_ratio: str = 'chromatic', excluded_stars=(), toi=None, klims=(0.005, 0.25),
                  clear_field_only: bool = False, check_saturation: bool = True,
                  contamination_model: str = 'physical',
-                 contamination_reference_passband: str = "r'",
+                 contamination_reference_passband: Optional[str] = None,
                  files=None, pbs=None):
 
         super().__init__(target, date, tid, cids, dataroot=dataroot,

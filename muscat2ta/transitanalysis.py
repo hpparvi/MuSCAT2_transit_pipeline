@@ -24,6 +24,7 @@ from astropy.utils.exceptions import AstropyWarning
 from matplotlib import cm
 from matplotlib.axis import Axis
 from numba import njit
+from numpy.linalg import lstsq
 from photutils import CircularAperture
 
 warnings.simplefilter('ignore', category=AstropyWarning)
@@ -38,7 +39,8 @@ from matplotlib.pyplot import figure, figtext, setp, subplots
 from muscat2ph.catalog import get_m2_coords, get_coords
 from muscat2ph.phdata import PhotometryData
 from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze, atleast_1d, ceil, floor, array, isfinite, median,
-                   nanmedian, arange, digitize, zeros, nan, full, clip, argmin, concatenate, full_like, atleast_2d)
+                   nanmedian, arange, digitize, zeros, nan, full, clip, argmin, concatenate, full_like, atleast_2d,
+                   ones, c_)
 
 from pytransit.param import NormalPrior as NP, UniformPrior as UP
 
@@ -86,7 +88,7 @@ class TransitAnalysis:
                  radius_ratio: str = 'achromatic', klims=(0.005, 0.25),
                  catalog_name: str = None, init_lpf: bool = True,
                  check_saturation: bool = True, contamination_model: str = 'physical',
-                 contamination_reference_passband: str = "r'",
+                 contamination_reference_passband: Optional[str] = None,
                  target_coordinates=None, files=None, pbs=None):
 
         self.target: str = target
@@ -107,6 +109,9 @@ class TransitAnalysis:
 
         self._old_de_population = None
         self._old_de_fitness = None
+
+        if contamination_reference_passband is not None:
+            warnings.warn('TransitAnalysis no longer uses "contamination_reference_passband"')
 
         # Define directories and names
         # ----------------------------
@@ -152,8 +157,7 @@ class TransitAnalysis:
             self.lpf = M2LPF(target, self.phs, tid, cids, pbs, aperture_lims=aperture_lims, use_opencl=use_opencl,
                              with_transit=with_transit, with_contamination=with_contamination,
                              n_legendre=nlegendre, radius_ratio=radius_ratio, klims=klims,
-                             contamination_model=contamination_model,
-                             contamination_reference_passband=contamination_reference_passband)
+                             contamination_model=contamination_model)
             if with_transit:
                 self.lpf.set_prior(0, NP(self.lpf.times[0].mean(), 0.2*self.lpf.times[0].ptp()))
 
@@ -337,9 +341,12 @@ class TransitAnalysis:
         phdu.header.update(target=self.target, night=self.date)
         hdul = pf.HDUList(phdu)
 
-        lpf = self.lpf
+        lpf: M2LPF = self.lpf
         pv = lpf.de.minimum_location
         time = lpf.timea
+
+        trg_apertures = lpf.target_apertures(pv)
+        trg_med_fluxes = lpf.target_median_fluxes[:, trg_apertures]
 
         baseline = squeeze(lpf.baseline(pv))
         if lpf.with_transit:
@@ -367,11 +374,11 @@ class TransitAnalysis:
                                   reference_flux[sl], baseline[sl], transit[sl]]),
                        names='time_bjd flux flux_rel flux_trg flux_ref baseline model'.split(),
                        meta={'extname': f"flux_{pb}", 'filter': pb, 'trends': 'linear', 'wn': lpf.wn[i],
-                             'radrat': lpf.radius_ratio})
+                             'radrat': lpf.radius_ratio, 'fnorm': trg_med_fluxes[i]})
             hdul.append(pf.BinTableHDU(df))
 
         for i, pb in enumerate(self.pbs):
-            df = Table(lpf.covariates[i], names='sky xshift yshift entropy'.split(),
+            df = Table(lpf.covariates[i], names='airmass xshift yshift entropy'.split(),
                        meta={'extname': f'aux_{pb}'})
             hdul.append(pf.BinTableHDU(df))
         hdul.writeto(self._dres.joinpath(self.savefile_name+'.fits'), overwrite=True)
@@ -399,7 +406,7 @@ class TransitAnalysis:
                 apt_target = CircularAperture(stars[0], 0.7*aradius)
 
                 fig, ax = subplots(figsize=(13, 13))
-                ax.imshow(data, cmap=cm.gray_r, origin='image',
+                ax.imshow(data, cmap=cm.gray_r, origin='upper',
                           norm=sn(data, stretch='log', min_percent=10, max_percent=100))
                 apt_target.plot(axes=ax, color='k', linewidth=1)
                 apts.plot(axes=ax, color='k', linewidth=4)
@@ -435,6 +442,36 @@ class TransitAnalysis:
                 hdul.append(pf.BinTableHDU(df))
 
             hdul.writeto(self._dres / f"{self.target}_{self.date}_raw.fits", overwrite=True)
+
+    def save_relative_fits(self, aid: int, plot: bool = True, save: bool = True):
+        if plot:
+            ids = concatenate([[self.tid], self.cids])
+            for i in range(len(self.phs)):
+                fig = self.plot_raw_light_curves(i, ids, aid, sharey='all')[0]
+                fig.savefig(self._dplot / f"{self.target}_{self.date}_raw_{self.pbs[i]}.pdf")
+
+        if save:
+            hdul = pf.HDUList([pf.PrimaryHDU()])
+            for ipb, pb in enumerate(self.pbs):
+                ph = self.phs[ipb]
+                frel = (ph.flux[:, self.tid, aid] / ph.flux[:, self.cids, aid].sum('star')).values
+                cov = c_[ones(frel.size), ph.aux.values]
+                x = lstsq(cov, frel)[0]
+                ftr = cov @ x
+                fdet = frel / ftr * median(ftr)
+
+                tb = Table(c_[ph.bjd, fdet, frel, ftr],
+                           names='time_bjd flux_det flux_rel trend'.split(),
+                           meta={'extname': f"flux_{pb}", 'filter': pb, 'aperture': float(ph.flux.aperture[aid])})
+                hdul.append(pf.BinTableHDU(tb))
+
+            for ipb, pb in enumerate(self.pbs):
+                ph = self.phs[ipb]
+                df = Table(ph.aux.values, names='mjd sky airmass xshift yshift entropy'.split(),
+                           meta={'extname': f'aux_{pb}'})
+                hdul.append(pf.BinTableHDU(df))
+
+            hdul.writeto(self._dres / f"{self.target}_{self.date}_relative.fits", overwrite=True)
 
     def plot_raw_light_curves(self, pbs: Optional[int] = None, sids: Optional[Union[List,int,ndarray]] = None,
                               aids: Optional[Union[List,int,ndarray]] = None, sharey='all', ylim=None, vlines=None):
