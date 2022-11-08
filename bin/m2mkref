@@ -195,16 +195,20 @@ if __name__ == '__main__':
             # -------------------------
             if im._wcs:
                 for r in (None,5,2):
-                    fig_field = pl.figure(figsize=(9, 9))
+                    fig_field = pl.figure(figsize=(7, 7))
                     ax_field = fig_field.add_subplot(111, projection=im._wcs)
                     ax_field.grid()
                     im.plot_reduced(minp=90, offset=10, ax=ax_field, subfield_radius=r)
                     ax_field.set_title(f"Reference frame - {object} {pb}'")
                     pl.setp(ax_field, ylabel='Dec', xlabel='RA')
-                    fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.13, right=0.98)
+                    #fig_field.tight_layout()
+                    #fig_field.subplots_adjust(bottom=0.03, top=0.98, left=0.18, right=0.98)
+                    fig_field.subplots_adjust(bottom=0.02, top=0.99, left=0.13, right=0.99)
                     if r:
+                        fig_field.savefig(str(rdir.joinpath(f"{object}_{on.night}_MuSCAT2_{pb}_field_{r:d}am.pdf")))
                         fig_field.savefig(str(rdir.joinpath(f"{object}_{on.night}_MuSCAT2_{pb}_field_{r:d}am.png")))
                     else:
+                        fig_field.savefig(str(rdir.joinpath(f"{object}_{on.night}_MuSCAT2_{pb}_field.pdf")))
                         fig_field.savefig(str(rdir.joinpath(f"{object}_{on.night}_MuSCAT2_{pb}_field.png")))
                     pl.close(fig_field)
             else:

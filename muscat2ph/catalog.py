@@ -100,7 +100,7 @@ def read_m2_catalog():
             items[1] = items[1].lower()
             ids.append(items[0])
             targets.append(items[1:])
-        return pd.DataFrame(targets, index=ids, columns=names[1:])
+    return pd.DataFrame(targets, index=ids, columns=names[1:])
 
 
 def parse_toi(toi):
@@ -175,7 +175,11 @@ def get_coords(target: str, obsdate: Optional[Time] = None):
     try:
         simbad = Simbad()
         simbad.add_votable_fields('pm')
-        tbl = simbad.query_object(target)
+        try:
+            tbl = simbad.query_object(target)
+        except Exception:
+            tbl = None
+            
         if tbl is None:
             raise KeyError
         else:

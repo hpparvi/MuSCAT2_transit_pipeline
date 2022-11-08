@@ -33,13 +33,13 @@ from tqdm import tqdm
 from muscat2ph.catalog import get_coords
 
 TMPEXTS = ".match .axy .rdls .solved -indx.xyls .corr".split()
-MAX_TIMEOUT = 60
+MAX_TIMEOUT = 160 #20
 
 
 def run_astrometry(filename_and_sc, overwrite=True):
     filename, sc = filename_and_sc
     astcall = ["solve-field", "--overwrite", "--no-plots", "--new-fits=none", "--fits-image", '--downsample=2',
-               "--scale-low=0.4", "--scale-high=0.5", "--scale-units=app"]
+               "--scale-low=0.42", "--scale-high=0.45", "--scale-units=app"]
 
     if sc is not None:
         astcall.extend([f"--ra={sc.ra.deg}", f"--dec={sc.dec.deg}", "--radius=0.15"])
@@ -49,6 +49,7 @@ def run_astrometry(filename_and_sc, overwrite=True):
 
     astcall.append(str(filename))
 
+    logging.info(" ".join(astcall))
     try:
         r = run(astcall, stdout=PIPE, stderr=PIPE, timeout=MAX_TIMEOUT)
         rout = r.stdout.decode()
