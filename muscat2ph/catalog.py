@@ -137,7 +137,7 @@ def get_m2_coords(name):
     Astropy SkyCoord object
     """
     cat = read_m2_catalog()
-    name = get_close_matches(name.lower(), cat.name, 1)[0]
+    name = get_close_matches(name.upper(), cat.name, 1)[0]
     target = cat[cat.name==name]
     return SkyCoord(float(target.ra), float(target.decl), frame='fk5', unit=(u.deg, u.deg))
 
