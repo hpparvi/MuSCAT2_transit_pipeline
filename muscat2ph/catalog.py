@@ -38,8 +38,8 @@ m2_catalog_file = Path(resource_filename('muscat2ph', '../data/m2_catalog.csv'))
 toi_catalog_file = Path(resource_filename('muscat2ph', '../data/toi_catalog.csv')).resolve()
 
 def update_m2_catalog(password: str) -> None:
-    login_url = 'http://research.iac.es/proyecto/muscat/users/login'
-    csv_url = 'http://research.iac.es/proyecto/muscat/stars/export'
+    login_url = 'https://research.iac.es/proyecto/muscat/users/login'
+    csv_url = 'https://research.iac.es/proyecto/muscat/stars/export'
     data = {'username': 'observer', 'password': password}
 
     with requests.Session() as session:
