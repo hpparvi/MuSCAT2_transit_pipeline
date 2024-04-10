@@ -430,7 +430,7 @@ class ScienceFrame(ImageFrame):
             cs = Gaia.cone_search_async(target_sky, radius * u.arcmin)
             tb = cs.get_results()
             tb = tb[
-                ['source_id', 'dist', 'ref_epoch', 'ra', 'dec', 'pmra', 'pmdec', 'phot_g_mean_flux', 'phot_g_mean_mag']]
+                ['SOURCE_ID', 'dist', 'ref_epoch', 'ra', 'dec', 'pmra', 'pmdec', 'phot_g_mean_flux', 'phot_g_mean_mag']]
             tb['pmra'] = tb['pmra'].filled(0.0)
             tb['pmdec'] = tb['pmdec'].filled(0.0)
 
