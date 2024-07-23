@@ -1,6 +1,7 @@
 import logging
 import astropy.io.fits as pf
 
+from dataclasses import dataclass
 from shutil import copy
 from pathlib import Path
 from numpy import array, in1d
@@ -10,7 +11,10 @@ caltypes = {'dark': 'dark',
             'flat': 'flat',
             'domeflat': 'flat'}
 
+M1FSIZE = 2108160 # Standard MuSCAT1 file size
 M2FSIZE = 2105280 # Standard MuSCAT2 file size
+M3FSIZE = 9541440  # Standard MuSCAT3 file size
+
 
 class M2NightOrganizer:
     def __init__(self, obsdir, rootdir, skip_existing=False):
@@ -33,11 +37,10 @@ class M2NightOrganizer:
 
         self.files, self.corrupted = self.gather_files(skip_existing)
 
-
     def gather_files(self, skip_existing=False):
         files = array(sorted(self.obsdir.glob('*.fits')))
         sizes = array([f.stat().st_size for f in files])
-        cmask = sizes != M2FSIZE
+        cmask = (sizes != M2FSIZE) & (sizes != M1FSIZE)
         corrupted = files[cmask]
         files = files[~cmask]
         logging.info('Found %i good files and %i corrupted files', len(files), len(corrupted))
@@ -51,7 +54,6 @@ class M2NightOrganizer:
 
         return list(files), list(corrupted)
 
-
     def create_path(self, f):
         h = pf.getheader(f)
         obj = h['object'].lower()
@@ -61,14 +63,12 @@ class M2NightOrganizer:
         else:
             return self.objdir.joinpath(obj, flt)
 
-
     def organize(self):
         for f in tqdm(self.files, desc='Organizing files'):
             ndir = self.create_path(f)
             if not ndir.exists():
                 ndir.mkdir(parents=True)
             copy(str(f), str(ndir.joinpath(f.name)))
-
 
     def check(self, verbose=False):
         cfiles = array(sorted(self.orgdir.rglob("*.fits")))
@@ -81,3 +81,78 @@ class M2NightOrganizer:
             print(' - %i fits files under the organized tree\n'%len(cfiles))
             print(' - %i corrupted fits files in the raw directory\n'%len(self.corrupted))
 
+
+class M3NightOrganizer(M2NightOrganizer):
+
+    def gather_files(self, skip_existing=False):
+        files = array(sorted(self.obsdir.glob('*-e91.fits.fz')))
+        sizes = array([f.stat().st_size for f in files])
+        cmask = abs(sizes - M3FSIZE) > 500000
+        corrupted = files[cmask]
+        files = files[~cmask]
+        logging.info('Found %i good files and %i corrupted files', len(files), len(corrupted))
+
+        if skip_existing:
+            n_raw = array(sorted([l.name for l in files]))
+            n_existing = array(sorted([l.name for l in self.orgdir.rglob('*.fits')]))
+            emask = ~in1d(n_raw, n_existing)
+            files = files[emask]
+            logging.info('Skipped existing %i files', (~emask).sum())
+
+        return list(files), list(corrupted)
+
+    def create_path(self, f):
+        h = pf.getheader(f, 1)
+        obj = h['object'].lower()
+        flt = h['filter'].lower()
+        return self.objdir.joinpath(obj, flt)
+
+
+@dataclass(frozen=True)
+class LCOObservation:
+    proposal: str
+    object: str
+    day: int
+    telescope: str
+    filter: str
+    exposure: int
+    filename: str
+
+
+def separate_lco_path(p: Path):
+    parts = list(p.absolute().parts[-5:])
+    return LCOObservation(*(parts[:3] + parts[3].split('-') + [int(parts[-1].split('-')[3])] + parts[-1:]))
+
+
+class LCOOrganizer(M2NightOrganizer):
+    def __init__(self, obsdir: Path, rootdir: Path, skip_existing: bool = False):
+        self.obsdir = od = Path(obsdir)
+        self.rootdir = rd = Path(rootdir)
+        if (not od.exists()) or (not rd.exists()):
+            raise FileNotFoundError
+        self.files, self.corrupted = self.gather_files(skip_existing)
+
+    def gather_files(self, skip_existing: bool = False):
+        files = array(sorted(self.obsdir.glob('[a-z]*-e91.fits.fz')))
+        sizes = array([f.stat().st_size for f in files])
+        # cmask = abs(sizes - M3FSIZE) > 500000
+        corrupted = []  # files[cmask]
+        files = files  # [~cmask]
+        logging.info('Found %i good files and %i corrupted files', len(files), len(corrupted))
+
+        if skip_existing:
+            n_raw = array(sorted([l.name for l in files]))
+            n_existing = array(sorted([l.name for l in self.orgdir.rglob('*.fits')]))
+            emask = ~in1d(n_raw, n_existing)
+            files = files[emask]
+            logging.info('Skipped existing %i files', (~emask).sum())
+
+        return list(files), list(corrupted)
+
+    def create_path(self, f: Path):
+        h = pf.getheader(f, 1)
+        return (self.rootdir
+                /h['propid']
+                /h['object'].replace(' ', '_')
+                /f"{h['day-obs'][2:]}"
+                /f"{h['siteid']}{h['telescop'].replace('-', '')}-{h['filter'].replace('*', '_')}")

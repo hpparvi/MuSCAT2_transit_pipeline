@@ -1,7 +1,20 @@
 #!/usr/bin/env python
 
 #  MuSCAT2 photometry and transit analysis pipeline
-#  Copyright (C) 2019  Hannu Parviainen
+#  Copyright (C) 2021  Hannu Parviainen
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 #  This program is free software: you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -18,7 +31,6 @@
 
 import logging
 import re
-import itertools as it
 from argparse import ArgumentParser
 from multiprocessing import Pool
 from os import remove, chdir
@@ -26,37 +38,27 @@ from pathlib import Path
 from subprocess import run, PIPE, TimeoutExpired
 
 import pandas as pd
+from astropy.coordinates import SkyCoord
+from astropy import units as u
 from astropy.io import fits as pf
 from numpy import nan, inf
 from tqdm import tqdm
 
-from muscat2ph.catalog import get_coords
-
 TMPEXTS = ".match .axy .rdls .solved -indx.xyls .corr".split()
-MAX_TIMEOUT = 160 #20
+MAX_TIMEOUT = 20
 
-pixel_scales = {'M1': (0.35, 0.50),
-                'M2': (0.35, 0.50),
-                'M3': (0.25, 0.30),}
-
-def init_node(instrument):
-    global pixel_scale
-    pixel_scale = pixel_scales[instrument]
-
-def run_astrometry(filename_and_sc, overwrite=True):
-    filename, sc = filename_and_sc
+def run_astrometry(filename, overwrite=True):
     astcall = ["solve-field", "--overwrite", "--no-plots", "--new-fits=none", "--fits-image", '--downsample=2',
-               f"--scale-low={pixel_scale[0]}", f"--scale-high={pixel_scale[1]}", "--scale-units=app"]
+               "--scale-low=0.25", "--scale-high=0.30", "--scale-units=app", "--extension=1"]
 
-    if sc is not None:
-        astcall.extend([f"--ra={sc.ra.deg}", f"--dec={sc.dec.deg}", "--radius=0.15"])
-        logging.info(f" Solving {filename.stem} - {object} - RA: {sc.ra.deg:6.3f} DEC: {sc.dec.deg:6.3f}")
-    else:
-        logging.info(f" Solving {filename.stem} - {object} - Not found from any catalog")
-
+    h = pf.getheader(filename, 1)
+    sc = SkyCoord(h['ra'], h['dec'], frame='fk5', unit=(u.hourangle, u.deg))
+    astcall.extend([f"--ra={sc.ra.deg}", f"--dec={sc.dec.deg}", "--radius=0.15"])
+    logging.info(f" Solving {filename.stem} - {object} - RA: {sc.ra.deg:6.3f} DEC: {sc.dec.deg:6.3f}")
     astcall.append(str(filename))
 
-    logging.info(" ".join(astcall))
+    logging.info(' '.join(astcall))
+
     try:
         r = run(astcall, stdout=PIPE, stderr=PIPE, timeout=MAX_TIMEOUT)
         rout = r.stdout.decode()
@@ -90,16 +92,8 @@ def process_datadir(datadir, logdir, file_prefix, file_postfix, start_frame, end
     pb = str(f.parts[-2])
 
     logging.basicConfig(filename=logdir.joinpath(f'00_m2astrometry_{target}_{pb}.log'), filemode='w', level=logging.DEBUG)
-    object = target_name or pf.getval(files[0], 'object').lower()
 
-    sc = None
-    try:
-        sc = get_coords(object)
-    except:
-        pass
-
-    files = list(zip(files, (it.repeat(sc, len(files)))))
-    with Pool(args.n_processes, initializer=init_node, initargs=(instrument,)) as p:
+    with Pool(args.n_processes) as p:
         r = list(tqdm(p.imap(run_astrometry, files), total=len(files), desc='Solving astrometry for {} {}'.format(target, pb)))
         df = pd.DataFrame(r, columns='filename RA Dec rotation'.split())
 

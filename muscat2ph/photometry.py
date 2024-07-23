@@ -16,17 +16,13 @@
 
 import logging
 import warnings
-
 from pathlib import Path
 from typing import Union, Iterable, Optional
 
 import astropy.units as u
 import pandas as pd
-import xarray as xa
 import seaborn as sb
-from matplotlib.patches import Rectangle
-
-from numba import njit
+import xarray as xa
 from astropy.coordinates import SkyCoord, FK5
 from astropy.io import fits as pf
 from astropy.stats import sigma_clipped_stats
@@ -35,10 +31,12 @@ from astropy.time import Time
 from astropy.visualization import simple_norm as sn
 from astropy.wcs import WCS, FITSFixedWarning
 from matplotlib import cm
+from matplotlib.patches import Rectangle
 from matplotlib.pyplot import subplots, figure, subplot, setp
+from numba import njit
 from numpy import *
-from photutils import CircularAnnulus, centroid_2dg
-from photutils import DAOStarFinder, CircularAperture
+from photutils import DAOStarFinder, CircularAperture, CircularAnnulus
+from photutils.centroids import centroid_2dg
 from scipy.ndimage import center_of_mass as com
 from scipy.ndimage import label, median_filter as mf
 from scipy.stats import scoreatpercentile as sap

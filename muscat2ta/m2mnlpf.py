@@ -31,7 +31,7 @@ from pytransit.orbits import epoch
 from .m2baselpf import M2BaseLPF, downsample_time
 
 
-def read_reduced_m2(datadir, pattern='*.fits', remove_trends=True, downsample=None):
+def read_reduced_m2(datadir, pattern='*.fits', remove_trends=True, downsample=None, passbands=('g','r','i','z_s')):
     files = sorted(Path(datadir).glob(pattern))
     times, fluxes, residuals, pbs, wns, covs, vars = [], [], [], [], [], [], []
     for f in files:
@@ -39,33 +39,34 @@ def read_reduced_m2(datadir, pattern='*.fits', remove_trends=True, downsample=No
             npb = (len(hdul)-1)//2
             for ipb in range(npb):
                 hdu = hdul[1 + ipb]
-                if remove_trends:
-                    fobs = hdu.data['flux'].astype('d').copy()
-                else:
-                    fobs = hdu.data['flux'].astype('d').copy() * hdu.data['baseline'].astype('d').copy()
-                fmod = hdu.data['model'].astype('d').copy()
-                time = hdu.data['time_bjd'].astype('d').copy()
-                mask = ~sigma_clip(fobs-fmod, sigma=3).mask
+                if hdu.header['filter'] in passbands:
+                    if remove_trends:
+                        fobs = hdu.data['flux'].astype('d').copy()
+                    else:
+                        fobs = hdu.data['flux'].astype('d').copy() * hdu.data['baseline'].astype('d').copy()
+                    fmod = hdu.data['model'].astype('d').copy()
+                    time = hdu.data['time_bjd'].astype('d').copy()
+                    mask = ~sigma_clip(fobs-fmod, sigma=3).mask
 
-                pbs.append(hdu.header['filter'])
-                wns.append(hdu.header['wn'])
+                    pbs.append(hdu.header['filter'])
+                    wns.append(hdu.header['wn'])
 
-                if downsample is None:
-                    times.append(time[mask])
-                    fluxes.append(fobs[mask])
-                    residuals.append((fobs-fmod)[mask])
-                    vars.append((fobs - fmod)[mask].var())
-                    covs.append(Table.read(f, 1 + npb + ipb).to_pandas().values[mask, 1:])
-                else:
-                    cov = Table.read(f, 1 + npb + ipb).to_pandas().values[mask, 1:]
-                    tb, fb = downsample_time(time[mask], fobs[mask], downsample)
-                    _, rb = downsample_time(time[mask], (fobs - fmod)[mask], downsample)
-                    _, cb = downsample_time(time[mask], cov, downsample)
-                    times.append(tb)
-                    fluxes.append(fb)
-                    residuals.append(rb)
-                    vars.append(rb.var())
-                    covs.append(cb)
+                    if downsample is None:
+                        times.append(time[mask])
+                        fluxes.append(fobs[mask])
+                        residuals.append((fobs-fmod)[mask])
+                        vars.append((fobs - fmod)[mask].var())
+                        covs.append(Table.read(f, 1 + npb + ipb).to_pandas().values[mask, 1:])
+                    else:
+                        cov = Table.read(f, 1 + npb + ipb).to_pandas().values[mask, 1:]
+                        tb, fb = downsample_time(time[mask], fobs[mask], downsample)
+                        _, rb = downsample_time(time[mask], (fobs - fmod)[mask], downsample)
+                        _, cb = downsample_time(time[mask], cov, downsample)
+                        times.append(tb)
+                        fluxes.append(fb)
+                        residuals.append(rb)
+                        vars.append(rb.var())
+                        covs.append(cb)
 
     return times, fluxes, pbs, wns, covs, array(vars), residuals
 
@@ -78,12 +79,14 @@ class M2MultiNightLPF(M2BaseLPF):
                  contamination_model: str = 'physical',
                  contamination_reference_passband: str = "r'",
                  use_linear_baseline_model: bool = True,
-                 downsampling: float = None):
+                 downsampling: float = None,
+                 passbands = ('g', 'r', 'i', 'z_s')):
 
         self.datadir = datadir
         self.pattern = filename_pattern
         self._reduction_residuals = None
         self.downsampling = downsampling
+        self.pbs_to_use = passbands
 
         super().__init__(target, use_opencl, n_legendre, with_transit, with_contamination, radius_ratio,
                          noise_model=noise_model, klims=klims,
@@ -92,7 +95,7 @@ class M2MultiNightLPF(M2BaseLPF):
                          use_linear_baseline_model=use_linear_baseline_model)
 
     def _read_data(self):
-        times, fluxes, pbs, wns, covs, vars, residuals = read_reduced_m2(self.datadir, self.pattern, downsample=self.downsampling)
+        times, fluxes, pbs, wns, covs, vars, residuals = read_reduced_m2(self.datadir, self.pattern, downsample=self.downsampling, passbands=self.pbs_to_use)
         pbs = pd.Categorical(pbs, categories='g r i z_s'.split(), ordered=True).remove_unused_categories()
         pbnames = pbs.categories.values
         pbids = pbs.codes

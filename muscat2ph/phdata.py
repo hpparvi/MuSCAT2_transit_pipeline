@@ -89,8 +89,9 @@ class PhotometryData:
     def __init__(self, fname, tid, cids, objname=None, objskycoords=None, excluded_ranges=None, **kwargs):
         with xa.open_dataset(fname) as ds:
             self._ds = ds.load()
+        self.observatory = kwargs.get('observatory', lapalma)
         self._flux = self._ds.flux
-        self._mjd = Time(self._ds.aux.loc[:,'mjd'], format='mjd', scale='utc', location=lapalma)
+        self._mjd = Time(self._ds.aux.loc[:,'mjd'], format='mjd', scale='utc', location=self.observatory)
         self.objname = objname
         self.objskycoords = objskycoords
         self._excluded_ranges = excluded_ranges
@@ -151,7 +152,8 @@ class PhotometryData:
             self.exclude_mjd_ranges(self._excluded_ranges)
 
         self._entropy_table = None
-        self._calculate_effective_fwhm()
+        if kwargs.get('calculate_fwhm', True):
+            self._calculate_effective_fwhm()
         self._rset = ReferenceStarSet(self)
         self._rset.tid = tid
         self._rset.tap = 2
