@@ -33,6 +33,7 @@ import pandas as pd
 import xarray as xa
 from astropy.io import fits as pf
 from astropy.table import Table
+from astropy import coordinates as coord, units as u
 from astropy.visualization import simple_norm as sn
 from corner import corner
 from matplotlib.pyplot import figure, figtext, setp, subplots
@@ -47,6 +48,10 @@ from pytransit.param import NormalPrior as NP, UniformPrior as UP
 from .m2lpf import M2LPF
 
 __all__ = ["TransitAnalysis", "NP", "UP"]
+
+
+lapalma = coord.EarthLocation.from_geodetic(-17.8799*u.deg, 28.758*u.deg, 2327*u.m)
+
 
 @njit
 def downsample_time(time, flux, inttime=30.):
@@ -89,7 +94,7 @@ class TransitAnalysis:
                  catalog_name: str = None, init_lpf: bool = True,
                  check_saturation: bool = True, contamination_model: str = 'physical',
                  contamination_reference_passband: Optional[str] = None,
-                 target_coordinates=None, files=None, pbs=None):
+                 target_coordinates=None, files=None, pbs=None, observatory=lapalma):
 
         self.target: str = target
         self.date: str = date
@@ -139,7 +144,8 @@ class TransitAnalysis:
             files, pbs = get_files(self.dataroot, target, date, passbands)
         self.phs = [PhotometryData(f, tid, cids, objname=target, objskycoords=self.target_coordinates,
                                    mjd_start=mjd_start, mjd_end=mjd_end,
-                                   excluded_ranges=excluded_mjd_ranges) for f in files]
+                                   excluded_ranges=excluded_mjd_ranges,
+                                   observatory=observatory) for f in files]
         self.passbands = self.pbs = pbs
 
         if len(self.phs) == 0:
