@@ -88,6 +88,7 @@ def update_toi_catalog(remove_fp: bool = False, remove_known_planets: bool = Fal
 def read_m2_catalog():
     df = pd.read_csv(m2_catalog_file, sep=";", quotechar='"', on_bad_lines='skip')
     df.columns = [s.lower() for s in df.columns]
+    df['name'] = df.name.str.lower()
     return df
 
 
@@ -138,7 +139,7 @@ def get_m2_coords(name):
     Astropy SkyCoord object
     """
     cat = read_m2_catalog()
-    name = get_close_matches(name.upper(), cat.name.str.upper(), 1)[0]
+    name = get_close_matches(name.lower(), cat.name, 1)[0]
     target = cat[cat.name==name]
     return SkyCoord(float(target.ra), float(target.decl), frame='fk5', unit=(u.deg, u.deg))
 
