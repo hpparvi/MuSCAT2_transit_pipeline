@@ -367,10 +367,8 @@ class ScienceFrame(ImageFrame):
         self._initialize_tables(self.nstars, self.napt)
 
     def _update_apertures(self, positions):
-        if self._apertures_obj:
-            for apt in self._apertures_obj:
-                apt.positions[:] = positions
-            self._apertures_sky.positions[:] = positions
+        self._apertures_obj = [CircularAperture(self._cur_centroids_pix, r) for r in self.aperture_radii]
+        self._apertures_sky = CircularAnnulus(self._cur_centroids_pix, self.aperture_radii[-1], self.aperture_radii[-1] + 15)
         self._masks_obj = [apertures.to_mask() for apertures in self._apertures_obj]
         self._masks_sky = self._apertures_sky.to_mask()
 
@@ -425,7 +423,7 @@ class ScienceFrame(ImageFrame):
             from astroquery.gaia import Gaia
             Gaia.ROW_LIMIT = 5000
 
-            cs = Gaia.cone_search_async(target_sky, radius * u.arcmin)
+            cs = Gaia.cone_search_async(target_sky, radius=radius * u.arcmin)
             tb = cs.get_results()
             tb = tb[
                 ['SOURCE_ID', 'dist', 'ref_epoch', 'ra', 'dec', 'pmra', 'pmdec', 'phot_g_mean_flux', 'phot_g_mean_mag']]
