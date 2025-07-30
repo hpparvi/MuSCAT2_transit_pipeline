@@ -44,7 +44,7 @@ from numba import njit
 from numpy import sqrt, nan, zeros, digitize, sin, arange, ceil, where, isfinite, inf, ndarray, argsort, array, \
     floor, median, nanmedian, clip, mean, percentile, full, pi, concatenate, atleast_2d, ones, asarray
 from numpy.random import normal
-from photutils import SkyCircularAperture, CircularAperture
+from photutils.aperture import SkyCircularAperture, CircularAperture
 from tqdm.auto import tqdm
 
 from pytransit import NormalPrior as NP, UniformPrior as UP

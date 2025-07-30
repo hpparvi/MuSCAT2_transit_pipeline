@@ -25,7 +25,7 @@ from matplotlib import cm
 from matplotlib.axis import Axis
 from numba import njit
 from numpy.linalg import lstsq
-from photutils import CircularAperture
+from photutils.aperture import CircularAperture
 
 warnings.simplefilter('ignore', category=AstropyWarning)
 

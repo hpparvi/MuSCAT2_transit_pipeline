@@ -9,7 +9,7 @@ from numpy import inf, sqrt, dot, exp, linspace, log, zeros, array, arange, mesh
 import patsy
 from numpy.linalg import lstsq
 from numpy.polynomial.legendre import legvander
-from photutils import CircularAperture
+from photutils.aperture import CircularAperture
 from scipy.interpolate import interp1d
 from scipy.stats import norm
 from astropy.time import Time
