@@ -30,12 +30,18 @@ from astroquery.nasa_exoplanet_archive import NasaExoplanetArchive as NEA
 from astroquery.simbad import Simbad
 
 from numpy import remainder, array, squeeze
-from pkg_resources import resource_filename
+from importlib.resources import files
 
 TOI = namedtuple('TOI', 'tic toi tmag ra dec epoch period duration depth'.split())
 
-m2_catalog_file = Path(resource_filename('muscat2ph', '../data/m2_catalog.csv')).resolve()
-toi_catalog_file = Path(resource_filename('muscat2ph', '../data/toi_catalog.csv')).resolve()
+
+def _get_data_path(filename: str) -> Path:
+    """Get the path to a data file in the muscat2ph.data package."""
+    return Path(str(files("muscat2ph.data").joinpath(filename)))
+
+
+m2_catalog_file = _get_data_path("m2_catalog.csv")
+toi_catalog_file = _get_data_path("toi_catalog.csv")
 
 def update_m2_catalog(password: str) -> None:
     login_url = 'https://research.iac.es/proyecto/muscat/users/login'

@@ -1,7 +1,14 @@
+#!/usr/bin/env python
 from argparse import ArgumentParser
 from pathlib import Path
-from pkg_resources import resource_filename
+from importlib.resources import files
 from string import Template
+
+
+def _get_template_path(filename: str) -> Path:
+    """Get the path to a template file in the muscat2ta.data.templates package."""
+    return Path(str(files("muscat2ta.data.templates").joinpath(filename)))
+
 
 if __name__ == '__main__':
     ap = ArgumentParser()
@@ -22,11 +29,11 @@ if __name__ == '__main__':
             ttype = 'standard'
 
     if ttype == 'standard':
-        tfile = Path(resource_filename(__name__, '../data/templates/transit_analysis_template.ipynb'))
+        tfile = _get_template_path('transit_analysis_template.ipynb')
     elif ttype == 'tfop':
-        tfile = Path(resource_filename(__name__, '../data/templates/tfop_template.ipynb'))
+        tfile = _get_template_path('tfop_template.ipynb')
     else:
-        tfile = Path(resource_filename(__name__, '../data/templates/eclipse_analysis_template.ipynb'))
+        tfile = _get_template_path('eclipse_analysis_template.ipynb')
 
     t = Template(tfile.read_text())
 
