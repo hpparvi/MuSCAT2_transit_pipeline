@@ -20,7 +20,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "MuSCAT2TA"
-version = "0.1"
+version = "0.2"
 description = "Package for MuSCAT2 transit analysis."
 readme = "README.md"
 license = "GPL-2.0-only"
@@ -57,6 +57,7 @@ dependencies = [
     "ldtk",
     "uncertainties",
     "nudged",
+    "httpx"
 ]
 
 [project.urls]

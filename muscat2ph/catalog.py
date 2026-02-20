@@ -14,23 +14,20 @@
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from difflib import get_close_matches
-from pathlib import Path
+import ssl
 from collections import namedtuple
+from difflib import get_close_matches
+from importlib.resources import files
+from pathlib import Path
 from typing import Optional
-
-import requests
-from datetime import datetime
 
 import astropy.units as u
 import pandas as pd
+import httpx
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
-from astroquery.nasa_exoplanet_archive import NasaExoplanetArchive as NEA
 from astroquery.simbad import Simbad
-
 from numpy import remainder, array, squeeze
-from importlib.resources import files
 
 TOI = namedtuple('TOI', 'tic toi tmag ra dec epoch period duration depth'.split())
 
@@ -43,20 +40,25 @@ def _get_data_path(filename: str) -> Path:
 m2_catalog_file = _get_data_path("m2_catalog.csv")
 toi_catalog_file = _get_data_path("toi_catalog.csv")
 
+
 def update_m2_catalog(password: str) -> None:
     login_url = 'https://research.iac.es/proyecto/muscat/users/login'
     csv_url = 'https://research.iac.es/proyecto/muscat/stars/export'
     data = {'username': 'observer', 'password': password}
 
-    with requests.Session() as session:
-        post = session.post(login_url, data=data)
-        result = session.get(csv_url)
+    context = ssl.create_default_context()
+    context.set_ciphers('DEFAULT:@SECLEVEL=1')
+
+    with httpx.Client(verify=context) as client:
+        client.post(login_url, data=data)
+        result = client.get(csv_url)
 
     if "access not permitted" in result.text.lower():
         raise ValueError("Wrong password")
 
     with open(m2_catalog_file, "w") as fout:
         fout.write(result.text)
+
 
 def update_toi_catalog(remove_fp: bool = False, remove_known_planets: bool = False) -> None:
     """Download TOI list from TESS Alert/TOI Release.
@@ -169,7 +171,8 @@ def get_toi_or_tic_coords(toi_or_tic):
 def get_coords(target: str, obsdate: Optional[Time] = None):
     try:
         simbad = Simbad()
-        simbad.add_votable_fields('pm')
+        simbad.add_votable_fields('pmra')
+        simbad.add_votable_fields('pmdec')
         try:
             tbl = simbad.query_object(target)
         except Exception:
