@@ -28,7 +28,7 @@ from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
     delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like, fmin, digitize, ceil, full, \
-    nan
+    nan, ptp
 
 from numpy.random import permutation, uniform, normal
 from pytransit import QuadraticModel, QuadraticModelCL, BaseLPF, LinearModelBaseline
@@ -49,7 +49,7 @@ from muscat2ta.multiceleriteloglikelihood import MultiCeleriteLogLikelihood
 def downsample_time(time, values, inttime=30.):
     if values.ndim == 1:
         values = atleast_2d(values).T
-    duration = 24. * 60. * 60. * time.ptp()
+    duration = 24. * 60. * 60. * ptp(time)
     nbins = int(ceil(duration / inttime))
     bins = arange(nbins)
     edges = time[0] + bins * inttime / 24 / 60 / 60

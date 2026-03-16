@@ -41,7 +41,7 @@ from muscat2ph.catalog import get_m2_coords, get_coords
 from muscat2ph.phdata import PhotometryData
 from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze, atleast_1d, ceil, floor, array, isfinite, median,
                    nanmedian, arange, digitize, zeros, nan, full, clip, argmin, concatenate, full_like, atleast_2d,
-                   ones, c_)
+                   ones, c_, ptp)
 
 from pytransit.param import NormalPrior as NP, UniformPrior as UP
 
@@ -165,7 +165,7 @@ class TransitAnalysis:
                              n_legendre=nlegendre, radius_ratio=radius_ratio, klims=klims,
                              contamination_model=contamination_model)
             if with_transit:
-                self.lpf.set_prior(0, NP(self.lpf.times[0].mean(), 0.2*self.lpf.times[0].ptp()))
+                self.lpf.set_prior(0, NP(self.lpf.times[0].mean(), 0.2*ptp(self.lpf.times[0])))
 
             self.pbs = self.lpf.passbands
             self.pv = None
