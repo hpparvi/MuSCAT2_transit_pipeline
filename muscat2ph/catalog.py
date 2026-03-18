@@ -134,6 +134,7 @@ def get_toi_or_tic(toi_or_tic):
         toi = toi_or_tic
     return get_toi(toi)
 
+
 def get_m2_coords(name):
     """
     Returns the sky coordinates of a target based on the internal MuSCAT2 target catalog.
@@ -149,7 +150,7 @@ def get_m2_coords(name):
     cat = read_m2_catalog()
     name = get_close_matches(name.lower(), cat.name, 1)[0]
     target = cat[cat.name==name]
-    return SkyCoord(float(target.ra), float(target.decl), frame='fk5', unit=(u.deg, u.deg))
+    return SkyCoord(float(target.ra.values[0]), float(target.decl.values[0]), frame='fk5', unit=(u.deg, u.deg))
 
 
 def get_toi_or_tic_coords(toi_or_tic):
