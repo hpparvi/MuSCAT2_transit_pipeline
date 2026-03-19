@@ -39,7 +39,7 @@ import matplotlib.pyplot as pl
 from muscat2ph.photometry import ScienceFrame
 from muscat2ph.centroider import COMCentroider, DFCOMCentroider
 from muscat2ph.catalog import get_toi, get_coords
-from muscat2ph.m2obsnight import M2ObservationNight, M2ObservationData
+from muscat2ph.m2obsnight import M2ObservationNight, M2ObservationData, FILTER_SETS
 
 warnings.filterwarnings("error", category=AstropyDeprecationWarning)
 seterr(invalid='ignore')
@@ -48,7 +48,6 @@ logger = logging.getLogger('m2photometry')
 
 logging.basicConfig(level=logging.INFO)
 
-passbands = 'g r i z_s'.split()
 
 def init(root, pb, apertures, use_wcs, stars_file, cnt_aperture, dc_aperture=0, dc_object=0, centroider='com', shift_g=False,
          create_dc=True):
@@ -108,7 +107,8 @@ if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('datadir', type=str)
     ap.add_argument('--object', type=str, default=None)
-    ap.add_argument('--passband', nargs='+', type=str, default=['r', 'g', 'i', 'z_s'])
+    ap.add_argument('--passband', nargs='+', type=str, default=None)
+    ap.add_argument('--filter-set', choices=['broadband', 'narrowband', 'auto'], default='auto')
     ap.add_argument('--target-catalog-name', type=str, default=None)
     ap.add_argument('--result-dir', type=Path, default=None)
     ap.add_argument('--start-frame', type=int, default=0)
@@ -133,7 +133,14 @@ if __name__ == '__main__':
     target_sky_coords = None
     target_pix_coords = None
 
-    on = M2ObservationNight(args.datadir, args.object, args.passband)
+    if args.passband is not None:
+        pbs = args.passband
+    elif args.filter_set != 'auto':
+        pbs = FILTER_SETS[args.filter_set]
+    else:
+        pbs = None
+
+    on = M2ObservationNight(args.datadir, args.object, pbs)
 
     # Do the photometry for all the targets
     # -------------------------------------
