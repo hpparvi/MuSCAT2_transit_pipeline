@@ -35,7 +35,8 @@ from matplotlib.patches import Rectangle
 from matplotlib.pyplot import subplots, figure, subplot, setp
 from numba import njit
 from numpy import *
-from photutils import DAOStarFinder, CircularAperture, CircularAnnulus
+from photutils.detection import DAOStarFinder
+from photutils.aperture import CircularAperture, CircularAnnulus
 from photutils.centroids import centroid_2dg
 from scipy.ndimage import center_of_mass as com
 from scipy.ndimage import label, median_filter as mf

@@ -23,7 +23,7 @@ from numba import njit
 from numpy import inf, amin, nan, argsort, meshgrid, clip, percentile, flip, nanmean, log
 from numpy import arange, zeros, sqrt, isfinite, array, all, squeeze, ndarray, zeros_like, ceil, argmin, ones, \
     full_like, atleast_2d
-from photutils import CircularAperture
+from photutils.aperture import CircularAperture
 from scipy.ndimage import median_filter as mf, center_of_mass as com, median_filter, center_of_mass, label, \
     binary_dilation
 from scipy.optimize import minimize
