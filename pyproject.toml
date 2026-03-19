@@ -20,10 +20,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "MuSCAT2TA"
-version = "0.3"
-description = "Package for MuSCAT2 transit analysis."
+version = "0.4"
+description = "Package for MuSCAT2 photometry and transit analysis."
 readme = "README.md"
-license = "GPL-2.0-only"
+license = "GPL-2.0"
 authors = [
     { name = "Hannu Parviainen", email = "hpparvi@gmail.com" }
 ]

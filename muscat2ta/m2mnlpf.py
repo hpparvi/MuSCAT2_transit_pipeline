@@ -28,10 +28,13 @@ from numpy.random import uniform, permutation, normal
 from pytransit import LinearModelBaseline
 from pytransit.orbits import epoch
 
+from .filters import ALL_PASSBANDS
 from .m2baselpf import M2BaseLPF, downsample_time
 
 
-def read_reduced_m2(datadir, pattern='*.fits', remove_trends=True, downsample=None, passbands=('g','r','i','z_s')):
+def read_reduced_m2(datadir, pattern='*.fits', remove_trends=True, downsample=None, passbands=None):
+    if passbands is None:
+        passbands = ALL_PASSBANDS
     files = sorted(Path(datadir).glob(pattern))
     times, fluxes, residuals, pbs, wns, covs, vars = [], [], [], [], [], [], []
     for f in files:
@@ -80,13 +83,13 @@ class M2MultiNightLPF(M2BaseLPF):
                  contamination_reference_passband: str = "r'",
                  use_linear_baseline_model: bool = True,
                  downsampling: float = None,
-                 passbands = ('g', 'r', 'i', 'z_s')):
+                 passbands = None):
 
         self.datadir = datadir
         self.pattern = filename_pattern
         self._reduction_residuals = None
         self.downsampling = downsampling
-        self.pbs_to_use = passbands
+        self.pbs_to_use = passbands if passbands is not None else ALL_PASSBANDS
 
         super().__init__(target, use_opencl, n_legendre, with_transit, with_contamination, radius_ratio,
                          noise_model=noise_model, klims=klims,
@@ -96,7 +99,7 @@ class M2MultiNightLPF(M2BaseLPF):
 
     def _read_data(self):
         times, fluxes, pbs, wns, covs, vars, residuals = read_reduced_m2(self.datadir, self.pattern, downsample=self.downsampling, passbands=self.pbs_to_use)
-        pbs = pd.Categorical(pbs, categories='g r i z_s'.split(), ordered=True).remove_unused_categories()
+        pbs = pd.Categorical(pbs, categories=[p for p in ALL_PASSBANDS if p in pbs], ordered=True).remove_unused_categories()
         pbnames = pbs.categories.values
         pbids = pbs.codes
         self._residual_vars = vars

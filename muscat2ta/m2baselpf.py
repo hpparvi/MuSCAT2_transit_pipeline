@@ -33,7 +33,7 @@ from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, on
 from numpy.random import permutation, uniform, normal
 from pytransit import QuadraticModel, QuadraticModelCL, BaseLPF, LinearModelBaseline
 from pytransit.contamination import SMContamination
-from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
+from muscat2ta.filters import PYTRANSIT_FILTERS, get_ldtk_filters
 from pytransit.contamination.instrument import Instrument
 from pytransit.lpf.lpf import map_pv, map_ldc
 from pytransit.orbits.orbits_py import as_from_rhop, duration_eccentric, i_from_ba, d_from_pkaiews, epoch
@@ -253,13 +253,12 @@ class M2BaseLPF(BaseLPF):
 
 
     def _init_instrument(self):
-        filters = {'g': sdss_g, 'r': sdss_r, 'i':sdss_i, 'z_s':sdss_z}
-        self.instrument = Instrument('MuSCAT2', [filters[pb] for pb in self.passbands])
+        filters = [PYTRANSIT_FILTERS[pb] for pb in self.passbands]
+        self.instrument = Instrument('MuSCAT2', filters)
         self.cm = SMContamination(self.instrument, self.contamination_reference_passband)
 
     def add_ldtk_prior(self, teff: tuple, logg: tuple, z: tuple, uncertainty_multiplier: float = 3, **kwargs) -> None:
-        from ldtk import sdss_g, sdss_r, sdss_i, sdss_z
-        passbands = [f for f,pb in zip((sdss_g, sdss_r, sdss_i, sdss_z), 'g r i z'.split()) if pb in ' '.join(self.passbands)]
+        passbands = get_ldtk_filters(self.passbands)
         BaseLPF.add_ldtk_prior(self, teff, logg, z, passbands, uncertainty_multiplier, **kwargs)
 
 

@@ -45,6 +45,7 @@ from numpy import (sqrt, inf, ones_like, ndarray, transpose, squeeze, atleast_1d
 
 from pytransit.param import NormalPrior as NP, UniformPrior as UP
 
+from .filters import ALL_PASSBANDS
 from .m2lpf import M2LPF
 
 __all__ = ["TransitAnalysis", "NP", "UP"]
@@ -74,8 +75,10 @@ def downsample_time(time, flux, inttime=30.):
     return bt[m], bf[m], be[m]
 
 
-def get_files(droot, target, night, passbands: tuple = ('g', 'r', 'i', 'z_s')):
+def get_files(droot, target, night, passbands: tuple = None):
     ddata = droot.joinpath(night)
+    if passbands is None:
+        passbands = ALL_PASSBANDS
     files, pbs = [], []
     for pb in passbands:
         fname = ddata.joinpath(f'{target}_{night}_{pb}.nc')
@@ -88,7 +91,7 @@ class TransitAnalysis:
     def __init__(self, target: str, date: str, tid: int, cids: list, dataroot: Path = None, exptime_min: float = 30.,
                  nlegendre: int = 0,  npop: int = 200,  mjd_start: float = -inf, mjd_end: float = inf,
                  excluded_mjd_ranges: tuple = None,
-                 aperture_lims: tuple = (0, inf), passbands: tuple = ('g', 'r', 'i', 'z_s'),
+                 aperture_lims: tuple = (0, inf), passbands: tuple = None,
                  use_opencl: bool = False, with_transit: bool = True, with_contamination: bool = False,
                  radius_ratio: str = 'achromatic', klims=(0.005, 0.25),
                  catalog_name: str = None, init_lpf: bool = True,
@@ -180,7 +183,7 @@ class TransitAnalysis:
     def print_ptp_scatter(self):
         r1s = [res.std() for res in self.gplpf.residuals(self.gp_pv)]
         r2s = [(res - pre).std() for res, pre in zip(self.gplpf.residuals(self.gp_pv), self.gplpf.predict(self.gp_pv))]
-        for r1, r2, pb in zip(r1s, r2s, 'g r i z'.split()):
+        for r1, r2, pb in zip(r1s, r2s, self.passbands):
             print('{} {:5.0f} ppm -> {:5.0f} ppm'.format(pb, 1e6 * r1, 1e6 * r2))
 
     def apply_normalized_limits(self, iapt: int, lower: float = -inf, upper: float = inf, plot: bool = True,
@@ -210,7 +213,7 @@ class TransitAnalysis:
     def add_as_prior(self, mean: float, std: float):
         self.lpf.add_as_prior(mean, std)
 
-    def add_ldtk_prior(self, teff: tuple, logg: tuple, z: tuple, uncertainty_multiplier: float = 3., pbs: tuple = ('g', 'r', 'i', 'z')):
+    def add_ldtk_prior(self, teff: tuple, logg: tuple, z: tuple, uncertainty_multiplier: float = 3., pbs: tuple = None):
         self.lpf.add_ldtk_prior(teff, logg, z, uncertainty_multiplier, pbs)
 
     def freeze_photometry(self):
