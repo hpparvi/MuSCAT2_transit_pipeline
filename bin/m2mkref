@@ -49,7 +49,7 @@ import matplotlib.pyplot as pl
 
 from muscat2ph.photometry import ScienceFrame
 from muscat2ph.catalog import get_toi, get_coords
-from muscat2ph.m2obsnight import M2ObservationNight, M2ObservationData
+from muscat2ph.m2obsnight import M2ObservationNight, M2ObservationData, FILTER_SETS
 
 warnings.filterwarnings("error", category=AstropyDeprecationWarning)
 seterr(invalid='ignore')
@@ -57,13 +57,12 @@ seterr(invalid='ignore')
 logger = logging.getLogger('m2mkref')
 logging.basicConfig(level=logging.INFO)
 
-passbands = 'g r i z_s'.split()
-
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('datadir', type=Path)
     ap.add_argument('--object', type=str, default=None)
-    ap.add_argument('--passband', nargs='+', type=str, default=['i', 'r', 'z_s', 'g'])
+    ap.add_argument('--passband', nargs='+', type=str, default=None)
+    ap.add_argument('--filter-set', choices=['broadband', 'narrowband', 'auto'], default='auto')
     ap.add_argument('--target-catalog-name', type=str, default=None)
     ap.add_argument('--result-dir', type=Path, default=None)
     ap.add_argument('--max-stars', type=int, default=15)
@@ -91,7 +90,14 @@ if __name__ == '__main__':
     ap.add_argument('--shift-g', action='store_true', default=False)
     args = ap.parse_args()
 
-    on = M2ObservationNight(args.datadir, args.object, args.passband)
+    if args.passband is not None:
+        pbs = args.passband
+    elif args.filter_set != 'auto':
+        pbs = FILTER_SETS[args.filter_set]
+    else:
+        pbs = None  # Let M2ObservationNight auto-detect
+
+    on = M2ObservationNight(args.datadir, args.object, pbs)
 
     target_sky_coords = None
     target_pix_coords = None
