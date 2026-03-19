@@ -60,7 +60,8 @@ dependencies = [
     "httpx",
     "patsy",
     "statsmodels",
-    "netcdf4"
+    "netcdf4",
+    "pyerfa"
 ]
 
 [project.urls]
