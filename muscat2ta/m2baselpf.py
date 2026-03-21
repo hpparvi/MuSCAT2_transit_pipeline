@@ -80,7 +80,7 @@ def transit_inside_obs(pvp, tmin, tmax, limit_min: float = 10.):
     a = as_from_rhop(pvp[:,2], pvp[:,1])
     i = i_from_ba(pvp[:, 3], a)
     duration = d_from_pkaiews(pvp[:,1], sqrt(pvp[:,4]), a, i, 0, 0, 1)
-    ingress = pvp[:,0] + 0.5*duration
+    ingress = pvp[:,0] - 0.5*duration
     egress = pvp[:,0] + 0.5*duration
     return (ingress < tmax - limit) & (egress > tmin + limit)
 
