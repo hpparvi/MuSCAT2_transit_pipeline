@@ -382,7 +382,7 @@ class M2BaseLPF(BaseLPF):
             return lnl if lnl == lnl else -inf
 
         ll_no_transit = -minimize(lambda pv: -lnlikelihood_baseline(self, pv), pv_bl).fun
-        ll_with_transit = float(self.lnlikelihood(self.de.minimum_location.copy()))
+        ll_with_transit = float(self.lnlikelihood(self.de.minimum_location.copy()).sum())
         d_with_transit = len(self.ps)
         d_no_transit = d_with_transit - self._start_bl
         return bic(ll_no_transit, ll_with_transit, d_no_transit, d_with_transit, self.timea.size)
