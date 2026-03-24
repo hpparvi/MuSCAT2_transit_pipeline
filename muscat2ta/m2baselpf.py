@@ -80,7 +80,7 @@ def transit_inside_obs(pvp, tmin, tmax, limit_min: float = 10.):
     a = as_from_rhop(pvp[:,2], pvp[:,1])
     i = i_from_ba(pvp[:, 3], a)
     duration = d_from_pkaiews(pvp[:,1], sqrt(pvp[:,4]), a, i, 0, 0, 1)
-    ingress = pvp[:,0] + 0.5*duration
+    ingress = pvp[:,0] - 0.5*duration
     egress = pvp[:,0] + 0.5*duration
     return (ingress < tmax - limit) & (egress > tmin + limit)
 
@@ -382,7 +382,7 @@ class M2BaseLPF(BaseLPF):
             return lnl if lnl == lnl else -inf
 
         ll_no_transit = -minimize(lambda pv: -lnlikelihood_baseline(self, pv), pv_bl).fun
-        ll_with_transit = float(self.lnlikelihood(self.de.minimum_location.copy()))
+        ll_with_transit = float(self.lnlikelihood(self.de.minimum_location.copy()).sum())
         d_with_transit = len(self.ps)
         d_no_transit = d_with_transit - self._start_bl
         return bic(ll_no_transit, ll_with_transit, d_no_transit, d_with_transit, self.timea.size)
