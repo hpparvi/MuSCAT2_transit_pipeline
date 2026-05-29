@@ -220,8 +220,12 @@ if __name__ == '__main__':
                 fig_field.savefig(str(rdir.joinpath(f"{object}_{on.night}_MuSCAT2_{pb}_field.png")))
                 pl.close(fig_field)
 
-            fig_psf, _ = im.plot_psf(figsize=(9, 4.5))
-            fig_psf.tight_layout()
-            fig_psf.savefig(str(rdir.joinpath(f"{object}_{on.night}_MuSCAT2_{pb}_seeing_profile.png")))
-            pl.close(fig_psf)
+            try:
+                fig_psf, _ = im.plot_psf(figsize=(9, 4.5))
+                fig_psf.tight_layout()
+                fig_psf.savefig(str(rdir.joinpath(f"{object}_{on.night}_MuSCAT2_{pb}_seeing_profile.png")))
+                pl.close(fig_psf)
+            except TypeError:
+                pass
+                
 
