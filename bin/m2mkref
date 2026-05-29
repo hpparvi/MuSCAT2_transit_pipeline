@@ -88,6 +88,7 @@ if __name__ == '__main__':
     ap.add_argument('--dont-use-gaia', dest='use_gaia', action='store_false', default=True)
     ap.add_argument('--ignore-wcs', dest='use_wcs', action='store_false', default=True)
     ap.add_argument('--shift-g', action='store_true', default=False)
+    ap.add_argument('--override-target', action='store_true', default=False)
     args = ap.parse_args()
 
     if args.passband is not None:
@@ -168,7 +169,7 @@ if __name__ == '__main__':
                         find_method = 'dao'
 
                 if find_method == 'gaia':
-                    method_kwargs = dict(radius=11, min_flux_ratio=args.min_fratio)
+                    method_kwargs = dict(radius=11, min_flux_ratio=args.min_fratio, override_target=args.override_target)
                 elif find_method == 'dao':
                     method_kwargs = dict(fwhm=args.find_dao_fwhm)
                 else:
