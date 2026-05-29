@@ -35,7 +35,8 @@ from matplotlib.patches import Rectangle
 from matplotlib.pyplot import subplots, figure, subplot, setp
 from numba import njit
 from numpy import *
-from photutils import DAOStarFinder, CircularAperture, CircularAnnulus
+from photutils.detection import DAOStarFinder
+from photutils.aperture import CircularAperture, CircularAnnulus
 from photutils.centroids import centroid_2dg
 from scipy.ndimage import center_of_mass as com
 from scipy.ndimage import label, median_filter as mf
@@ -367,10 +368,8 @@ class ScienceFrame(ImageFrame):
         self._initialize_tables(self.nstars, self.napt)
 
     def _update_apertures(self, positions):
-        if self._apertures_obj:
-            for apt in self._apertures_obj:
-                apt.positions[:] = positions
-            self._apertures_sky.positions[:] = positions
+        self._apertures_obj = [CircularAperture(self._cur_centroids_pix, r) for r in self.aperture_radii]
+        self._apertures_sky = CircularAnnulus(self._cur_centroids_pix, self.aperture_radii[-1], self.aperture_radii[-1] + 15)
         self._masks_obj = [apertures.to_mask() for apertures in self._apertures_obj]
         self._masks_sky = self._apertures_sky.to_mask()
 
@@ -414,7 +413,7 @@ class ScienceFrame(ImageFrame):
             self.set_reference_stars(cpix)
 
     def find_stars_gaia(self, target_sky: SkyCoord, radius: float = 11, min_flux_ratio: float = 0.005,
-                        savefile: Optional[Union[Path, str]] = None, overwrite: bool = False):
+                        savefile: Optional[Union[Path, str]] = None, overwrite: bool = False, override_target: bool = False):
         tb = None
         if savefile is not None:
             savefile = Path(savefile)
@@ -425,12 +424,18 @@ class ScienceFrame(ImageFrame):
             from astroquery.gaia import Gaia
             Gaia.ROW_LIMIT = 5000
 
-            cs = Gaia.cone_search_async(target_sky, radius * u.arcmin)
+            cs = Gaia.cone_search_async(target_sky, radius=radius * u.arcmin)
             tb = cs.get_results()
             tb = tb[
-                ['SOURCE_ID', 'dist', 'ref_epoch', 'ra', 'dec', 'pmra', 'pmdec', 'phot_g_mean_flux', 'phot_g_mean_mag']]
+                ['source_id', 'dist', 'ref_epoch', 'ra', 'dec', 'pmra', 'pmdec', 'phot_g_mean_flux', 'phot_g_mean_mag']]
             tb['pmra'] = tb['pmra'].filled(0.0)
             tb['pmdec'] = tb['pmdec'].filled(0.0)
+
+            if override_target:
+                tb['ra'][0] = target_sky.ra.deg
+                tb['dec'][0] = target_sky.dec.deg
+                tb['pmra'][0] = 0.0
+                tb['pmdec'][0] = 0.0
 
             relative_fluxes = tb['phot_g_mean_flux'] / tb['phot_g_mean_flux'][0]
             relative_fluxes = array(relative_fluxes.filled(1e-8))
@@ -485,7 +490,7 @@ class ScienceFrame(ImageFrame):
         sfinder = DAOStarFinder(5*istd, fwhm, exclude_border=True)
         stars = sfinder(data)
         sids = argsort(array(stars['flux']))[::-1]
-        cpix = array([stars['xcentroid'], stars['ycentroid']]).T
+        cpix = array([stars['x_centroid'], stars['y_centroid']]).T
         cpix = cpix[sids,:][:maxn,:]
         self.nstars = cpix.shape[0]
 
@@ -698,7 +703,6 @@ class ScienceFrame(ImageFrame):
             data, wcs = transform(self)
         height, width = data.shape
 
-        #breakpoint()
         fig, ax = super().plot(flt(data), ax=ax, figsize=figsize, title='Reduced image', minp=minp, maxp=maxp, wcs=wcs)
         setp(ax, xlim=(0,width), ylim=(0,height))
 
@@ -708,7 +712,7 @@ class ScienceFrame(ImageFrame):
         # Plot the circle of inclusion
         self._separation_cut = 2.5 * u.arcmin
         if self._separation_cut is not None and self._wcs is not None and self._target_center is not None:
-            from photutils import SkyCircularAperture
+            from photutils.aperture import SkyCircularAperture
             sa = SkyCircularAperture(self._target_center, self._separation_cut).to_pixel(wcs)
             ax.plot(*self._target_center.to_pixel(wcs), marker='x', c='k', ms=15)
             sa.plot(axes=ax, color='0.4', ls=':', lw=2)

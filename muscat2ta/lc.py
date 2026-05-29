@@ -19,8 +19,9 @@ import math as m
 import numpy as np
 import statsmodels.api as sm
 from astropy.stats import sigma_clip, mad_std
+from astropy.timeseries import LombScargle
 from numpy import (ones, full, sqrt, array, concatenate, diff, ones_like, floor, ceil, all, arange, digitize, zeros,
-                   nan, linspace, isfinite, dot)
+                   nan, linspace, isfinite, dot, ptp, argmax)
 from numpy.linalg import lstsq
 from numpy.polynomial.legendre import legvander
 from scipy.ndimage import median_filter as mf
@@ -35,7 +36,7 @@ def find_period(time, flux, minp=1, maxp=10):
 
 
 def downsample_time(time, vals, inttime=30., trange: tuple = None):
-    duration = 24 * 60 * 60 * (time.ptp() if trange is None else trange[1] - trange[0])
+    duration = 24 * 60 * 60 * (ptp(time) if trange is None else trange[1] - trange[0])
     nbins = int(ceil(duration / inttime))
     bins = arange(nbins)
     edges = (time[0] if trange is None else trange[0]) + bins * inttime / 24 / 60 / 60
@@ -70,7 +71,7 @@ class M2LightCurve:
         self.bwn = self.wn
 
     def downsample_time(self, inttime: float = 30., trange: tuple = None):
-        duration = 24 * 60 * 60 * self.time.ptp() if trange is None else trange[1] - trange[0]
+        duration = 24 * 60 * 60 * ptp(self.time) if trange is None else trange[1] - trange[0]
         nbins = int(ceil(duration / inttime))
         bins = arange(nbins)
         edges = (self.time[0] if trange is None else trange[0]) + bins * inttime / 24 / 60 / 60
@@ -110,7 +111,7 @@ class M2LightCurve:
         covs /= covs.std(0)
         x = (self.time - self.time[0]) / diff(self.time[[0, -1]]) * 2 - 1
         pol = legvander(x, npol)
-        pol[:, 1:] /= pol[:, 1:].ptp(0)
+        pol[:, 1:] /= ptp(pol[:, 1:], 0)
         covs = concatenate([covs, pol], 1)
 
         c, _, _, _ = lstsq(covs, flux, rcond=None)

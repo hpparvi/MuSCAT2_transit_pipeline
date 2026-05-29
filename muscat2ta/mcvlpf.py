@@ -30,7 +30,8 @@ from matplotlib.pyplot import subplots, setp, subplot, figure
 from muscat2ph.catalog import get_toi
 from numpy import arange, isfinite, zeros, diff, concatenate, sqrt, array, ndarray, inf, atleast_2d, sum, median, where, floor, nanmedian, \
     squeeze, argsort, isnan, linspace, percentile
-from pytransit import sdss_g, sdss_r, sdss_i, sdss_z, RoadRunnerModel
+from pytransit import RoadRunnerModel
+from muscat2ta.filters import PYTRANSIT_FILTERS, get_ldtk_filters, ALL_PASSBANDS
 from pytransit.contamination import Instrument, SMContamination
 from pytransit.lpf.cntlpf import contaminate, PhysContLPF
 from pytransit.lpf.tess.tgclpf import BaseTGCLPF
@@ -116,7 +117,9 @@ def read_tess_data(dfiles, zero_epoch: float, period: float, use_pdc: bool = Fal
                       ins, piis, exptimes, nsamples)
 
 
-def read_m2_data(files, downsample=None, passbands=('g', 'r', 'i', 'z_s'), heavy_baseline: bool = True):
+def read_m2_data(files, downsample=None, passbands=None, heavy_baseline: bool = True):
+    if passbands is None:
+        passbands = ALL_PASSBANDS
     times, fluxes, pbs, wns, covs = [], [], [], [], []
     for inight, f in enumerate(files):
         with pf.open(f) as hdul:
@@ -221,7 +224,7 @@ class MCVLPF(BaseTGCLPF):
                  zero_epoch: Optional[ufloat] = None, period: Optional[ufloat] = None,
                  use_ldtk: bool = True, use_opencl: bool = False, use_pdc: bool = True,
                  heavy_baseline: bool = False, downsample: Optional[float] = None,
-                 m2_passbands: Iterable = ('g', 'r', 'i', 'z_s')):
+                 m2_passbands: Iterable = None):
 
         name = f"TOI-{toi}"
         self.toi = toi = get_toi(toi)
@@ -233,7 +236,7 @@ class MCVLPF(BaseTGCLPF):
         self.use_opencl = use_opencl
         self.heavy_baseline = heavy_baseline
         self.downsample = downsample
-        self.m2_passbands = m2_passbands
+        self.m2_passbands = m2_passbands if m2_passbands is not None else ALL_PASSBANDS
         tm = RoadRunnerModel('power-2-pm', small_planet_limit=0.005, parallel=True)
 
         self.result_dir = Path('.')
@@ -262,7 +265,7 @@ class MCVLPF(BaseTGCLPF):
         m2_files = sorted(dm2.glob('*.fits'))
         dtess = read_tess_data(tess_files, self.zero_epoch.n, self.period.n, baseline_duration_d=0.3, use_pdc=self.use_pdc)
         dm2 = read_m2_data(m2_files, downsample=self.downsample, passbands=self.m2_passbands, heavy_baseline=self.heavy_baseline)
-        pbnames = 'tess g r i z_s'.split()
+        pbnames = ['tess'] + list(dm2.passbands)
         self._stess = len(dtess.times)
         self._ntess = sum([t.size for t in dtess.times])
         self.data = data = dtess + dm2
@@ -272,8 +275,10 @@ class MCVLPF(BaseTGCLPF):
 
     def _init_instrument(self):
         """Set up the instrument and contamination model."""
-        self.instrument = Instrument('example', [sdss_g, sdss_r, sdss_i, sdss_z])
-        self.cm = SMContamination(self.instrument, "i'")
+        m2_pbs = [pb for pb in self.passbands if pb != 'tess']
+        m2_filters = [PYTRANSIT_FILTERS[pb] for pb in m2_pbs]
+        self.instrument = Instrument('MuSCAT2', m2_filters)
+        self.cm = SMContamination(self.instrument, m2_filters[-1].name)
         self.add_prior(lambda pv: where(pv[:, 4] < pv[:, 5], 0, -inf))
         self.add_prior(lambda pv: where(pv[:, 8] < pv[:, 5], 0, -inf))
 
@@ -290,9 +295,10 @@ class MCVLPF(BaseTGCLPF):
         self.set_prior('teff_c', 'UP', 2500, 12000)
 
     def set_ldtk_priors(self):
-        from ldtk import tess, sdss_g, sdss_r, sdss_i, sdss_z
+        from ldtk import tess
         star = self.star
-        filters = [tess, sdss_g, sdss_r, sdss_i, sdss_z]
+        m2_pbs = [pb for pb in self.passbands if pb != 'tess']
+        filters = [tess] + get_ldtk_filters(m2_pbs)
         sc = LDPSetCreator((star.teff.n, star.teff.s), (star.logg.n, star.logg.s), (star.z.n, star.z.s), filters)
         ps = sc.create_profiles(500)
         ps.set_uncertainty_multiplier(5)

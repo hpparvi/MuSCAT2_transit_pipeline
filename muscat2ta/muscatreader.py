@@ -72,7 +72,6 @@ class MuSCATReader:
         return (df[fluxes[argmin(wn)]].values.astype('d'),
                 df[ferrs[argmin(wn)]].values.astype('d'),
                 min(wn))
-                min(wn))
 
     def select_light_curve(self, dfs):
         wn = inf

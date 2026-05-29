@@ -15,17 +15,18 @@
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from matplotlib.pyplot import subplots
 from numba import njit
-from numpy import ndarray, exp, inf, linspace, fabs, argmin, isfinite, newaxis, arange, mean, median, nan, ceil, any, \
-    all, array, diff, concatenate, full, asarray, zeros, log, pi, sum, all, any
-from photutils import CircularAperture
+from numpy import ndarray, exp, inf, linspace, fabs, argmin, newaxis, arange, nan, ceil, array, diff, concatenate, \
+    asarray, zeros, log, pi, sum, all, any, ptp
+from photutils.aperture import CircularAperture
+from pytransit.utils.de import DiffEvol
 from scipy.optimize import minimize
 from scipy.stats import norm
 
-from pytransit.utils.de import DiffEvol
 
 @njit(cache=False)
 def lnlike_normal_s(o, m, e):
-    return -o.size*log(e) -0.5*o.size*log(2.*pi) - 0.5*sum((o-m)**2)/e**2
+    return -o.size*log(e) - 0.5*o.size*log(2.*pi) - 0.5*sum((o-m)**2)/e**2
+
 
 @njit
 def psf_model(x, center, separation, a1, a2, w1, w2, sky, sky_slope):
@@ -134,8 +135,8 @@ class DFCentroider(Centroider):
         for m in self.masks:
             c = m.cutout(image)
             x, y = c.mean(0), c.mean(1)
-            xarray.append((x - x.min()) / x.ptp())
-            yarray.append((y - y.min()) / y.ptp())
+            xarray.append((x - x.min()) / ptp(x))
+            yarray.append((y - y.min()) / ptp(y))
         self.profiles_obs = concatenate([xarray, yarray])
         self.npt = npt = self.profiles_obs.shape[1]
 
@@ -167,7 +168,7 @@ class DFCentroider(Centroider):
             else:
                 pvp = ps.sample_from_prior(30)
                 de = DiffEvol(lambda x: -log_likelihood(x, self.profiles_obs, self.nstars), ps.bounds, pvp.shape[0])
-                de.population[:,:] = pvp
+                de.population[:, :] = pvp
                 de.optimize(1000)
                 self._x0 = x0 = de.minimum_location
 

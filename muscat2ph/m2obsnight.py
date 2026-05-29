@@ -22,17 +22,39 @@ from astropy.time import Time
 
 glob_patterns = {'M1':'MSCT?_*.fits', 'M2':'MCT2?_*.fits', 'M3':'ogg2*fits.fz'}
 
+BROADBAND_FILTERS = ['g', 'r', 'i', 'z_s']
+NARROWBAND_FILTERS = ['na_d', 'g_narrow', 'i_narrow', 'z_narrow']
+FILTER_SETS = {'broadband': BROADBAND_FILTERS, 'narrowband': NARROWBAND_FILTERS}
+
 class M2ObservationNight:
 
     def __init__(self, root: Union[Path, str], obj: Optional[str] = None, passbands: Optional[List] = None):
         self.root = Path(root).resolve()
         self.night = self.root.absolute().name
         self.date = Time.strptime(self.night, '%y%m%d')
-        self.pbs = passbands if passbands is not None else 'r g i z_s'.split()
+        if passbands is not None:
+            self.pbs = passbands
+        else:
+            self.pbs = self._detect_filters()
         if obj:
             self.objects = [obj]
         else:
             self.objects = [o.name for o in list(self.root.joinpath('obj').glob('*'))]
+
+    def _detect_filters(self) -> List[str]:
+        """Auto-detect filter set by checking which filter subdirectories exist."""
+        obj_dir = self.root / 'obj'
+        if not obj_dir.exists():
+            return BROADBAND_FILTERS
+        subdirs = set()
+        for obj_path in obj_dir.iterdir():
+            if obj_path.is_dir():
+                for child in obj_path.iterdir():
+                    if child.is_dir():
+                        subdirs.add(child.name)
+        if subdirs & set(NARROWBAND_FILTERS):
+            return NARROWBAND_FILTERS
+        return BROADBAND_FILTERS
 
 class M2ObservationData:
 

@@ -27,14 +27,14 @@ from numba import njit, prange
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
     delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like, fmin, digitize, ceil, full, \
-    nan, transpose, isscalar, empty
+    nan, transpose, isscalar, empty, ptp
 from numpy.polynomial import Polynomial
 
 import astropy.units as u
 from numpy.random import permutation, uniform, normal
 from pytransit import QuadraticModel, QuadraticModelCL, BaseLPF, LinearModelBaseline
 from pytransit.contamination import SMContamination
-from pytransit.contamination.filter import sdss_g, sdss_r, sdss_i, sdss_z
+from muscat2ta.filters import PYTRANSIT_FILTERS, get_ldtk_filters
 from pytransit.contamination.instrument import Instrument
 from pytransit.lpf.lpf import map_pv, map_ldc
 from pytransit.orbits.orbits_py import as_from_rhop, duration_eccentric, i_from_ba, d_from_pkaiews, epoch
@@ -49,7 +49,7 @@ from uncertainties import ufloat
 def downsample_time(time, values, inttime=30.):
     if values.ndim == 1:
         values = atleast_2d(values).T
-    duration = 24. * 60. * 60. * time.ptp()
+    duration = 24. * 60. * 60. * ptp(time)
     nbins = int(ceil(duration / inttime))
     bins = arange(nbins)
     edges = time[0] + bins * inttime / 24 / 60 / 60
@@ -422,8 +422,7 @@ class M2LPF(BaseLPF):
                 self._start_ref_apt = self.ps.blocks[-1].start
 
     def _init_instrument(self):
-        all_filters = {'g': sdss_g, 'r': sdss_r, 'i':sdss_i, 'z_s':sdss_z}
-        filters = [all_filters[pb] for pb in self.passbands]
+        filters = [PYTRANSIT_FILTERS[pb] for pb in self.passbands]
         self.instrument = Instrument('MuSCAT2', filters)
         self.cm = SMContamination(self.instrument, filters[-1].name)
 
@@ -826,7 +825,7 @@ class M2LPF(BaseLPF):
 
     def add_ldtk_prior(self, teff: tuple, logg: tuple, z: tuple,
                        uncertainty_multiplier: float = 3,
-                       pbs: tuple = ('g', 'r', 'i', 'z'), cache = None) -> None:
+                       pbs: tuple = None, cache = None) -> None:
         """Add a LDTk-based prior on the limb darkening.
 
         Parameters
@@ -841,9 +840,10 @@ class M2LPF(BaseLPF):
         -------
 
         """
-        fs = {n: f for n, f in zip('g r i z'.split(), (sdss_g, sdss_r, sdss_i, sdss_z))}
-        filters = [fs[k] for k in pbs]
-        self.ldsc = LDPSetCreator(teff, logg, z, filters,cache=cache)
+        if pbs is None:
+            pbs = self.passbands
+        filters = get_ldtk_filters(pbs)
+        self.ldsc = LDPSetCreator(teff, logg, z, filters, cache=cache)
         self.ldps = self.ldsc.create_profiles(1000)
         self.ldps.resample_linear_z()
         self.ldps.set_uncertainty_multiplier(uncertainty_multiplier)
