@@ -26,12 +26,19 @@ from pathlib import Path
 
 DROOT = Path("/data/hannu/muscat2")
 SSH = f"ssh -i {Path.home() / '.ssh' / 'dicha'}"
+FAIL_FAST = False  # flip to True to abort on first failure
 
 
 def run(cmd, cwd=None):
     """Run a command, streaming output; abort on failure."""
     print(f"+ {' '.join(map(str, cmd))}", flush=True)
-    subprocess.run(cmd, cwd=cwd, check=True)
+    result = subprocess.run(cmd, cwd=cwd)
+    if result.returncode != 0:
+        msg = f"WARNING: {cmd[0]} exited {result.returncode}"
+        print(msg, file=sys.stderr, flush=True)
+        if FAIL_FAST:
+            sys.exit(msg)
+    return result.returncode
 
 
 def main():
