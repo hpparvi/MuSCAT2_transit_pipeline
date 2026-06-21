@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+
+#  MuSCAT2 photometry and transit analysis pipeline
+#  Copyright (C) 2026  Hannu Parviainen
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+import argparse
+import os
+import socket
+import subprocess
+import sys
+from datetime import date, timedelta
+from pathlib import Path
+
+DROOT = Path("/data/hannu/muscat2")
+SSH = f"ssh -i {Path.home() / '.ssh' / 'dicha'}"
+
+
+def run(cmd, cwd=None):
+    """Run a command, streaming output; abort on failure."""
+    print(f"+ {' '.join(map(str, cmd))}", flush=True)
+    subprocess.run(cmd, cwd=cwd, check=True)
+
+
+def main():
+    if socket.gethostname() != "dicha":
+        sys.exit("This script only runs on host 'dicha'.")
+
+    parser = argparse.ArgumentParser(description="MuSCAT2 nightly reduction.")
+    parser.add_argument(
+        "night",
+        nargs="?",
+        default=(date.today() - timedelta(days=1)).strftime("%y%m%d"),
+        help="Night in YYMMDD format (default: yesterday).",
+    )
+    night = parser.parse_args().night
+
+    obs_raw = DROOT / "observations_raw"
+    obs_org = DROOT / "observations_org"
+    night_org = obs_org / night
+    photometry = DROOT / "photometry"
+
+    password = os.environ.get("M2UPDATE_PASSWORD")
+    if not password:
+        sys.exit("M2UPDATE_PASSWORD environment variable not set.")
+
+    run(["m2update", "--password", password])
+
+    run([
+        "rsync", "-va", "-e", SSH,
+        f"muscat2@shine2:/data/{night}", f"{obs_raw}/",
+    ])
+
+    run(["m2organize", str(obs_raw / night), f"{obs_org}/"])
+    run(["m2astrometry", "-n", "45"], cwd=night_org)
+
+    run(["m2mkref", str(night_org), "--max-stars", "200"])
+    run([
+        "m2photometry", str(night_org),
+        "--n-processes", "50", "--create-dc", "--dc-apt-id", "4",
+    ])
+
+    run([
+        "rsync", "-e", SSH, "-rvt", f"{photometry}/",
+        "muscat2@shine2:/home/muscat2/photometry_output/",
+    ])
+    run([
+        "rsync", "-e", SSH, "-rvt", f"{photometry}/",
+        "hannu@doner:/net/calp-nas/proyectos/exoplanetas/MuSCAT2/photometry/",
+    ])
+    run([
+        "rsync", "-e", SSH, "-rvt", str(night_org),
+        "hannu@doner:/net/calp-nas/proyectos/exoplanetas/MuSCAT2/observations_org",
+    ])
+
+
+if __name__ == "__main__":
+    main()
