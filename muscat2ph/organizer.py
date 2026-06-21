@@ -4,7 +4,7 @@ import astropy.io.fits as pf
 from dataclasses import dataclass
 from shutil import copy
 from pathlib import Path
-from numpy import array, in1d
+from numpy import array, isin
 from tqdm import tqdm
 
 caltypes = {'dark': 'dark',
@@ -48,7 +48,7 @@ class M2NightOrganizer:
         if skip_existing:
             n_raw = array(sorted([l.name for l in files]))
             n_existing = array(sorted([l.name for l in self.orgdir.rglob('*.fits')]))
-            emask = ~in1d(n_raw, n_existing)
+            emask = ~isin(n_raw, n_existing)
             files = files[emask]
             logging.info('Skipped existing %i files', (~emask).sum())
 
@@ -95,7 +95,7 @@ class M3NightOrganizer(M2NightOrganizer):
         if skip_existing:
             n_raw = array(sorted([l.name for l in files]))
             n_existing = array(sorted([l.name for l in self.orgdir.rglob('*.fits')]))
-            emask = ~in1d(n_raw, n_existing)
+            emask = ~isin(n_raw, n_existing)
             files = files[emask]
             logging.info('Skipped existing %i files', (~emask).sum())
 
@@ -143,7 +143,7 @@ class LCOOrganizer(M2NightOrganizer):
         if skip_existing:
             n_raw = array(sorted([l.name for l in files]))
             n_existing = array(sorted([l.name for l in self.orgdir.rglob('*.fits')]))
-            emask = ~in1d(n_raw, n_existing)
+            emask = ~isin(n_raw, n_existing)
             files = files[emask]
             logging.info('Skipped existing %i files', (~emask).sum())
 
