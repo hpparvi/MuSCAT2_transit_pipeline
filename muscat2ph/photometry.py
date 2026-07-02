@@ -34,7 +34,8 @@ from matplotlib import cm
 from matplotlib.patches import Rectangle
 from matplotlib.pyplot import subplots, figure, subplot, setp
 from numba import njit
-from numpy import *
+from numpy import (log, zeros, median, ndarray, array, ones_like, where, nan, argsort, zeros_like, flip, concatenate,
+                   atleast_2d, ones, sqrt, inf, isfinite, arange, ceil, meshgrid, errstate)
 from photutils.detection import DAOStarFinder
 from photutils.aperture import CircularAperture, CircularAnnulus
 from photutils.centroids import centroid_2dg
