@@ -23,6 +23,8 @@ import astropy.units as u
 import pandas as pd
 import seaborn as sb
 import xarray as xa
+import numpy as np
+
 from astropy.coordinates import SkyCoord, FK5
 from astropy.io import fits as pf
 from astropy.stats import sigma_clipped_stats
@@ -35,7 +37,7 @@ from matplotlib.patches import Rectangle
 from matplotlib.pyplot import subplots, figure, subplot, setp
 from numba import njit
 from numpy import (log, zeros, median, ndarray, array, ones_like, where, nan, argsort, zeros_like, flip, concatenate,
-                   atleast_2d, ones, sqrt, inf, isfinite, arange, ceil, meshgrid, errstate)
+                   atleast_2d, ones, sqrt, inf, isfinite, arange, ceil, meshgrid, errstate, all)
 from photutils.detection import DAOStarFinder
 from photutils.aperture import CircularAperture, CircularAnnulus
 from photutils.centroids import centroid_2dg
@@ -800,7 +802,7 @@ class ScienceFrame(ImageFrame):
                 if t is not None:
                     area = t.sum()
                     data = m.multiply(self.reduced)
-                    if any(data > max_value):
+                    if np.any(data > max_value):
                         self._flux[im, iapt] = nan
                     else:
                         self._flux[im, iapt] = data.sum() - self._sky_median[im].values * area
