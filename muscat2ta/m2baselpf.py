@@ -24,23 +24,23 @@ from matplotlib.pyplot import subplots, setp, figure
 from pytransit.lpf.loglikelihood import WNLogLikelihood
 
 from muscat2ph.catalog import get_toi
-from numba import njit, prange
+from numba import njit
 from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
     delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like, fmin, digitize, ceil, full, \
-    nan, ptp
+    nan, ptp, ndarray
 
 from numpy.random import permutation, uniform, normal
 from pytransit import QuadraticModel, QuadraticModelCL, BaseLPF, LinearModelBaseline
 from pytransit.contamination import SMContamination
 from muscat2ta.filters import PYTRANSIT_FILTERS, get_ldtk_filters
 from pytransit.contamination.instrument import Instrument
-from pytransit.lpf.lpf import map_pv, map_ldc
+from pytransit.lpf.lpf import map_ldc
 from pytransit.orbits.orbits_py import as_from_rhop, duration_eccentric, i_from_ba, d_from_pkaiews, epoch
 from pytransit.param.parameter import NormalPrior as NP, UniformPrior as UP, LParameter, PParameter, ParameterSet, \
     GParameter
 from scipy.ndimage import binary_erosion
-from scipy.stats import logistic, norm
+from scipy.stats import norm
 from uncertainties import ufloat
 
 from muscat2ta.multiceleriteloglikelihood import MultiCeleriteLogLikelihood
@@ -85,20 +85,6 @@ def transit_inside_obs(pvp, tmin, tmax, limit_min: float = 10.):
     return (ingress < tmax - limit) & (egress > tmin + limit)
 
 
-@njit(parallel=True, cache=False, fastmath=True)
-def lnlike_logistic_v1d(o, m, e, lcids):
-    m = atleast_2d(m)
-    npv = m.shape[0]
-    npt = o.size
-    lnl = zeros(npv)
-    for i in prange(npv):
-        for j in range(npt):
-            k = lcids[j]
-            t = exp((o[j]-m[i,j])/e[i,k])
-            lnl[i] += log(t / (e[i,k]*(1.+t)**2))
-    return lnl
-
-
 @njit
 def contaminate(flux, cnt, lcids, pbids):
     flux = atleast_2d(flux)
@@ -121,28 +107,6 @@ def change_depth(relative_depth, flux, lcids, pbids):
         for ipt in range(npt):
             flux2[ipv, ipt] = (flux[ipv, ipt] - 1.) * relative_depth[ipv, pbids[lcids[ipt]]] + 1.
     return flux2
-
-
-@njit(fastmath=True)
-def map_pv_achromatic_nocnt(pv):
-    pv = atleast_2d(pv)
-    pvt = zeros((pv.shape[0], 7))
-    pvt[:,0]   = sqrt(pv[:,4])
-    pvt[:,1:3] = pv[:,0:2]
-    pvt[:,  3] = as_from_rhop(pv[:,2], pv[:,1])
-    pvt[:,  4] = i_from_ba(pv[:,3], pvt[:,3])
-    return pvt
-
-
-@njit(fastmath=True)
-def map_pv_achromatic_cnt(pv):
-    pv = atleast_2d(pv)
-    pvt = zeros((pv.shape[0], 7))
-    pvt[:, 0] = sqrt(pv[:, 5])
-    pvt[:, 1:3] = pv[:, 0:2]
-    pvt[:, 3] = as_from_rhop(pv[:, 2], pv[:, 1])
-    pvt[:, 4] = i_from_ba(pv[:, 3], pvt[:, 3])
-    return pvt
 
 
 class M2BaseLPF(BaseLPF):
@@ -193,9 +157,44 @@ class M2BaseLPF(BaseLPF):
 
     def _init_lnlikelihood(self):
         if self.noise_model == 'white':
-            self._add_lnlikelihood_model(WNLogLikelihood(self))
+            self._noise_model = WNLogLikelihood(self)
         else:
-            self._add_lnlikelihood_model(MultiCeleriteLogLikelihood(self))
+            self._noise_model = MultiCeleriteLogLikelihood(self)
+        self._add_lnlikelihood_model(self._noise_model)
+
+    def white_noise_estimates(self, pv) -> ndarray:
+        """Per-light-curve white noise standard deviations.
+
+        The white noise model stores the noise as free `wn_loge_*` parameters, while the GP model
+        keeps it fixed to an estimate calculated from the data, so the two need to be treated
+        separately.
+
+        Parameters
+        ----------
+        pv
+            Either a single parameter vector or a 2D parameter array, in which case the estimates
+            are calculated from the median of the population.
+
+        Returns
+        -------
+        ndarray
+            White noise standard deviation per light curve.
+        """
+        if self.noise_model == 'white':
+            return 10 ** median(atleast_2d(pv)[:, self._sl_wn], 0)
+        else:
+            return array(self._noise_model.wns)
+
+    def _lnlikelihood_baseline(self, pvp) -> ndarray:
+        """Log likelihood of a model containing the baseline and the trends but no transit."""
+        pvp = atleast_2d(pvp)
+        # The multiplication by `ones` keeps the flux model 2D whether the baseline evaluates to a
+        # scalar (no baseline model), a squeezed 1D array (a single parameter vector), or a 2D array.
+        fmodel = ones((pvp.shape[0], self.timea.size)) * self.baseline(pvp) + self.trends(pvp)
+        lnl = zeros(pvp.shape[0])
+        for lnlikelihood in self._lnlikelihood_models:
+            lnl += lnlikelihood(pvp, fmodel)
+        return lnl
 
     def _init_parameters(self):
         self.ps = ParameterSet()
@@ -274,22 +273,30 @@ class M2BaseLPF(BaseLPF):
 
     def _transit_model_achromatic_nocnt(self, pvp, copy=True):
         pvp = atleast_2d(pvp)
-        pvt = map_pv(pvp)
         ldc = map_ldc(pvp[:, self._sl_ld])
-        return self.tm.evaluate_pv(pvt, ldc, copy)
+        tc = pvp[:, 0]
+        p = pvp[:, 1]
+        a = as_from_rhop(pvp[:, 2], p)
+        i = i_from_ba(pvp[:, 3], a)
+        k = sqrt(pvp[:, 4:5])
+        return self.tm.evaluate(k, ldc, tc, p, a, i, copy=copy)
 
     def _transit_model_achromatic_cnt(self, pvp, copy=True):
         pvp = atleast_2d(pvp)
         cnt = zeros((pvp.shape[0], self.npb))
-        pvt = map_pv_achromatic_cnt(pvp)
         ldc = map_ldc(pvp[:, self._sl_ld])
-        flux = self.tm.evaluate_pv(pvt, ldc, copy=copy)
-        for i, pv in enumerate(pvp):
+        tc = pvp[:, 0]
+        p = pvp[:, 1]
+        a = as_from_rhop(pvp[:, 2], p)
+        i = i_from_ba(pvp[:, 3], a)
+        k = sqrt(pvp[:, 5:6])  # The transit is modelled using the true radius ratio and then contaminated.
+        flux = self.tm.evaluate(k, ldc, tc, p, a, i, copy=copy)
+        for ipv, pv in enumerate(pvp):
             if (2500 < pv[6] < 12000) and (2500 < pv[7] < 12000):
                 cnref = 1. - pv[4] / pv[5]
-                cnt[i, :] = self.cm.contamination(cnref, pv[6], pv[7])
+                cnt[ipv, :] = self.cm.contamination(cnref, pv[6], pv[7])
             else:
-                cnt[i, :] = -inf
+                cnt[ipv, :] = -inf
         return contaminate(flux, cnt, self.lcids, self.pbids)
 
     def _transit_model_chromatic_nocnt(self, pvp, copy=True):
@@ -360,31 +367,40 @@ class M2BaseLPF(BaseLPF):
             return where(inside_limits, 0, -inf)
         self.lnpriors.append(is_inside_window)
 
-    def transit_bic(self):
+    def transit_bic(self) -> float:
+        """BIC difference between the models with and without a transit.
+
+        Reoptimises the linear baseline coefficients for a model without a transit, keeping the
+        rest of the parameter vector fixed to the global optimum, and compares the result against
+        the full model. A positive value favours the model with a transit.
+        """
         from scipy.optimize import minimize
+
+        if not self.with_transit:
+            raise ValueError("Cannot calculate the transit BIC for an LPF initialised without a transit model.")
+        if not self.use_linear_baseline_model:
+            raise ValueError("The transit BIC calculation needs the linear baseline model.")
+        if self.de is None:
+            raise ValueError("Cannot calculate the transit BIC before the global optimisation.")
 
         def bic(ll1, ll2, d1, d2, n):
             return ll2 - ll1 + 0.5 * (d1 - d2) * log(n)
 
         pv_all = self.de.minimum_location.copy()
-        pv_bl = pv_all[self._sl_bl]
-        wn = atleast_2d(10 ** pv_all[self._sl_err])
 
-        def lnlikelihood_baseline(self, pv):
-            pv_all[self._sl_bl] = pv
-            flux_m = self.baseline(pv_all)
+        def negative_lnlikelihood_baseline(pv_bl):
+            pv = pv_all.copy()
+            pv[self._sl_lm] = pv_bl
+            lnl = float(squeeze(self._lnlikelihood_baseline(pv)))
+            return -lnl if isfinite(lnl) else inf
 
-            if self.photometry_frozen:
-                lnl = squeeze(lnlike_logistic_v1d(self.ofluxa, flux_m, wn, self.lcids))
-            else:
-                lnl = squeeze(lnlike_logistic_v(self.relative_flux(pv), flux_m, wn, self.lcids))
+        ll_no_transit = -minimize(negative_lnlikelihood_baseline, pv_all[self._sl_lm]).fun
+        ll_with_transit = float(squeeze(self.lnlikelihood(atleast_2d(pv_all))))
 
-            return lnl if lnl == lnl else -inf
-
-        ll_no_transit = -minimize(lambda pv: -lnlikelihood_baseline(self, pv), pv_bl).fun
-        ll_with_transit = float(self.lnlikelihood(self.de.minimum_location.copy()))
+        # The transit parameters are the orbit, planet and limb darkening blocks, all of which are
+        # added before the baseline and noise blocks, so the limb darkening block ends the set.
         d_with_transit = len(self.ps)
-        d_no_transit = d_with_transit - self._start_bl
+        d_no_transit = d_with_transit - self._sl_ld.stop
         return bic(ll_no_transit, ll_with_transit, d_no_transit, d_with_transit, self.timea.size)
 
     def posterior_samples(self, burn: int = 0, thin: int = 1, derived_parameters: bool = True, add_tref = True):
@@ -406,26 +422,23 @@ class M2BaseLPF(BaseLPF):
 
         if model == 'de':
             pv = self.de.minimum_location
-            err = 10 ** pv[self._sl_err]
-            if not self.photometry_frozen:
-                self.set_ofluxa(pv)
-
         elif model == 'mc':
             fc = array(self.posterior_samples(derived_parameters=False, add_tref=False))
             pv = permutation(fc)[:300]
-            err = 10 ** median(pv[:, self._sl_err], 0)
-            if not self.photometry_frozen:
-                self.set_ofluxa(median(pv, 0))
         else:
             raise NotImplementedError("Light curve plotting `model` needs to be either `de` or `mc`")
+
+        err = self.white_noise_estimates(pv)
 
         ps = [50, 16, 84]
         if self.with_transit:
             tm = percentile(atleast_2d(self.transit_model(pv)), ps, 0)
         else:
             tm = percentile(atleast_2d(ones(self.timea.size)), ps, 0)
-        fm = percentile(atleast_2d(self.flux_model(pv)), ps, 0)
-        bl = percentile(atleast_2d(self.baseline(pv)), ps, 0)
+        # Multiplying by `ones` expands the models that evaluate to a scalar (such as the baseline
+        # when the linear baseline model is not used) into full-length light curves.
+        fm = percentile(atleast_2d(ones(self.timea.size) * self.flux_model(pv)), ps, 0)
+        bl = percentile(atleast_2d(ones(self.timea.size) * self.baseline(pv)), ps, 0)
 
         for i, sl in enumerate(self.lcslices):
             t = self.timea[sl]
@@ -442,10 +455,10 @@ class M2BaseLPF(BaseLPF):
             #    axs[2, i].plot(bt, bf, 'ok')
 
             res = self.ofluxa[sl] - fm[0][sl]
-            x = linspace(-4 * err, 4 * err)
+            x = linspace(-4 * err[i], 4 * err[i])
             axs[0, i].hist(1e3 * res, 'auto', density=True, alpha=0.5)
-            axs[0, i].plot(1e3 * x, logistic(0, 1e3 * err[i]).pdf(1e3 * x), 'k')
-            axs[0, i].text(0.05, 0.95, f"$\sigma$ = {(1e3 * err[i] * pi / sqrt(3)):5.2f} ppt",
+            axs[0, i].plot(1e3 * x, norm(0, 1e3 * err[i]).pdf(1e3 * x), 'k')
+            axs[0, i].text(0.05, 0.95, f"$\sigma$ = {1e3 * err[i]:5.2f} ppt",
                            transform=axs[0, i].transAxes, va='top')
 
         [ax.set_title(f"MuSCAT2 {t}", size='large') for ax, t in zip(axs[0], self.passbands)]
@@ -548,7 +561,7 @@ class M2BaseLPF(BaseLPF):
     def plot_running_mean(self, figsize=(13, 5), errors=True, combine=False, remove_baseline=True, ylim=None, npt=100,
                      width_min=10):
         pv = self.de.minimum_location
-        rflux = self.relative_flux(pv)
+        rflux = self.ofluxa.copy()
         if remove_baseline:
             rflux /= squeeze(self.baseline(pv))
 

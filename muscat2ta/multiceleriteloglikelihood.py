@@ -14,7 +14,8 @@
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from numpy import asarray, unique, zeros, inf, squeeze, zeros_like, isfinite, log10, diff, sqrt
+from numpy import asarray, unique, zeros, inf, squeeze, zeros_like, isfinite, log10, diff, sqrt, \
+    atleast_2d
 from astropy.stats import mad_std
 
 try:
@@ -99,6 +100,8 @@ class MultiCeleriteLogLikelihood:
         if pvp.ndim == 1:
             lnlike = self.compute_gp_lnlikelihood(pvp, model)
         else:
+            # `flux_model` squeezes its output, so a single-vector 2D `pvp` yields a 1D model.
+            model = atleast_2d(model)
             lnlike = zeros(pvp.shape[0])
             for ipv, pv in enumerate(pvp):
                 if all(isfinite(model[ipv])):

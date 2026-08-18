@@ -36,7 +36,7 @@ from pytransit import QuadraticModel, QuadraticModelCL, BaseLPF, LinearModelBase
 from pytransit.contamination import SMContamination
 from muscat2ta.filters import PYTRANSIT_FILTERS, get_ldtk_filters
 from pytransit.contamination.instrument import Instrument
-from pytransit.lpf.lpf import map_pv, map_ldc
+from pytransit.lpf.lpf import map_ldc
 from pytransit.orbits.orbits_py import as_from_rhop, duration_eccentric, i_from_ba, d_from_pkaiews, epoch
 from pytransit.param.parameter import NormalPrior as NP, UniformPrior as UP, LParameter, PParameter, ParameterSet, \
     GParameter
@@ -149,26 +149,6 @@ def change_depth(relative_depth, flux, lcids, pbids):
         for ipt in range(npt):
             flux2[ipv, ipt] = (flux[ipv, ipt] - 1.) * relative_depth[ipv, pbids[lcids[ipt]]] + 1.
     return flux2
-
-@njit(fastmath=True)
-def map_pv_achromatic_nocnt(pv):
-    pv = atleast_2d(pv)
-    pvt = zeros((pv.shape[0], 7))
-    pvt[:,0]   = sqrt(pv[:,4])
-    pvt[:,1:3] = pv[:,0:2]
-    pvt[:,  3] = as_from_rhop(pv[:,2], pv[:,1])
-    pvt[:,  4] = i_from_ba(pv[:,3], pvt[:,3])
-    return pvt
-
-@njit(fastmath=True)
-def map_pv_achromatic_cnt(pv):
-    pv = atleast_2d(pv)
-    pvt = zeros((pv.shape[0], 7))
-    pvt[:, 0] = sqrt(pv[:, 5])
-    pvt[:, 1:3] = pv[:, 0:2]
-    pvt[:, 3] = as_from_rhop(pv[:, 2], pv[:, 1])
-    pvt[:, 4] = i_from_ba(pv[:, 3], pvt[:, 3])
-    return pvt
 
 @njit(parallel=False, fastmath=True)
 def flare(time, lcids, pbids, pvp, npb, nflares):
@@ -699,35 +679,42 @@ class M2LPF(BaseLPF):
     def _transit_model_achromatic_cnt(self, pvp, copy=True):
         pvp = atleast_2d(pvp)
         cnt = zeros((pvp.shape[0], self.npb))
-        pvt = map_pv_achromatic_cnt(pvp)
         ldc = map_ldc(pvp[:, self._sl_ld])
-        flux = self.tm.evaluate_pv(pvt, ldc, copy=copy)
-        for i, pv in enumerate(pvp):
+        tc = pvp[:, 0] - self._tref
+        p = pvp[:, 1]
+        a = as_from_rhop(pvp[:, 2], p)
+        i = i_from_ba(pvp[:, 3], a)
+        k = sqrt(pvp[:, 5:6])  # The transit is modelled using the true radius ratio and then contaminated.
+        flux = self.tm.evaluate(k, ldc, tc, p, a, i, copy=copy)
+        for ipv, pv in enumerate(pvp):
             if (2500 < pv[6] < 12000) and (2500 < pv[7] < 12000):
                 cnref = 1. - pv[4] / pv[5]
-                cnt[i, :] = self.cm.contamination(cnref, pv[6], pv[7])
+                cnt[ipv, :] = self.cm.contamination(cnref, pv[6], pv[7])
             else:
-                cnt[i, :] = -inf
+                cnt[ipv, :] = -inf
         return contaminate(flux, cnt, self.lcids, self.pbids)
 
     def _transit_model_achromatic_dcnt(self, pvp, copy=True):
         pvp = atleast_2d(pvp)
-        pvt = map_pv_achromatic_nocnt(pvp)
         ldc = map_ldc(pvp[:, self._sl_ld])
         cnt = pvp[:, self._sl_cn]
-        flux = self.tm.evaluate_pv(pvt, ldc, copy=copy)
+        tc = pvp[:, 0] - self._tref
+        p = pvp[:, 1]
+        a = as_from_rhop(pvp[:, 2], p)
+        i = i_from_ba(pvp[:, 3], a)
+        k = sqrt(pvp[:, 4:5])
+        flux = self.tm.evaluate(k, ldc, tc, p, a, i, copy=copy)
         return contaminate(flux, cnt, self.lcids, self.pbids)
 
     def _transit_model_chromatic_nocnt(self, pvp, copy=True):
         pvp = atleast_2d(pvp)
-        pvm = zeros((pvp.shape[0], 6+self.npb))
-        pvm[:, :self.npb] = sqrt(pvp[:,self._sl_k2])
-        pvm[:, self.npb] = pvp[:, 0] - self._tref
-        pvm[:, self.npb+1] = p = pvp[:, 1]
-        pvm[:, self.npb+2] = a = as_from_rhop(pvp[:,2], p)
-        pvm[:, self.npb+3] = i_from_ba(pvp[:,3], a)
         ldc = map_ldc(pvp[:, self._sl_ld])
-        return self.tm.evaluate_pv(pvm, ldc, copy=copy)
+        tc = pvp[:, 0] - self._tref
+        p = pvp[:, 1]
+        a = as_from_rhop(pvp[:, 2], p)
+        i = i_from_ba(pvp[:, 3], a)
+        k = sqrt(pvp[:, self._sl_k2])  # One radius ratio per passband, shape (npv, npb).
+        return self.tm.evaluate(k, ldc, tc, p, a, i, copy=copy)
 
     def _transit_model_chromatic_cnt(self, pvp, copy=True):
         pvp = atleast_2d(pvp)
