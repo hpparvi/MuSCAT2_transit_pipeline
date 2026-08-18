@@ -81,7 +81,7 @@ class M2MultiNightLPF(M2BaseLPF):
                  datadir='results', filename_pattern='*.fits',
                  contamination_model: str = 'physical',
                  contamination_reference_passband: str = "r'",
-                 use_linear_baseline_model: bool = True,
+                 baseline_model: str = 'lstsq',
                  downsampling: float = None,
                  passbands = None):
 
@@ -95,7 +95,7 @@ class M2MultiNightLPF(M2BaseLPF):
                          noise_model=noise_model, klims=klims,
                          contamination_model=contamination_model,
                          contamination_reference_passband=contamination_reference_passband,
-                         use_linear_baseline_model=use_linear_baseline_model)
+                         baseline_model=baseline_model)
 
     def _read_data(self):
         times, fluxes, pbs, wns, covs, vars, residuals = read_reduced_m2(self.datadir, self.pattern, downsample=self.downsampling, passbands=self.pbs_to_use)
@@ -108,7 +108,7 @@ class M2MultiNightLPF(M2BaseLPF):
 
     def create_pv_population(self, npv: int = 50) -> ndarray:
         pvp = self.ps.sample_from_prior(npv)
-        if self.use_linear_baseline_model:
+        if self.baseline_model == 'linear':
             for p in self.ps[self._sl_lm]:
                 if 'lm_i' in p.name:
                     pvp[:, p.pid] = 0.01 * (pvp[:, p.pid] - 1.0) + 1.0
@@ -168,7 +168,7 @@ class M2MultiNightLPF(M2BaseLPF):
             pvs = permutation(df.values)[:max_samples]
 
             if self.noise_model == 'white':
-                fbasel = self.baseline(pvs)
+                fbasel = self.baseline_flux(pvs)
             else:
                 fbasel = self._lnlikelihood_models[0].predict_baseline(median(pvs, 0)).reshape([1, -1])
 
@@ -183,7 +183,7 @@ class M2MultiNightLPF(M2BaseLPF):
         else:
             t0, p = self.de.minimum_location[0], self.de.minimum_location[1]
             if self.noise_model == 'white':
-                fbasel = squeeze(self.baseline(self.de.minimum_location))
+                fbasel = squeeze(self.baseline_flux(self.de.minimum_location))
             else:
                 fbasel = squeeze(self._lnlikelihood_models[0].predict_baseline(self.de.minimum_location))
 
