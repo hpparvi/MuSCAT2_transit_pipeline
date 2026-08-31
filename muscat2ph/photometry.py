@@ -427,7 +427,7 @@ class ScienceFrame(ImageFrame):
             from astroquery.gaia import Gaia
             Gaia.ROW_LIMIT = 5000
 
-            cs = Gaia.cone_search_async(target_sky, radius=radius * u.arcmin)
+            cs = Gaia.cone_search(target_sky, radius=radius * u.arcmin)
             tb = cs.get_results()
             tb = tb[
                 ['source_id', 'dist', 'ref_epoch', 'ra', 'dec', 'pmra', 'pmdec', 'phot_g_mean_flux', 'phot_g_mean_mag']]
