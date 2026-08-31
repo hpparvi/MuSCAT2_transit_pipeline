@@ -48,7 +48,7 @@ dependencies = [
     "xarray",
     "photutils",
     "matplotlib",
-    "astroquery",
+    "astroquery>=0.4.10",
     "corner",
     "seaborn",
     "numba",

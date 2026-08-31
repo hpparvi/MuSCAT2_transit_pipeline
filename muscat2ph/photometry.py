@@ -37,7 +37,7 @@ from matplotlib.patches import Rectangle
 from matplotlib.pyplot import subplots, figure, subplot, setp
 from numba import njit
 from numpy import (log, zeros, median, ndarray, array, ones_like, where, nan, argsort, zeros_like, flip, concatenate,
-                   atleast_2d, ones, sqrt, inf, isfinite, arange, ceil, meshgrid, errstate, all)
+                   atleast_2d, ones, sqrt, inf, isfinite, arange, ceil, meshgrid, errstate, all, cos)
 from photutils.detection import DAOStarFinder
 from photutils.aperture import CircularAperture, CircularAnnulus
 from photutils.centroids import centroid_2dg
@@ -462,8 +462,11 @@ class ScienceFrame(ImageFrame):
         cur_epoch = mjd.to_value('decimalyear')
         dt = cur_epoch - ref_epoch
 
-        ra = (tb['ra'].data * u.deg + dt * tb['pmra'].data * u.mas)
-        dec = (tb['dec'].data * u.deg + dt * tb['pmdec'].data * u.mas)
+        # Gaia reports 'pmra' as pmRA*cos(dec), so it needs to be divided by cos(dec) to give
+        # the change in right ascension itself.
+        dec0 = tb['dec'].data * u.deg
+        ra = tb['ra'].data * u.deg + dt * tb['pmra'].data * u.mas / cos(dec0.to_value(u.rad))
+        dec = dec0 + dt * tb['pmdec'].data * u.mas
 
         stars = SkyCoord(ra, dec)
         cpix = array(stars.to_pixel(self._wcs)).T
