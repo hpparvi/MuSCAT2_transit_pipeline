@@ -89,5 +89,6 @@ script-files = [
     "bin/m2mkref",
     "bin/lcomkref",
     "bin/m2findtarget",
+    "bin/m2fit",
     "bin/m2pipeline"
 ]

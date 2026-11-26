@@ -51,7 +51,7 @@ Transit analysis consists of a set of basic steps
 3. Plots the light curves, systematics, and parameter posteriors
 4. Save the posterior samples and the final light curves
 
-The `m2fit` scripts carries out the steps and offers some customisability through command line options. However, the pipeline also comes with a Jupyter notebook template that carries out the steps with significantly higher level of interaction and customisability than offered by the script.
+The `m2fit` script carries out a simplified version of this analysis from the command line: it fits the transit together with the target and comparison star apertures using global optimisation, samples the posterior using MCMC, and plots the light curves and the parameter posteriors. The comparison stars need to be chosen by hand, and the GP systematics model is not available. The pipeline also comes with a Jupyter notebook template (see `m2nbtemplate`) that carries out all the steps with significantly higher level of interaction and customisability than offered by the script.
 
 ## Requirements
 
@@ -86,7 +86,27 @@ The astrometry script needs to be run from the organised data directory and take
 
 ### Transit Analysis
 
-    m2fit input_file
+    m2fit target date droot --tid target_id --cids comparison_id [comparison_id ...]
+
+The transit analysis script `m2fit` fits the photometry of a single night, and takes three positional arguments:
+
+- `target`: target name as used in the photometry file names. The target coordinates are taken from the MuSCAT2 target catalogue.
+- `date`: observing night as `yymmdd`.
+- `droot`: root data directory. The photometry files are expected to be found as `droot/target/date/target_date_pb.nc`, where `pb` is one of `g`, `r`, `i`, and `z_s`. All the passbands found are fitted jointly.
+
+The target star ID (`--tid`) and the comparison star IDs (`--cids`) need to be given, and refer to the star indices in the photometry files. For example
+
+    m2fit wasp-43b 180218 /data/m2/lcs --tid 0 --cids 1 2 3
+
+The most important optional arguments are
+
+- `--apt`: aperture ID. The best apertures are fitted as a part of the model if this is not given, and the given aperture is used for all the stars if it is.
+- `--plot-raw`: plot the raw light curves for the given passband index and exit without fitting.
+- `--npop`: size of the parameter vector population used in the optimisation and MCMC sampling (default 100). This needs to be larger than half the number of free parameters.
+- `--de-niter` and `--de-repeats`: number of global optimisation iterations per repeat (default 500), and the number of repeats (default 5).
+- `--mc-niter` and `--mc-repeats`: number of MCMC iterations per repeat (default 500), and the number of repeats (default 5).
+
+The script saves its plots into the current working directory: the light curves after the optimisation (`target-date-de.pdf`) and after the MCMC sampling (`target-date-mc.pdf`), the parameter posteriors (`target-date-posteriors.pdf`), and a summary page combining the light curves and the posteriors (`target_date_transit_fit.pdf`). The posterior samples themselves are not saved.
 
 ## Collaborators
 
