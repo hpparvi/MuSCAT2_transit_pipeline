@@ -15,6 +15,7 @@
 #  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import ssl
+import warnings
 from collections import namedtuple
 from difflib import get_close_matches
 from importlib.resources import files
@@ -24,12 +25,23 @@ from typing import Optional
 import astropy.units as u
 import pandas as pd
 import httpx
+import requests
 from astropy.coordinates import SkyCoord
+from astropy.table import Table
 from astropy.time import Time
-from astroquery.simbad import Simbad
-from numpy import remainder, array, squeeze
+from astroquery.simbad import Simbad, conf as simbad_conf
+from numpy import remainder, array, squeeze, cos
+from pyvo.dal.exceptions import DALFormatError, DALServiceError
 
 TOI = namedtuple('TOI', 'tic toi tmag ra dec epoch period duration depth'.split())
+
+# The CfA mirror of SIMBAD, queried when the default (CDS) server cannot be reached. This is the
+# host name astroquery accepts for it; 'simbad.cfa.harvard.edu' is rejected by astroquery <= 0.4.10.
+SIMBAD_MIRROR = 'simbad.harvard.edu'
+
+# Errors that mean the SIMBAD server itself is unavailable or is returning garbage, as opposed
+# to a problem with the query (DALQueryError) or with our code. Only these trigger the fallback.
+SIMBAD_SERVER_ERRORS = (DALServiceError, DALFormatError, requests.RequestException)
 
 
 def _get_data_path(filename: str) -> Path:
@@ -169,31 +181,75 @@ def get_toi_or_tic_coords(toi_or_tic):
     return SkyCoord(toi.ra, toi.dec, frame='fk5', unit=(u.hourangle, u.deg))
 
 
-def get_coords(target: str, obsdate: Optional[Time] = None):
+def _query_simbad(target: str, server: Optional[str] = None) -> Optional[Table]:
+    """Queries a SIMBAD server for a target, using the astroquery default server if None."""
+    simbad = Simbad()
+    if server is not None:
+        simbad.server = server
+    # Adding fields already talks to the server (it fetches the list of valid fields), so
+    # this needs to be inside the same error handling as the query itself.
+    simbad.add_votable_fields('pmra')
+    simbad.add_votable_fields('pmdec')
+    return simbad.query_object(target)
+
+
+def get_simbad_coords(target: str, obsdate: Optional[Time] = None) -> Optional[SkyCoord]:
+    """Returns the sky coordinates of a target resolved by SIMBAD, or None if SIMBAD doesn't know it.
+
+    The default SIMBAD server (CDS, unless configured otherwise in astroquery) is queried first,
+    and the CfA mirror is tried with a warning if the default server is unavailable.
+
+    Returns None only when SIMBAD resolves the name to nothing. Any other failure (both servers
+    being unavailable, a change in the astroquery result columns, ...) is raised rather than
+    swallowed, since falling back to name matching on such an error can silently return the
+    coordinates of a completely different star.
+
+    Parameters
+    ----------
+    target
+        Target name to resolve.
+    obsdate
+        Observing date the coordinates should be propagated to. The J2000 coordinates are
+        returned as-is if None.
+
+    Returns
+    -------
+    Astropy SkyCoord object or None
+    """
     try:
-        simbad = Simbad()
-        simbad.add_votable_fields('pmra')
-        simbad.add_votable_fields('pmdec')
-        try:
-            tbl = simbad.query_object(target)
-        except Exception:
-            tbl = None
-            
-        if tbl is None:
-            raise KeyError
-        else:
-            tbl = tbl.filled(0.0)
-            coo = squeeze(SkyCoord(tbl['RA'], tbl['DEC'], unit=(u.hourangle, u.deg)))
-            if obsdate is None:
-                return coo
-            else:
-                epoch = Time('2000-01-01')
-                dt = (obsdate - epoch).to(u.yr)
-                ra = coo.ra + dt * tbl['PMRA'].data * u.mas / u.yr
-                dec = coo.dec + dt * tbl['PMDEC'].data * u.mas / u.yr
-                return squeeze(SkyCoord(ra, dec))
-    except KeyError:
-        try:
-            return get_toi_or_tic_coords(parse_toi(target))
-        except ValueError:
-            return get_m2_coords(target)
+        tbl = _query_simbad(target)
+    except SIMBAD_SERVER_ERRORS as e:
+        if simbad_conf.server == SIMBAD_MIRROR:
+            raise
+        warnings.warn(f"SIMBAD query to {simbad_conf.server} failed ({type(e).__name__}), "
+                      f"trying the mirror at {SIMBAD_MIRROR}.")
+        # If the mirror fails as well, its error is raised chained to the original one.
+        tbl = _query_simbad(target, SIMBAD_MIRROR)
+
+    # SIMBAD signals an unresolved name with an empty table (astroquery >= 0.4.8) or None.
+    if tbl is None or len(tbl) == 0:
+        return None
+
+    # The astroquery SIMBAD columns are lowercase and in degrees since astroquery 0.4.8.
+    tbl = tbl.filled(0.0)
+    coo = squeeze(SkyCoord(tbl['ra'], tbl['dec'], unit=(u.deg, u.deg)))
+    if obsdate is None:
+        return coo
+    else:
+        epoch = Time('2000-01-01')
+        dt = (obsdate - epoch).to(u.yr)
+        # SIMBAD reports 'pmra' as pmRA*cos(dec), so it needs to be divided by cos(dec) to
+        # give the change in right ascension itself.
+        pm_ra = tbl['pmra'].data * u.mas / u.yr / cos(coo.dec.radian)
+        pm_dec = tbl['pmdec'].data * u.mas / u.yr
+        return squeeze(SkyCoord(coo.ra + dt * pm_ra, coo.dec + dt * pm_dec))
+
+
+def get_coords(target: str, obsdate: Optional[Time] = None):
+    coo = get_simbad_coords(target, obsdate)
+    if coo is not None:
+        return coo
+    try:
+        return get_toi_or_tic_coords(parse_toi(target))
+    except ValueError:
+        return get_m2_coords(target)

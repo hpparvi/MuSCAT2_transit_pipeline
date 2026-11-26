@@ -48,7 +48,7 @@ dependencies = [
     "xarray",
     "photutils",
     "matplotlib",
-    "astroquery",
+    "astroquery>=0.4.10",
     "corner",
     "seaborn",
     "numba",
@@ -89,4 +89,5 @@ script-files = [
     "bin/m2mkref",
     "bin/lcomkref",
     "bin/m2findtarget",
+    "bin/m2pipeline"
 ]

@@ -1,7 +1,6 @@
 import xarray as xa
 import seaborn as sb
 from astropy.coordinates import SkyCoord, FK5
-from astroquery.simbad import Simbad
 from matplotlib.pyplot import subplots, setp
 
 from numpy import inf, sqrt, dot, exp, linspace, log, zeros, array, arange, meshgrid, ones, r_, isin, ceil, ones_like, \
@@ -18,6 +17,7 @@ from astropy.stats import mad_std
 from tqdm import tqdm
 
 from muscat2ta.lc import M2LightCurve
+from .catalog import get_simbad_coords
 
 lapalma = coord.EarthLocation.from_geodetic(-17.8799*u.deg, 28.758*u.deg, 2327*u.m)
 
@@ -133,10 +133,12 @@ class PhotometryData:
 
         if not self.objskycoords:
             try:
-                obj = Simbad.query_object(self.objname)
-                self.objskycoords = SkyCoord(obj['RA'][0], obj['DEC'][0], frame=FK5, unit=(u.hourangle, u.deg))
-            except:
-                print('Could not set the target sky coordinates')
+                self.objskycoords = get_simbad_coords(self.objname)
+            except Exception as e:
+                print(f'Could not set the target sky coordinates: SIMBAD query failed ({type(e).__name__}: {e})')
+            else:
+                if self.objskycoords is None:
+                    print(f'Could not set the target sky coordinates: SIMBAD does not know "{self.objname}"')
 
         ids = [tid] + cids
         self.exclusion_mask = ones(self.nframes, 'bool')
