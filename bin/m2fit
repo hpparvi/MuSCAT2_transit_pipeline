@@ -7,12 +7,9 @@ from argparse import ArgumentParser
 from pathlib import Path
 from tqdm import tqdm
 
-from numpy import sqrt, linspace
-from matplotlib.backends.backend_pdf import PdfPages
+from numpy import inf
 from matplotlib.pyplot import figure, figtext
 import matplotlib.pyplot as pl
-
-from corner import corner
 
 logging.basicConfig(level=logging.INFO)
 
@@ -41,7 +38,7 @@ if __name__ == '__main__':
     ap.add_argument('droot',  type=Path, help='Root data directory')
     ap.add_argument('--tid',    type=int,  help='Target star ID')
     ap.add_argument('--cids',   type=int,  nargs='+', help='Comparison star IDs')
-    ap.add_argument('--apt',    type=int, help='Aperture ID')
+    ap.add_argument('--apt',    type=int, default=None, help='Aperture ID, all the apertures are considered if not given')
 
     ap.add_argument('--plot-raw',   type=int, default=None)
     ap.add_argument('--plot-dir',   default='.', type=Path)
@@ -69,7 +66,12 @@ if __name__ == '__main__':
         exit()
 
     from muscat2ta.m2lpf import M2LPF
-    lpf = M2LPF(args.target, phs, args.tid, args.cids, args.apt, pbs, use_oec=False)
+    # The aperture is a free parameter in the model, a fixed aperture is a range of one.
+    napt = phs[0].flux.aperture.size
+    if args.apt is not None and not 0 <= args.apt < napt:
+        ap.error(f'--apt must be between 0 and {napt - 1}, the photometry has {napt} apertures')
+    aperture_lims = (0, inf) if args.apt is None else (args.apt, args.apt + 1)
+    lpf = M2LPF(args.target, phs, args.tid, args.cids, pbs, aperture_lims=aperture_lims)
 
     logging.info(f" Created an LPF with {len(lpf.ps)} free parameters")
     logging.info(f" Using {args.npop} parameter vectors")
@@ -122,40 +124,3 @@ if __name__ == '__main__':
     lpf.plot_posteriors(fig=fig, gridspec=dict(top=0.30, bottom=0.05, left=0.1, right=0.95, wspace=0.03, hspace=0.3))
     fig.add_axes((0.03, 0.01, 0.96, 0.001), facecolor='k', xticks=[], yticks=[]);
     fig.savefig(f'{args.target}_{args.date}_transit_fit.pdf')
-
-    exit()
-
-    basename = '{}_{}_{}'.format(args.target, args.datadir.absolute().name, args.model)
-
-    with PdfPages('{}.pdf'.format(basename)) as pdf:
-        ta.optimize('linear', args.niter_de)
-        ta.save_fits('linear')
-        ta.learn_gp_hyperparameters()
-        ta.optimize('gp', args.niter_de)
-        ta.save_fits('gp')
-        ta.sample('gp', args.mc_burn, thin=args.mc_thin)
-        ta.sample('gp', args.mc_niter, thin=args.mc_thin, reset=True)
-        #ta.print_ptp_scatter()
-        ta.save()
-
-        pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
-        pdf.savefig(ta.plot_light_curve('linear', 'de', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
-        pdf.savefig(ta.plot_light_curve('gp', 'de',   detrend_obs=False, detrend_mod=False, figsize=(14, 8)))
-        pdf.savefig(ta.plot_light_curve('gp', 'mcmc', detrend_obs=True,  detrend_mod=True,  figsize=(14, 8)))
-        pdf.savefig(ta.plot_noise('bins'))
-
-        df = ta.posterior_samples()
-        if args.model == 'pb_independent_k':
-            df['k'] = sqrt(df.k2)
-            df.drop('k2', axis=1, inplace=True)
-        elif args.model == 'pb_dependent_k':
-            k2labels = 'k2_g k2_r k2_i k2_z'.split()
-            for l in k2labels:
-                df[l.replace('k2','k')] = sqrt(df[l])
-                df.drop(l, axis=1, inplace=True)
-        elif args.model == 'physical_contamination':
-            df['cnt'] = 1. - df.k2_app / df.k2_true
-            df['k_true'] = sqrt(df['k2_true'])
-            df['k_app'] = sqrt(df['k2_app'])
-
-        pdf.savefig(corner(df))
