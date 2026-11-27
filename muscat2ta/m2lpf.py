@@ -24,7 +24,7 @@ from matplotlib.pyplot import subplots, setp, figure
 from astropy.io import fits as pf
 
 from numba import njit, prange
-from numpy import atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
+from numpy import ndim, atleast_2d, zeros, exp, log, array, nanmedian, concatenate, ones, arange, where, diff, inf, arccos, \
     sqrt, squeeze, floor, linspace, pi, c_, any, all, percentile, median, repeat, mean, newaxis, isfinite, pad, clip, \
     delete, s_, log10, argsort, atleast_1d, tile, any, fabs, zeros_like, sort, ones_like, fmin, digitize, ceil, full, \
     nan, transpose, isscalar, empty, ptp, ndarray, argmin
@@ -344,7 +344,12 @@ class M2LPF(BaseLPF):
         and squeezes its output for a single parameter vector. The least-squares baseline needs an
         array covering all the datapoints, so expand the model here.
         """
-        return ones(self.timea.size) * self.transit_model(pv, copy=True)
+        fmod = self.transit_model(pv, copy=True)
+        if ndim(fmod) == 0:
+            # No transit: one flat light curve per parameter vector, squeezed for a single
+            # vector like the transit models are.
+            return squeeze(full((atleast_2d(pv).shape[0], self.timea.size), float(fmod)))
+        return ones(self.timea.size) * fmod
 
     def baseline_flux(self, pv) -> ndarray:
         """The multiplicative baseline for a parameter vector or population.

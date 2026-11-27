@@ -357,7 +357,8 @@ class TransitAnalysis:
         trg_apertures = lpf.target_apertures(pv)
         trg_med_fluxes = lpf.target_median_fluxes[:, trg_apertures]
 
-        baseline = squeeze(lpf.baseline(pv))
+        # `baseline_flux` also covers the least-squares baseline, which `baseline` does not know about.
+        baseline = squeeze(lpf.baseline_flux(pv))
         if lpf.with_transit:
             transit = squeeze(lpf.transit_model(pv).astype('d'))
         else:
